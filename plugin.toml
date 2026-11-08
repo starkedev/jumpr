@@ -1,0 +1,15 @@
+schema = 1
+id = "jumpr"
+name = "Jumpr"
+version = "0.1.0"
+description = "Keyboard-driven list of your omp agents, grouped by project, one list per machine Tern is attached to."
+icon = "list"
+host = "host.luau"
+window = "window.luau"
+styles = ["styles.css"]
+
+[[blocks]]
+id = "list"
+title = "Jumpr"
+# The window half places the block itself, so the palette offers no "New Jumpr block" row.
+palette = false

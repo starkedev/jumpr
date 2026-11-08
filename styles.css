@@ -1,0 +1,335 @@
+/* Jumpr: the jumpr.list block. Every rule is scoped to the block's surface (data-surface="plugin.jumpr.list")
+   and matches the role words lib/host/view.luau puts on its nodes ([data-role~='deck.item'] and so on).
+   Status colours follow agent-nav's order (Copyright (c) 2026 Arcadia, MIT): error red, waiting purple,
+   running amber, idle muted, unknown grey. Theme tokens only, so light and dark themes both read. */
+
+/* The head line: its parts (host, connection, filter, search, status) wrap between parts, never cut. A part wider
+   than the pane on its own breaks inside. */
+[data-surface='plugin.jumpr.list'] [data-role~='deck.head'] {
+	display: flex;
+	flex-wrap: wrap;
+	column-gap: 1ch;
+	color: var(--t2);
+	font-weight: 600;
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.head-part'] {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.banner'] {
+	color: var(--warn);
+	background: rgb(from var(--warn) r g b / 10%);
+	box-shadow: inset 2px 0 0 var(--warn);
+	padding-left: 4px;
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.err'] {
+	--deck-c: var(--bad);
+	color: var(--bad);
+	font-weight: 600;
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.wait'] {
+	--deck-c: var(--ansi5);
+	color: var(--ansi5);
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.run'] {
+	--deck-c: var(--warn);
+	color: var(--warn);
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.idle'] {
+	--deck-c: var(--t3);
+	color: var(--t3);
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.unknown'] {
+	--deck-c: var(--t4);
+	color: var(--t4);
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.stopped'],
+[data-surface='plugin.jumpr.list'] [data-role~='deck.dim'] {
+	--deck-c: var(--t4);
+	color: var(--t4);
+	opacity: 0.7;
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.pending'] {
+	--deck-c: var(--t3);
+	color: var(--t3);
+	font-style: italic;
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.dup'] {
+	box-shadow: inset 2px 0 0 var(--bad);
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.sel'] {
+	background: color-mix(in srgb, var(--t1) 16%, transparent);
+	box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* The agent V picked up: an accent outline and tint, so it reads as held rather than merely selected. */
+[data-surface='plugin.jumpr.list'] [data-role~='deck.moving'] {
+	background: color-mix(in srgb, var(--accent) 22%, transparent);
+	box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.empty'] {
+	color: var(--t3);
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.input'] {
+	box-shadow: inset 0 0 0 1px var(--l2);
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.notice'] {
+	color: var(--t2);
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.confirm'] {
+	color: var(--warn);
+	font-weight: 600;
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.pick-title'] {
+	color: var(--t3);
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.pick'] {
+	color: var(--t2);
+	white-space: pre;
+}
+
+/* The layout: count tiles on top, one card per group, a key legend at the bottom. Each status rule
+   above sets --deck-c (this engine has no color-mix on currentColor), so dots, pills and tiles stay in step. */
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.tiles'] {
+	display: grid;
+	grid-template-columns: repeat(4, 1fr);
+	gap: 6px;
+	margin: 4px 0 6px;
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.tile'] {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	padding: 5px 2px 4px;
+	border-radius: 7px;
+	background: color-mix(in srgb, var(--deck-c) 12%, transparent);
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--deck-c) 30%, transparent);
+	font-weight: 400;
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.tile'][data-role~='deck.zero'] {
+	color: var(--t4);
+	background: transparent;
+	box-shadow: inset 0 0 0 1px var(--l2);
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.tile-n'] {
+	font-size: 1.35em;
+	font-weight: 700;
+	font-variant-numeric: tabular-nums;
+	line-height: 1.2;
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.tile-label'] {
+	font-size: 0.78em;
+	color: var(--t3);
+	text-transform: lowercase;
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* The status code beside the count: the tile's filter key, so the tile says what !, @, # and $ mean. */
+[data-surface='plugin.jumpr.list'] [data-role~='deck.tile-top'] {
+	display: flex;
+	align-items: baseline;
+	gap: 4px;
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.tile-key'] {
+	font-size: 0.8em;
+	font-weight: 600;
+	opacity: 0.75;
+}
+
+/* The tile whose filter is on. */
+[data-surface='plugin.jumpr.list'] [data-role~='deck.tile'][data-role~='deck.on'] {
+	box-shadow: inset 0 0 0 2px var(--deck-c);
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.cards'] {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.card'] {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	padding: 3px;
+	border-radius: 8px;
+	background: color-mix(in srgb, var(--t1) 4%, transparent);
+	box-shadow: inset 0 0 0 1px var(--l2);
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.card-head'] {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 6px;
+	border-radius: 5px;
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.card-name'] {
+	color: var(--t1);
+	font-weight: 600;
+	white-space: pre;
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.card-note'] {
+	font-size: 0.85em;
+	color: var(--t3);
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.card-note'][data-role~='deck.err'] {
+	color: var(--bad);
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.dots'] {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-left: auto;
+	font-size: 0.85em;
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.dot'] {
+	font-weight: 400;
+	white-space: pre;
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.item'] {
+	display: flex;
+	flex-direction: column;
+	padding: 3px 6px 4px;
+	border-radius: 5px;
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.item-top'] {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.item-label'] {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	color: var(--t1);
+	white-space: pre;
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.pill'] {
+	padding: 0 7px;
+	border-radius: 999px;
+	font-size: 0.8em;
+	font-weight: 500;
+	font-style: normal;
+	line-height: 1.6;
+	background: color-mix(in srgb, var(--deck-c) 18%, transparent);
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.item-meta'] {
+	padding-left: 15px;
+	font-size: 0.82em;
+	color: var(--t3);
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.legend'] {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 5px;
+	padding: 6px 2px 2px;
+	border-top: 1px solid var(--l2);
+	color: var(--t3);
+	font-size: 0.85em;
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.key'] {
+	min-width: 1.5em;
+	padding: 0 4px;
+	border-radius: 4px;
+	text-align: center;
+	color: var(--t2);
+	background: color-mix(in srgb, var(--t1) 8%, transparent);
+	box-shadow: inset 0 0 0 1px var(--l2), inset 0 -1px 0 var(--l2);
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.key-label'] {
+	margin-right: 6px;
+}
+
+/* The ? menu: one command per line, a key chip then what it does; the highlight as the list's selection, and a
+   command the selected row does not suit dimmed. */
+[data-surface='plugin.jumpr.list'] [data-role~='deck.menu'] {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	padding: 2px 0;
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.menu-item'] {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	padding: 1px 6px;
+	border-radius: 5px;
+	color: var(--t2);
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.menu-item'][data-role~='deck.sel'] {
+	color: var(--t1);
+	background: color-mix(in srgb, var(--accent) 16%, transparent);
+	box-shadow: inset 2px 0 0 var(--accent);
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.menu-item'][data-role~='deck.off'] {
+	color: var(--t4);
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.menu-label'] {
+	white-space: pre;
+	overflow: hidden;
+}
+
+/* A row takes clicks in list mode (Tern marks it .sf-act and gives it the pointing hand): a hover tint says so. */
+[data-surface='plugin.jumpr.list'] [data-role~='deck.card-head'].sf-act:hover,
+[data-surface='plugin.jumpr.list'] [data-role~='deck.item'].sf-act:hover {
+	cursor: pointer;
+	background: var(--l1);
+}
+
+/* Selection and a held row win over the card's own surfaces. */
+[data-surface='plugin.jumpr.list'] [data-role~='deck.card-head'][data-role~='deck.sel'],
+[data-surface='plugin.jumpr.list'] [data-role~='deck.item'][data-role~='deck.sel'] {
+	background: color-mix(in srgb, var(--accent) 16%, transparent);
+	box-shadow: inset 2px 0 0 var(--accent);
+}
+
+[data-surface='plugin.jumpr.list'] [data-role~='deck.card-head'][data-role~='deck.moving'],
+[data-surface='plugin.jumpr.list'] [data-role~='deck.item'][data-role~='deck.moving'] {
+	background: color-mix(in srgb, var(--accent) 24%, transparent);
+	box-shadow: inset 0 0 0 1px var(--accent);
+}

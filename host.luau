@@ -483,7 +483,16 @@ local def: BlockDef<Block> = {
 		local now = wall()
 		commit(store.gc(ensure(), now))
 		local name, host = protocol.parse_launch_args(args or {})
-		local d, notice = model.apply_launch(ensure(), name, host, saved ~= nil, now)
+		local clock = tern.now()
+		local d, notice = model.apply_launch(
+			ensure(),
+			name,
+			host,
+			saved ~= nil,
+			now,
+			transport.live_hosts(link, clock),
+			transport.settled(link, clock)
+		)
 		commit(d)
 		if notice ~= nil then
 			tern.log.warn("jumpr: " .. notice)
@@ -584,6 +593,10 @@ local def: BlockDef<Block> = {
 				if not send(blk, req.verb, req.fields) then
 					failed = true
 				end
+			end
+			-- A focus message moves the shared highlight onto the agent the last-tab chord landed on (every copy).
+			if out.follow ~= nil and dispatch(blk, { kind = "follow", id = out.follow }) then
+				changed = true
 			end
 			if changed or out.render or out.notice ~= nil or failed then
 				render_all()

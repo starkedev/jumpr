@@ -2,6 +2,10 @@
 -- The jumpr:// request handler. Only the leader window acts. A
 -- request is parsed and version-checked, dropped when its `r` is at or below the last
 -- handled `r` for its block uid `b`, and dispatched: hello, jump, show, start, stop, back, diag.
+-- A host opens each URL in every window attached to it, on every machine, and each machine names that host its own
+-- way, so the window finds the host with `protocol.request_host`: it acts when its focus is in a copy of the list
+-- that sent the request (the URL's deck session `sn`), and the URL's `host` by exact name is only the fallback when
+-- the link names no pane or the host sends no `sn`.
 -- Replies (`act = "res"`) go through compat.session_event to every deck block on the request's host, carrying `b`;
 -- when none can be sent, a toast shows the error. Errors name the machine and the agent.
 
@@ -18,6 +22,8 @@ local pusher = require("./pusher")
 local M = {}
 
 local last_r: { [string]: number } = {}
+-- URL host names already logged as unknown, so a request from another machine's spelling logs once.
+local told_unknown: { [string]: boolean } = {}
 
 local function known_host(cx: WindowCx, name: string): boolean
 	local hosts = compat.hosts_list(cx)
@@ -225,10 +231,11 @@ local function back(cx: WindowCx, req: protocol.Request)
 	end
 end
 
--- Handles one jumpr:// URL in the leader window. Returns the verb handled, or nil when the request was dropped.
+-- Handles one jumpr:// URL in the leader window; `pane` is the link's pane (`LinkRequest.pane`). Returns the verb
+-- handled, or nil when the request was dropped or is another window's to act on.
 -- The version is read from the URL before parsing, so a request from another version is never dropped silently,
 -- even one whose verb this version does not know.
-function M.handle(cx: WindowCx, url: string): string?
+function M.handle(cx: WindowCx, url: string, pane: number?): string?
 	if not leader.is_leader() then
 		return nil
 	end
@@ -265,12 +272,35 @@ function M.handle(cx: WindowCx, url: string): string?
 		return nil
 	end
 	last_r[req.b] = req.r
-	if not known_host(cx, req.host) then
-		diag.error("router", req.verb .. " from unknown machine " .. req.host)
-		compat.toast(cx, "error", "Jumpr: unknown machine " .. req.host)
+	pusher.scan(cx)
+	local pane_host: string?, pane_session: string? = nil, nil
+	if pane ~= nil then
+		pane_host, pane_session = pusher.block_info(pane)
+	end
+	local focused: number? = nil
+	if pane_host ~= nil then
+		focused = compat.session_focused(cx)
+	end
+	local host, route = protocol.request_host({
+		answer = req.verb == "hello" or req.verb == "diag",
+		pane = pane,
+		pane_host = pane_host,
+		pane_session = pane_session,
+		focused = focused,
+		url_host = req.host,
+		url_session = req.sn,
+		known = known_host(cx, req.host),
+		session_host = if req.sn ~= nil then pusher.host_with_session(req.sn) else nil,
+	})
+	if host == nil then
+		-- Another machine's window names this host another way, so an unknown name is expected and never toasted.
+		if route == "unknown" and not told_unknown[req.host] then
+			told_unknown[req.host] = true
+			diag.error("router", req.verb .. " for a machine this window does not know as " .. req.host)
+		end
 		return nil
 	end
-	pusher.scan(cx)
+	req.host = host
 	if req.verb == "hello" then
 		pusher.hello(cx, req.host)
 	elseif req.verb == "jump" then
@@ -286,6 +316,9 @@ function M.handle(cx: WindowCx, url: string): string?
 	elseif req.verb == "back" then
 		back(cx, req)
 	elseif req.verb == "diag" then
+		if not diag.asking() then
+			return nil
+		end
 		diag.host_dump_arrived(cx, req.host, req.fields.path or "")
 	else
 		diag.error("router", req.verb .. " from " .. req.host .. " is not handled in this version")

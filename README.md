@@ -2,6 +2,8 @@
 
 A keyboard-driven list of your [omp](https://github.com/can1357/oh-my-pi) agents for [Tern](https://stencil.so/tern), grouped by project, one list per machine.
 
+![Jumpr's list beside an agent's tab: count tiles for error, waiting, running and idle agents above project groups, with the selected waiting agent's question open in its tab](docs/jumpr.png)
+
 Agents sit in groups, one per project folder, and each row shows whether its agent is running, waiting for you, idle or in error.
 Moving through the list brings each agent's tab to the front, so the live agent is the preview, and Enter takes you into it.
 It works for agents on the machine in front of you and on remote machines Tern is attached to, one list per machine.
@@ -79,7 +81,7 @@ Pressed in the list, it goes back to the pane you came from and hides the list.
 |---|---|---|
 | `cmd+j` (⌘J, Super+J) | Show and focus the list, or go back and hide it | Jumpr: toggle list |
 | `cmd+shift+j` (⌘⇧J, Super+Shift+J) | Hide the list from anywhere | Jumpr: hide list |
-| `cmd+\` (⌘\\, Super+\\) | Jump to the tab you were in before this one; press again to come back | Jumpr: last tab |
+| `cmd+\` (⌘\\, Super+\\) | Jump to the tab you were in before this one; press again to come back. The list's highlight follows to that tab's agent | Jumpr: last tab |
 | | Focus the list | Jumpr: focus list |
 | | Hide or show the list without moving focus | Jumpr: hide or show list |
 | | Copy the paths of a diagnostics dump | Jumpr: diagnostics |
@@ -121,6 +123,8 @@ Free them in the window manager's config, or bind other chords to the same two c
 The command menu lists every key in the list with what it does on the selected row.
 `j` / `k` or `↓` / `↑` move, `Enter` or the command's own key runs it, and `Esc` or `?` closes it.
 Commands the selected row does not suit are dimmed.
+
+<img src="docs/jumpr-menu.png" width="284" alt="The ? command menu open in the list">
 
 ### Filters
 
@@ -272,6 +276,7 @@ Bug reports and pull requests are welcome in [GitHub issues](https://github.com/
 
 Jumpr borrows from [tern-agent-nav](https://github.com/Arcadia822/tern-agent-nav) by Arcadia (MIT): the spinner title helpers and the order of the status colours.
 See [NOTICE](NOTICE) for the details and its licence.
+Jumpr's key layout and workflow are inspired by [agent-deck](https://github.com/asheshgoplani/agent-deck) (MIT); no code is copied from it.
 
 ## License
 

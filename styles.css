@@ -100,6 +100,11 @@
 	color: var(--t3);
 }
 
+[data-surface='plugin.jumpr.list'] [data-role~='deck.menu-hint'] {
+	color: var(--t4);
+	font-size: 0.85em;
+}
+
 [data-surface='plugin.jumpr.list'] [data-role~='deck.pick'] {
 	color: var(--t2);
 	white-space: pre;
@@ -260,7 +265,7 @@
 	display: flex;
 	flex-wrap: wrap;
 	align-items: center;
-	gap: 4px 5px;
+	gap: 4px;
 	padding: 6px 2px 2px;
 	border-top: 1px solid var(--l2);
 	color: var(--t3);
@@ -268,8 +273,8 @@
 }
 
 [data-surface='plugin.jumpr.list'] [data-role~='deck.key'] {
-	min-width: 1.5em;
-	padding: 0 4px;
+	min-width: 1.2em;
+	padding: 0 3px;
 	border-radius: 4px;
 	text-align: center;
 	color: var(--t2);
@@ -278,7 +283,7 @@
 }
 
 [data-surface='plugin.jumpr.list'] [data-role~='deck.key-label'] {
-	margin-right: 6px;
+	margin-right: 4px;
 }
 
 /* The ? menu: one command per line, a key chip then what it does; the highlight as the list's selection, and a

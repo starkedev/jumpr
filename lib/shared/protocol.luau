@@ -20,7 +20,7 @@ M.VERBS = table.freeze({
 }) :: { [string]: boolean }
 
 -- Query keys the URL itself owns; a verb field may not reuse them, and `dir` never travels (each half derives it from the deck id).
-local RESERVED: { [string]: boolean } = { p = true, b = true, r = true, host = true, dir = true }
+local RESERVED: { [string]: boolean } = { p = true, b = true, r = true, host = true, sn = true, dir = true }
 
 -- A status message (`act = "st"`). `a` maps deck id to a list of status entries (one per live pane); in a diff a
 -- gone id carries an empty list (`tern.json.decode` drops null members, so null would never arrive), so its values
@@ -45,6 +45,8 @@ export type Request = {
 	b: string,
 	r: number,
 	host: string,
+	-- The deck session of the list that sent it; nil from a host that sends none.
+	sn: string?,
 	fields: { [string]: string },
 }
 
@@ -78,6 +80,17 @@ function M.status_msg(
 	}
 end
 
+-- A focus message (`act = "fo"`): the window's last-tab chord landed in the tab of deck agent `id`, so the list
+-- highlights that agent. It adds an act within this version: a host that does not know it logs it and changes
+-- nothing, and a window that does not send it leaves the highlight where it was, so `p` stays.
+M.FOCUS_ACT = "fo"
+
+export type FocusMsg = { p: number, w: string, id: string }
+
+function M.focus_msg(window_uid: string, id: string): FocusMsg
+	return { p = M.P, w = window_uid, id = id }
+end
+
 -- The other side's version against this side's. A missing or non-number `p` is read as older (unversioned).
 local function check_version(p: any): string
 	if type(p) ~= "number" or p < M.P then
@@ -87,6 +100,17 @@ local function check_version(p: any): string
 		return "bad_p_newer"
 	end
 	return "ok"
+end
+
+-- A focus message's version verdict ("ok" | "bad_p_newer" | "bad_p_older") and, on "ok", the deck id it names (nil
+-- when it names none).
+function M.check_focus(msg: { [string]: any }): (string, string?)
+	local version = check_version(msg.p)
+	if version ~= "ok" then
+		return version, nil
+	end
+	local id = msg.id
+	return "ok", if type(id) == "string" and id ~= "" then id else nil
 end
 
 -- "ok" | "gap" | "old" | "bad_p_newer" | "bad_p_older". "gap" means send `jumpr://hello`: a sequence gap in a diff,
@@ -137,9 +161,18 @@ local function decode(s: string): string
 	)
 end
 
--- `jumpr://<verb>?p=1&b=..&r=..&host=..&<fields>`, every key and value percent-encoded, fields in key order.
--- An unknown verb or a field named like a URL key (`p`, `b`, `r`, `host`) or `dir` is a programming error.
-function M.request_url(verb: string, b: string, r: number, host: string, fields: { [string]: string }): string
+-- `jumpr://<verb>?p=1&b=..&r=..&host=..&sn=..&<fields>`, every key and value percent-encoded, fields in key order.
+-- `sn` is the deck session of the list sending it, left out when `session` is nil or empty; a window that predates
+-- it reads it as a field no verb uses, so it needs no new protocol version.
+-- An unknown verb or a field named like a URL key (`p`, `b`, `r`, `host`, `sn`) or `dir` is a programming error.
+function M.request_url(
+	verb: string,
+	b: string,
+	r: number,
+	host: string,
+	fields: { [string]: string },
+	session: string?
+): string
 	if not M.VERBS[verb] then
 		error("unknown jumpr verb: " .. verb)
 	end
@@ -157,6 +190,9 @@ function M.request_url(verb: string, b: string, r: number, host: string, fields:
 		"r=" .. string.format("%d", r),
 		"host=" .. encode(host),
 	}
+	if session ~= nil and session ~= "" then
+		table.insert(parts, "sn=" .. encode(session))
+	end
 	for _, k in keys do
 		table.insert(parts, encode(k) .. "=" .. encode(fields[k]))
 	end
@@ -181,7 +217,8 @@ local function query_fields(query: string): { [string]: string }
 end
 
 -- The request in a `jumpr://` URL, or nil when it is not one: an unknown verb, or no `p`, `b`, `r` or `host`.
--- The first of a repeated key wins. A `dir` field is dropped (the window rebuilds it from the id).
+-- The first of a repeated key wins. A `dir` field is dropped (the window rebuilds it from the id). `sn` is nil when
+-- the URL has none or an empty one.
 function M.parse_url(url: string): Request?
 	local verb, query = string.match(url, "^jumpr://(%a+)%?(.*)$")
 	if verb == nil or query == nil or not M.VERBS[verb] then
@@ -199,7 +236,8 @@ function M.parse_url(url: string): Request?
 			fields[k] = v
 		end
 	end
-	return { verb = verb, p = p, b = b, r = r, host = host, fields = fields }
+	local sn = if raw.sn ~= nil and raw.sn ~= "" then raw.sn else nil
+	return { verb = verb, p = p, b = b, r = r, host = host, sn = sn, fields = fields }
 end
 
 -- "ok" | "bad_p_newer" | "bad_p_older" for a parsed request or a reply.
@@ -219,6 +257,66 @@ function M.check_url(url: string): (string?, string?)
 	local raw = query_fields(query)
 	local host = raw.host
 	return check_version(if raw.p ~= nil then tonumber(raw.p) else nil), if host ~= "" then host else nil
+end
+
+-- How a leader window found the host it acts for on a request; `elsewhere` and `unknown` mean it does not act.
+export type Route = "pane" | "session" | "host" | "elsewhere" | "unknown"
+
+-- What the router knows when it routes one request. `pane` is the link's pane (`LinkRequest.pane`, this window's
+-- focused pane), `pane_host` and `pane_session` the host and deck session of the list copy it is in this window's
+-- last scan (nil when it is no copy here), `focused` this window's focused pane, `url_host` and `url_session` the
+-- URL's `host` and `sn` (nil from a host that sends none), `known` whether this window's host list holds `url_host`,
+-- and `session_host` the one host whose copies this window holds in deck session `url_session` (nil when none, or
+-- when two hosts hold a session of that name).
+export type RouteIn = {
+	answer: boolean,
+	pane: number?,
+	pane_host: string?,
+	pane_session: string?,
+	focused: number?,
+	url_host: string,
+	url_session: string?,
+	known: boolean,
+	session_host: string?,
+}
+
+-- The host a leader window acts for on a request, in this window's own spelling, and how it found it (nil when the
+-- window does not act). A host opens its `jumpr://` URLs in every window attached to it, on every machine, and each
+-- machine names the host as its own host list does, so the URL's `host` can neither pick the window nor be trusted
+-- as this window's name for the host. The URL's `sn`, the deck session of the list that sent it, is named alike in
+-- every window; a copy matches it when its deck session is `sn` and, when this window knows the URL's `host`, its host
+-- is that one.
+-- * No `sn` (a host from before it was sent): the URL's `host` when this window knows that exact name ("host"), else
+--   nothing ("unknown").
+-- * `answer` (a `hello` resync or a `diag` reply, which any window may answer): the host holding this window's copies
+--   of deck session `sn` when it matches ("session"), else the URL's `host` by exact name.
+-- * Any other verb acts in exactly one window, the one whose focus is in a copy of the list that sent it: `pane` is a
+--   matching copy and is this window's `focused` pane ("pane"). A link from any other pane, a copy of another host's
+--   list included, is another window's ("elsewhere"). With no pane (nil or 0), or a copy with no focused pane to
+--   compare, the URL's `host` by exact name.
+function M.request_host(i: RouteIn): (string?, Route)
+	local by_name: string? = if i.known then i.url_host else nil
+	local name_route: Route = if i.known then "host" else "unknown"
+	local sn = i.url_session
+	if sn == nil then
+		return by_name, name_route
+	end
+	local function matches(host: string?, session: string?): boolean
+		return host ~= nil and session == sn and (not i.known or host == i.url_host)
+	end
+	if i.answer then
+		if matches(i.session_host, sn) then
+			return i.session_host, "session"
+		end
+		return by_name, name_route
+	end
+	if i.pane == nil or i.pane == 0 or (i.pane_host ~= nil and i.focused == nil) then
+		return by_name, name_route
+	end
+	if i.focused == i.pane and matches(i.pane_host, i.pane_session) then
+		return i.pane_host, "pane"
+	end
+	return nil, "elsewhere"
 end
 
 function M.reply(b: string, r: number, ok: boolean, err: string?): Reply

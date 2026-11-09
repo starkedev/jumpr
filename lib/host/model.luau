@@ -620,20 +620,82 @@ function M.stamp_stops(deck: store.Deck, now: number): (store.Deck, { string })
 	return out, ids
 end
 
--- A block's launch args (session=<name>, host=<name>): stores the deck session's name and the host name in `deck.session` when
--- either differs (nil leaves a name as it is), stamping `set_ms`. A new block (`restored` false) opened in a
--- session with another name than the stored one gives the notice "jumpr moved from session <old>"; the groups stay,
--- since they live in kv. Returns the same deck when nothing changed.
+-- The host name to keep in `deck.session.host` when a window offers `offered`. Each window machine names a host as
+-- its own host list does, so two machines attached to one host can name it two ways; `live` holds the names the
+-- windows heard within the last minute use. The stored name stays while any of them uses it, and while the host has
+-- not yet listened that long (`settled` false), so neither machine's messages can take the label from the other.
+-- A missing name, or one no live window uses any more (a real rename), takes the lowest of the live names and
+-- `offered`, so the pick does not depend on which window spoke last. Nil `offered` keeps the stored name.
+function M.pick_host(stored: string?, offered: string?, live: { [string]: boolean }, settled: boolean): string?
+	if offered == nil or offered == "" or offered == stored then
+		return stored
+	end
+	if stored ~= nil and stored ~= "" and (live[stored] or not settled) then
+		return stored
+	end
+	local best = offered
+	for name in live do
+		if name < best then
+			best = name
+		end
+	end
+	return best
+end
+
+-- A status message's names for the deck session (`sn`) and this host (`hn`) heal `deck.session`, stamping `set_ms`:
+-- the session name whenever it differs, the host name as `pick_host` rules over `live` and `settled`. Each change of
+-- a stored name gives a notice. Returns the same deck and no notice when nothing changed.
+function M.heal_session(
+	deck: store.Deck,
+	sn: string?,
+	hn: string?,
+	live: { [string]: boolean },
+	settled: boolean,
+	now_ms: number
+): (store.Deck, string?)
+	local session = deck.session
+	local rename = sn ~= nil and sn ~= session.name
+	local host = M.pick_host(session.host, hn, live, settled)
+	local rehost = host ~= session.host
+	if not rename and not rehost then
+		return deck, nil
+	end
+	local notices: { string } = {}
+	local out = store.clone(deck)
+	if rename then
+		if session.name ~= nil then
+			table.insert(notices, "deck session renamed from " .. session.name .. " to " .. (sn :: string))
+		end
+		out.session.name = sn
+	end
+	if rehost then
+		if session.host ~= nil and host ~= nil then
+			table.insert(notices, "host name changed from " .. session.host .. " to " .. host)
+		end
+		out.session.host = host
+	end
+	out.session.set_ms = now_ms
+	return out, if #notices > 0 then table.concat(notices, "; ") else nil
+end
+
+-- A block's launch args (session=<name>, host=<name>): stores the deck session's name when it differs (nil leaves it
+-- as it is), and the host name as `pick_host` rules over `live` and `settled` (the window that opened the block
+-- names the host its own way, so a launch only fills a missing or out-of-use name), stamping `set_ms`. A new block
+-- (`restored` false) opened in a session with another name than the stored one gives the notice "jumpr moved from
+-- session <old>"; the groups stay, since they live in kv. Returns the same deck when nothing changed.
 function M.apply_launch(
 	deck: store.Deck,
 	name: string?,
 	host: string?,
 	restored: boolean,
-	now_ms: number
+	now_ms: number,
+	live: { [string]: boolean },
+	settled: boolean
 ): (store.Deck, string?)
 	local session = deck.session
 	local rename = name ~= nil and name ~= session.name
-	local rehost = host ~= nil and host ~= session.host
+	local picked = M.pick_host(session.host, host, live, settled)
+	local rehost = picked ~= session.host
 	if not rename and not rehost then
 		return deck, nil
 	end
@@ -646,7 +708,7 @@ function M.apply_launch(
 		out.session.name = name
 	end
 	if rehost then
-		out.session.host = host
+		out.session.host = picked
 	end
 	out.session.set_ms = now_ms
 	return out, notice

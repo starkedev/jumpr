@@ -539,7 +539,15 @@ local function pick_window(f: Frame): (number, number, number)
 	return window(#f.groups, at, PICK_ROWS)
 end
 
--- The `?` menu: a title with its keys, then a window of commands, each a key chip and what it does on the selected
+-- The `?` menu's title: its name and where the highlight is, kept short so a narrow pane never cuts it.
+function M.menu_title(title: string?, at: number, total: number): string
+	return string.format("%s %d/%d", title or "commands", at, total)
+end
+
+-- The `?` menu's keys, drawn dim under its title and wrapped, never cut; one line from 29 columns.
+M.MENU_HINT = "j/k · Enter or key runs · Esc"
+
+-- The `?` menu: a title, its keys, then a window of commands, each a key chip and what it does on the selected
 -- row; the highlighted one marked, one the row does not suit dimmed.
 local function menu(f: Frame): { Node }
 	local sel = model.index_of(f.rows, f.ui.selection)
@@ -547,11 +555,8 @@ local function menu(f: Frame): { Node }
 	local items = keys.menu_items(row)
 	local first, last, at = window(#items, f.ui.menu or 1, MENU_ROWS)
 	local out: { Node } = {
-		line(
-			string.format("%s %d/%d (j/k, Enter or the key, Esc)", f.ui.title or "commands", at, #items),
-			"deck.pick-title",
-			f.cols
-		),
+		line(M.menu_title(f.ui.title, at, #items), "deck.pick-title", f.cols),
+		para(M.MENU_HINT, "deck.menu-hint"),
 	}
 	local list: { Node } = {}
 	for i = first, last do

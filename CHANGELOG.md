@@ -4,6 +4,26 @@ All notable changes to Jumpr are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 Update with `tern plugin install github.com/starkedev/jumpr --force` on each machine.
 
+## [Unreleased]
+
+## [0.1.1] - 2026-11-09
+
+### Added
+
+- README screenshots.
+
+### Changed
+
+- README credits agent-deck as the inspiration for the key layout and workflow.
+
+### Fixed
+
+- With two computers' Tern windows attached to the same machine, the list's head no longer flips between their two names for it (such as `devbox` and `me@devbox`); the name changes only when no attached window uses it any more.
+- With two computers' windows attached, a jump, start, stop or other request from the list acts only in the window where you pressed the key, never in both, and the other computer shows no "unknown machine" toast.
+- A window whose focus sits in another machine's list no longer takes a request from this machine's list for that other machine (a false "agent … is not running on …" toast); a request is acted on only for the list that sent it.
+- In a narrow list the `?` menu's title is no longer cut off: it reads just "commands 1/22", with the keys on a dim line of their own that wraps rather than cuts, and the key legend's spacing is tighter so it fits a narrower pane on one line.
+- After `cmd+\` (⌘\, Super+\) jumps to your last tab, the list now highlights that tab's agent instead of staying on the row it was on; for an agent folded away it highlights the group's header, and it stays put when a search or filter hides the agent or an input, question, picker or menu is open.
+
 ## [0.1.0] - 2026-11-09
 
 The first release.
@@ -43,4 +63,6 @@ Tested on Tern 0.9.10 and 0.9.11.
 - Every message between the halves carries a protocol version, and a mismatch shows a banner naming the machine to update.
 - `scripts/check.sh` runs stylua, the unit suites, a strict `luau-lsp` type check and design-rule checks.
 
+[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/starkedev/jumpr/releases/tag/v0.1.1
 [0.1.0]: https://github.com/starkedev/jumpr/releases/tag/v0.1.0

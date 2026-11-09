@@ -132,13 +132,17 @@ tern.command({
 		block.hide_list(cx)
 	end,
 })
--- The last-tab chord's action: jump to the tab focused before this one; pressing it again returns.
+-- The last-tab chord's action: jump to the tab focused before this one; pressing it again returns. The list's
+-- highlight follows onto the agent of the tab it landed in.
 tern.command({
 	id = "last_tab",
 	title = "Jumpr: last tab",
 	run = function(cx: WindowCx)
 		startup.ensure(cx)
-		tabs.last_tab(cx)
+		local agent = tabs.last_tab(cx)
+		if agent ~= nil then
+			pusher.follow(cx, agent)
+		end
 	end,
 })
 -- The jumpr key is `cmd+j`; `cmd+shift+j` hides the list from anywhere; `cmd+\` toggles the last tab.
@@ -151,6 +155,6 @@ tern.route.link(function(link: LinkRequest, cx: WindowCx): RouteDecision?
 	if string.sub(link.url, 1, #JUMPR_SCHEME) ~= JUMPR_SCHEME then
 		return nil
 	end
-	router.handle(cx, link.url)
+	router.handle(cx, link.url, link.pane)
 	return { handled = true }
 end)

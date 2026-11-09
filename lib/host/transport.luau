@@ -1,8 +1,8 @@
 --!strict
 -- The block side of both routes between the halves: status in, requests out.
--- Status, replies and the diagnostics action arrive as view `action` events (`act = "st" | "res" | "diag"`, the
--- JSON in `value`); requests leave as `jumpr://` URLs the host opens through `compat.open`. Every message carries
--- the protocol version, and a mismatch is kept as a banner, never handled silently.
+-- Status, replies, the diagnostics action and focus messages arrive as view `action` events (`act = "st" | "res" |
+-- "diag" | "fo"`, the JSON in `value`); requests leave as `jumpr://` URLs the host opens through `compat.open`. Every
+-- message carries the protocol version, and a mismatch is kept as a banner, never handled silently.
 -- Agents are named by deck id only, never by a pane id from the other half. The host passes the deck in and saves any deck that comes back
 -- changed; file writes go through the `io` it passes (Tern is reached only through compat).
 --
@@ -34,14 +34,15 @@ local ERRORS_KEPT = 50
 -- A request that waits for its `res` (start, stop), or a jump remembered to name its agent in a failure notice.
 export type Sent = { verb: string, id: string?, b: string, r: number, sent_ms: number }
 
--- The newest status from one window uid: its entries per deck id, and which accepted message last carried each id
+-- The newest status from one window uid: its entries per deck id, which accepted message last carried each id
 -- (`Status.arrived` at that message, so two windows' messages in the same millisecond still have an order; also for
--- ids it reported gone, whose entries are then nil).
+-- ids it reported gone, whose entries are then nil), and the name its machine gives this host (`hn`).
 export type Window = {
 	seq: number,
 	at_ms: number,
 	a: { [string]: { status.Entry } },
 	carried: { [string]: number },
+	hn: string?,
 }
 
 -- The latest message's header fields.
@@ -83,6 +84,9 @@ export type State = {
 	-- Deck ids a working status was seen for since their last send. Once per machine, in memory only: false
 	-- after a plugin reload, so the 30 s rule of `queue.due` applies then.
 	seen_working: { [string]: boolean },
+	-- When the first status message arrived since the host half started (tern.now() ms): the stored host name is
+	-- kept until windows have had a minute to be heard.
+	since: number?,
 }
 
 -- The block sending a request: its uid `b`, the last `r` it sent, and its in-memory count for read-only data.
@@ -110,18 +114,29 @@ export type Ctx = {
 export type Req = { verb: string, fields: { [string]: string } }
 
 -- The result of one action: the deck (the same table when unchanged), a notice for the receiving block,
--- requests to send, held messages that are due (the host marks each sent, saves, then types it) and whether
--- anything visible changed.
+-- requests to send, held messages that are due (the host marks each sent, saves, then types it), whether
+-- anything visible changed, and the deck id a focus message asks the list to highlight (the host feeds it to
+-- keys.reduce as a `follow` event).
 export type Outcome = {
 	deck: store.Deck,
 	notice: string?,
 	requests: { Req },
 	due: { queue.Due },
 	render: boolean,
+	follow: string?,
 }
 
 function M.new(): State
-	return { pending = {}, jumps = {}, errors = {}, statuses = {}, arrived = 0, changed = {}, seen_working = {} }
+	return {
+		pending = {},
+		jumps = {},
+		errors = {},
+		statuses = {},
+		arrived = 0,
+		changed = {},
+		seen_working = {},
+		since = nil,
+	}
 end
 
 function M.new_status(): Status
@@ -174,7 +189,9 @@ end
 -- The URL of a request from `sender`, and the deck with `next_req` advanced (the host saves it, then opens the
 -- URL). `r` comes from `deck.next_req`; when that restarted below the sender's last `r` (kv reset to empty) the
 -- sender takes a new random `b`, so the window never drops its requests as repeats. With read-only data `r` is
--- counted in memory and the deck is unchanged. Only `start` and `stop` are recorded as waiting for a reply.
+-- counted in memory and the deck is unchanged. Only `start` and `stop` are recorded as waiting for a reply. The URL
+-- names the deck session (`sn`) beside the stored host name, so a window can tell this list's requests from another
+-- host's.
 function M.request(
 	state: State,
 	sender: Sender,
@@ -199,7 +216,7 @@ function M.request(
 		out.next_req = r + 1
 	end
 	sender.last_r = r
-	local url = protocol.request_url(verb, sender.b, r, host_name(deck), fields)
+	local url = protocol.request_url(verb, sender.b, r, host_name(deck), fields, deck.session.name)
 	local sent: Sent = { verb = verb, id = fields.id, b = sender.b, r = r, sent_ms = now }
 	if protocol.expects_reply(verb) then
 		state.pending[key(sender.b, r)] = sent
@@ -284,6 +301,26 @@ function M.forget(st: Status, now: number)
 			st.versions[w] = nil
 		end
 	end
+end
+
+-- The names the windows heard within the last minute give this host, over every copy: each window machine names a
+-- host as its own host list does, so two machines can give it two names.
+function M.live_hosts(state: State, now: number): { [string]: boolean }
+	local out: { [string]: boolean } = {}
+	for st in state.statuses do
+		for _, win in st.windows do
+			if win.hn ~= nil and now - win.at_ms < WINDOW_FORGET_MS then
+				out[win.hn] = true
+			end
+		end
+	end
+	return out
+end
+
+-- Whether the windows have had a minute since the host half's first status message to be heard, so a stored host
+-- name no live window uses is really out of use (a window that names it may simply not have spoken yet).
+function M.settled(state: State, now: number): boolean
+	return state.since ~= nil and now - (state.since :: number) >= WINDOW_FORGET_MS
 end
 
 -- The machine's status health over every registered copy: "unavailable" until any copy got a message,
@@ -528,6 +565,9 @@ local function on_status(state: State, st: Status, value: any, ctx: Ctx): Outcom
 		render = true
 	end
 	st.last_ms = ctx.now
+	if state.since == nil then
+		state.since = ctx.now
+	end
 	local latest: Latest = {
 		h = if type(msg.h) == "string" then msg.h else nil,
 		sn = if type(msg.sn) == "string" and msg.sn ~= "" then msg.sn else nil,
@@ -541,35 +581,26 @@ local function on_status(state: State, st: Status, value: any, ctx: Ctx): Outcom
 		render = true
 	end
 	st.latest = latest
+	st.windows[w].hn = latest.hn
 
 	local requests: { Req } = {}
 	if verdict == "gap" then
 		table.insert(requests, { verb = "hello", fields = {} })
 	end
 
-	-- Section 6: the stored session name and host name heal from sn/hn.
-	local notices: { string } = {}
-	local session = deck.session
-	local sn, hn = latest.sn, latest.hn
-	if (sn ~= nil and sn ~= session.name) or (hn ~= nil and hn ~= session.host) then
-		local out = store.clone(deck)
-		if sn ~= nil and sn ~= session.name then
-			if session.name ~= nil then
-				table.insert(notices, "deck session renamed from " .. session.name .. " to " .. sn)
-			end
-			out.session.name = sn
-		end
-		if hn ~= nil and hn ~= session.host then
-			if session.host ~= nil then
-				table.insert(notices, "host name changed from " .. session.host .. " to " .. hn)
-			end
-			out.session.host = hn
-		end
-		out.session.set_ms = ctx.wall
-		deck = out
+	-- The stored names heal from sn and hn; the host name only when no window heard within a minute still uses it.
+	local healed, notice = model.heal_session(
+		deck,
+		latest.sn,
+		latest.hn,
+		M.live_hosts(state, ctx.now),
+		M.settled(state, ctx.now),
+		ctx.wall
+	)
+	if healed ~= deck then
+		deck = healed
 		render = true
 	end
-	local notice = if #notices > 0 then table.concat(notices, "; ") else nil
 	-- Every held message is checked, not only the changed ids: a fresh status can make an unchanged idle agent due
 	-- (the window came back after a reload).
 	local due = M.due(state, deck, ctx.sets, ctx.now, ctx.wall, ctx.skip)
@@ -706,9 +737,28 @@ local function on_diag(state: State, st: Status, value: any, ctx: Ctx): Outcome
 	}
 end
 
--- A view `action` event for the block whose status is `st`. `act = "st"` (status), `"res"` (a reply) or `"diag"`
--- (write the host dump, then `jumpr://diag` with its path); the JSON is in `value`. An unsplit `st=<json>` is
--- accepted too.
+-- A focus message: the deck id to highlight, or the version banner for a window on another version. One naming no
+-- agent is logged and changes nothing.
+local function on_focus(state: State, st: Status, value: any, ctx: Ctx): Outcome
+	local msg = decode(value)
+	if type(msg) ~= "table" then
+		M.note_error(state, "focus message is not JSON")
+		return none(ctx.deck, false)
+	end
+	local verdict, id = protocol.check_focus(msg)
+	if verdict ~= "ok" then
+		return none(ctx.deck, set_version(state, st, if type(msg.w) == "string" then msg.w else nil, verdict, ctx.now))
+	end
+	if id == nil then
+		M.note_error(state, "focus message names no agent")
+		return none(ctx.deck, false)
+	end
+	return { deck = ctx.deck, notice = nil, requests = {}, due = {}, render = false, follow = id }
+end
+
+-- A view `action` event for the block whose status is `st`. `act = "st"` (status), `"res"` (a reply), `"diag"`
+-- (write the host dump, then `jumpr://diag` with its path) or `"fo"` (a focus message); the JSON is in `value`. An
+-- unsplit `st=<json>` is accepted too.
 function M.on_action(state: State, st: Status, ev: { [string]: any }, ctx: Ctx): Outcome
 	local act: any = ev.act
 	local value: any = ev.value
@@ -724,6 +774,8 @@ function M.on_action(state: State, st: Status, ev: { [string]: any }, ctx: Ctx):
 		return on_reply(state, st, value, ctx)
 	elseif act == "diag" then
 		return on_diag(state, st, value, ctx)
+	elseif act == protocol.FOCUS_ACT then
+		return on_focus(state, st, value, ctx)
 	end
 	-- An act this version does not know: still read its version (a missing `p` reads as older), so a message from
 	-- another version shows the banner; one of this version is logged, never dropped silently.

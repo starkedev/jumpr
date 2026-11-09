@@ -7,7 +7,8 @@
 -- A copy this window has not sent to yet (created or first seen after the start) gets its first snapshot on first
 -- contact. Every window pushes; the block keeps the newest message per window uid.
 -- The scan also finds two copies in one tab (`dupb`), records the session holding each host's copies in the
--- window file (leader only), and rebuilds the tab -> agent title map the tab-title formatter reads.
+-- window file (leader only), and rebuilds the tab -> agent title map the tab-title formatter reads. `follow` sends the
+-- copies one focus message (`act = "fo"`) when the last-tab chord lands on an agent, so the list highlights it.
 
 local compat = require("../compat")
 local harness = require("../harness")
@@ -418,6 +419,29 @@ function M.hello(cx: WindowCx, host: string): number
 	return n
 end
 
+-- The last-tab chord landed on deck agent pane `pane`: a focus message (`act = "fo"`, naming the agent by deck id) to
+-- every copy of its host in this window, so the list highlights that agent. Nothing goes out for a pane that is no
+-- deck agent or a host with no copy here (a hidden list). Status messages never carry focus, so the highlight moves
+-- only on the chord and never fights a user moving in the list. Returns how many copies got it.
+function M.follow(cx: WindowCx, pane: number): number
+	local host, id = agents.agent_of(pane)
+	if host == nil or id == nil then
+		return 0
+	end
+	local value = tern.json.encode(protocol.focus_msg(leader.uid(), id))
+	local n = 0
+	local panes: { number } = blocks_by_host[host] or {}
+	for _, copy in panes do
+		local ok, err = compat.session_event(cx, copy, { ev = "action", act = protocol.FOCUS_ACT, value = value })
+		if ok then
+			n += 1
+		else
+			diag.error("pusher", "focus to the deck list on " .. host .. ": " .. tostring(err))
+		end
+	end
+	return n
+end
+
 -- The copies on `host` (the replies go to all of them), lowest pane first.
 function M.blocks_for(host: string): { number }
 	return table.clone(blocks_by_host[host] or {})
@@ -431,6 +455,21 @@ function M.session_of(host: string): string?
 	end
 	local b = block_of[list[1]]
 	return if b ~= nil then b.session else nil
+end
+
+-- The host whose copies sit in deck session `session`, from the last scan; nil when none does, or when two hosts
+-- hold a session of that name (session names are only unique per host).
+function M.host_with_session(session: string): string?
+	local found: string? = nil
+	for host in blocks_by_host do
+		if M.session_of(host) == session then
+			if found ~= nil then
+				return nil
+			end
+			found = host
+		end
+	end
+	return found
 end
 
 function M.is_block(pane: number): boolean

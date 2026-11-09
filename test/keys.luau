@@ -1465,6 +1465,86 @@ do
 	end
 end
 
+-- Follow: the last-tab chord landed in an agent's tab, so the highlight moves onto that agent without a `show` (the
+-- tab is already in front); a folded-away agent selects its group's header; an agent the search or filter hides, an
+-- unknown id and every mode but list leave the selection as it is.
+do
+	local function follow(b: Block, id: string)
+		send(b, { kind = "follow", id = id })
+	end
+	local function selected(b: Block): string
+		local sel = b.ui.selection
+		if sel == nil then
+			return "none"
+		end
+		return if sel.kind == "header" then "header " .. tostring(sel.gid) else "agent " .. tostring(sel.id)
+	end
+
+	local b = block(sample())
+	select(b, { kind = "agent", id = "a" })
+	follow(b, "c")
+	check(selected(b) == "agent c", "follow selects the agent's row")
+	check(kinds(b.effects) == "render", "and only renders: no show, no request, no save")
+	check(b.ui.show_pending == nil, "and arms no show")
+	follow(b, "c")
+	check(#b.effects == 0, "following the agent already selected changes nothing")
+	follow(b, "gone")
+	check(selected(b) == "agent c" and #b.effects == 0, "an unknown id leaves the selection alone")
+
+	local c = block(sample())
+	select(c, { kind = "header", gid = "g1" })
+	char(c, "j")
+	check(c.ui.show_pending == "a", "a move onto a live agent arms its show")
+	follow(c, "c")
+	check(selected(c) == "agent c" and c.ui.show_pending == nil, "follow in the pause drops the pending show")
+	send(c, { kind = "show_due", id = "a" })
+	check(request_of(c.effects, "show") == nil, "so the pause ends without switching the tab back")
+
+	local d = sample()
+	d.groups[2].folded = true
+	local e = block(d)
+	select(e, { kind = "agent", id = "a" })
+	follow(e, "c")
+	check(selected(e) == "header g2", "an agent folded away selects its group's header")
+	check(e.deck.groups[2].folded == true and effect_of(e.effects, "save_kv") == nil, "and unfolds nothing")
+
+	local f = block(sample())
+	select(f, { kind = "agent", id = "a" })
+	char(f, "/")
+	type_text(f, "webapp")
+	key(f, "enter")
+	follow(f, "c")
+	check(selected(f) == "agent a" and #f.effects == 0, "an agent the search hides leaves the selection alone")
+
+	local g = sample()
+	g.groups[2].folded = true
+	local h = block(g)
+	select(h, { kind = "agent", id = "a" })
+	char(h, "!")
+	follow(h, "c")
+	check(
+		#h.effects == 0 and selected(h) ~= "agent c" and selected(h) ~= "header g2",
+		"an agent the filter hides leaves the selection alone"
+	)
+
+	local modes: { { string } } = { { "/", "input" }, { "d", "confirm" }, { "m", "pick" }, { "V", "order" } }
+	for _, m in modes do
+		local k = block(sample())
+		select(k, { kind = "agent", id = "a" })
+		char(k, m[1])
+		follow(k, "c")
+		check(
+			k.ui.mode == m[2] and selected(k) == "agent a" and #k.effects == 0,
+			"follow in " .. m[2] .. " mode is ignored"
+		)
+	end
+	local menu = block(sample())
+	select(menu, { kind = "agent", id = "a" })
+	key(menu, "/", "?")
+	follow(menu, "c")
+	check(menu.ui.mode == "menu" and selected(menu) == "agent a", "follow in the ? menu is ignored")
+end
+
 -- The `?` menu ------------------------------------------------------------------------------------------------------
 
 -- `?` as Tern sends it (shift+/), and the index of command `k` in the menu.

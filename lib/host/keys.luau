@@ -15,6 +15,8 @@
 --   {kind = "click", gid?, id?}  a pointer click on a row of the list (the host maps the clicked node with
 --     view.clicked): `id` an agent, else `gid` a group's header. List mode only; every other mode ignores it, so a
 --     click never answers a question, submits a line or drops a row being moved.
+--   {kind = "follow", id}  the window's last-tab chord landed in the tab of agent `id`, so the list highlights it
+--     (list mode only). Never answered with a `show`: the tab is already in front.
 -- Effects, run in order:
 --   {kind = "save_kv"}  write jumpr.v1 (added on every deck change, before any request or write).
 --   {kind = "request", verb, fields}  a jumpr:// request; fields are strings, never a URL.
@@ -1420,6 +1422,30 @@ local function click(s: Step, ev: Event)
 	end
 end
 
+-- `follow`: the last-tab chord moved focus into agent `id`'s tab, so the highlight moves there too, without a `show`
+-- (the tab is already in front, so the window is never asked to switch again). A row drawn now is selected; an agent
+-- whose group is folded (no search or filter on) selects that group's header, as the selection of a folded-away agent
+-- always does; an agent the search or filter hides, an unknown id and every mode but list leave the selection as it
+-- is. A show still waiting for its pause is dropped either way: the chord is the newer move, and the show would
+-- switch the tab back.
+local function follow(s: Step, id: string)
+	if s.ui.mode ~= "list" then
+		return
+	end
+	s.ui.show_pending = nil
+	local i = model.index_of(s.rows, { kind = "agent", id = id })
+	if i == nil and s.ui.search == nil and s.ui.filter == nil then
+		local r = s.deck.agents[id]
+		local g = if r ~= nil then find_group(s.deck, r.gid) else nil
+		if g ~= nil and g.folded then
+			i = model.index_of(s.rows, { kind = "header", gid = g.gid })
+		end
+	end
+	if i ~= nil then
+		s.ui.selection = model.select_row(s.rows[i])
+	end
+end
+
 function M.reduce(
 	ui: UI,
 	deck: store.Deck,
@@ -1456,6 +1482,10 @@ function M.reduce(
 		end
 	elseif event.kind == "click" then
 		click(s, event)
+	elseif event.kind == "follow" then
+		if event.id ~= nil then
+			follow(s, event.id)
+		end
 	elseif event.kind == "git_root" then
 		git_root(s, event)
 	elseif event.kind == "folder_checked" and event.folder ~= nil then

@@ -62,4 +62,15 @@ local before = Tabs.new_state()
 local _ = Tabs.on_focus(before, 1, 10, 100, AGENT)
 check(before.session == nil and next(before.agent_pane) == nil, "on_focus leaves its input untouched")
 
+-- The agent the jump names for the list to follow: the landing pane when it is an agent, else the tab's lowest
+-- agent pane, nil for a tab with no agent.
+local agent_panes: { [number]: boolean } = { [100] = true, [300] = true, [302] = true }
+local function is_agent(p: number): boolean
+	return agent_panes[p] == true
+end
+check(Tabs.tab_agent(100, { 101, 100 }, is_agent) == 100, "landing on the agent names it")
+check(Tabs.tab_agent(301, { 303, 302, 301, 300 }, is_agent) == 300, "landing on a shell names the tab's lowest agent")
+check(Tabs.tab_agent(201, { 200, 201 }, is_agent) == nil, "a tab with no agent names none")
+check(Tabs.tab_agent(201, {}, is_agent) == nil, "an unread tab layout names none")
+
 print("Tabs: " .. checks .. " checks passed")

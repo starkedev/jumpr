@@ -273,6 +273,15 @@ function M.is_agent(pane: number): boolean
 	return facts[pane] ~= nil
 end
 
+-- The host and deck id of agent pane `pane` from the binding; nil for a pane that is no deck agent.
+function M.agent_of(pane: number): (string?, string?)
+	local f = facts[pane]
+	if f == nil then
+		return nil, nil
+	end
+	return f.host, f.id
+end
+
 diag.provide("agents", function(): any
 	local map: { [string]: { [string]: { string } } } = {}
 	for host, by_id in bindings do

@@ -1,7 +1,7 @@
 schema = 1
 id = "jumpr"
 name = "Jumpr"
-version = "0.1.0"
+version = "0.1.1"
 description = "Keyboard-driven list of your omp agents, grouped by project, one list per machine Tern is attached to."
 icon = "list"
 host = "host.luau"

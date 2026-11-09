@@ -278,25 +278,92 @@ end
 
 -- apply_launch stores the launch names and warns when a new block opens in another session.
 do
+	local none: { [string]: boolean } = {}
 	local deck = Store.empty()
-	local first, n1 = Model.apply_launch(deck, "main", "devbox", false, NOW)
+	local first, n1 = Model.apply_launch(deck, "main", "devbox", false, NOW, none, false)
 	check(
 		first ~= deck and first.session.name == "main" and first.session.host == "devbox",
 		"first launch stores names"
 	)
 	check(first.session.set_ms == NOW and n1 == nil, "first launch stamps set_ms with no notice")
 	check(deck.session.name == nil, "the input deck is untouched")
-	local same, n2 = Model.apply_launch(first, "main", "devbox", false, NOW + 1)
+	local same, n2 = Model.apply_launch(first, "main", "devbox", false, NOW + 1, none, true)
 	check(same == first and n2 == nil, "the same names change nothing")
-	local kept, n3 = Model.apply_launch(first, nil, nil, false, NOW + 1)
+	local kept, n3 = Model.apply_launch(first, nil, nil, false, NOW + 1, none, true)
 	check(kept == first and n3 == nil, "missing args change nothing")
-	local moved, n4 = Model.apply_launch(first, "other", nil, false, NOW + 2)
+	local moved, n4 = Model.apply_launch(first, "other", nil, false, NOW + 2, none, true)
 	check(moved.session.name == "other" and moved.session.host == "devbox", "a new session name is stored")
 	check(n4 == "jumpr moved from session main", "a new block in another session warns")
-	local restored, n5 = Model.apply_launch(first, "other", nil, true, NOW + 2)
+	local restored, n5 = Model.apply_launch(first, "other", nil, true, NOW + 2, none, true)
 	check(restored.session.name == "other" and n5 == nil, "a restored block updates the name silently")
-	local rehosted, n6 = Model.apply_launch(first, nil, "devbox2", false, NOW + 3)
-	check(rehosted.session.host == "devbox2" and rehosted.session.name == "main" and n6 == nil, "a host change alone")
+	-- The launching window names the host its own way: a launch never takes a name a live window still uses.
+	local live = { devbox = true, ["me@devbox"] = true }
+	local stolen = Model.apply_launch(first, nil, "me@devbox", false, NOW + 3, live, true)
+	check(stolen == first, "a launch cannot take the host name a live window still uses")
+	local early = Model.apply_launch(first, nil, "me@devbox", false, NOW + 3, { ["me@devbox"] = true }, false)
+	check(early == first, "before the windows have had a minute, a launch keeps the stored host name")
+	local rehosted, n6 = Model.apply_launch(first, nil, "devbox2", false, NOW + 3, { devbox2 = true }, true)
+	check(
+		rehosted.session.host == "devbox2" and rehosted.session.name == "main" and n6 == nil,
+		"a host name no live window uses is replaced"
+	)
+	local filled = Model.apply_launch(Store.empty(), nil, "me@devbox", false, NOW, live, false)
+	check(filled.session.host == "devbox", "a missing host name takes the lowest live name, whoever launched")
+end
+
+-- pick_host keeps a name any live window uses, and picks the same name whichever window spoke.
+do
+	local both = { devbox = true, ["me@devbox"] = true }
+	check(Model.pick_host("devbox", "me@devbox", both, true) == "devbox", "a live stored name stays")
+	check(Model.pick_host("me@devbox", "devbox", both, true) == "me@devbox", "whichever spelling is stored stays")
+	check(Model.pick_host("devbox", nil, both, true) == "devbox", "no offered name keeps the stored one")
+	check(Model.pick_host("devbox", "", both, true) == "devbox", "an empty offered name keeps the stored one")
+	check(Model.pick_host(nil, "me@devbox", both, false) == "devbox", "a missing name takes the lowest live name")
+	check(Model.pick_host(nil, "devbox", both, false) == "devbox", "the same pick from either window")
+	check(Model.pick_host(nil, "devbox", {}, false) == "devbox", "with no live window the offered name fills a gap")
+	check(
+		Model.pick_host("old", "devbox", { devbox = true }, false) == "old",
+		"an unsettled host keeps an unheard name"
+	)
+	check(
+		Model.pick_host("old", "devbox", { devbox = true }, true) == "devbox",
+		"a settled host replaces an unused name"
+	)
+end
+
+-- heal_session: two window machines naming the host two ways, alternating, never move the label; a real rename
+-- (the old name out of use) heals once with one notice.
+do
+	local deck = Store.empty()
+	deck.session.name = "devbox"
+	deck.session.host = "devbox"
+	local both = { devbox = true, ["me@devbox"] = true }
+	local notices = 0
+	local d = deck
+	for i = 1, 10 do
+		local hn = if i % 2 == 0 then "devbox" else "me@devbox"
+		local out, notice = Model.heal_session(d, "devbox", hn, both, true, NOW + i)
+		if notice ~= nil then
+			notices += 1
+		end
+		d = out
+	end
+	check(d == deck and d.session.host == "devbox", "alternating window names leave the stored host name alone")
+	check(notices == 0, "alternating window names give no notice")
+	-- The window naming it "devbox" went quiet a minute ago: only "me@devbox" is live.
+	local only = { ["me@devbox"] = true }
+	local healed, n1 = Model.heal_session(d, "devbox", "me@devbox", only, true, NOW + 70000)
+	check(healed.session.host == "me@devbox" and healed.session.set_ms == NOW + 70000, "an unused name heals")
+	check(n1 == "host name changed from devbox to me@devbox", "the heal gives one notice")
+	local again, n2 = Model.heal_session(healed, "devbox", "devbox", both, true, NOW + 71000)
+	check(again == healed and n2 == nil, "the old window coming back does not take the label back")
+	local renamed, n3 = Model.heal_session(healed, "deck", nil, only, true, NOW + 72000)
+	check(renamed.session.name == "deck" and renamed.session.host == "me@devbox", "the session name still heals")
+	check(n3 == "deck session renamed from devbox to deck", "with its own notice")
+	local early, n4 = Model.heal_session(deck, "devbox", "me@devbox", only, false, NOW)
+	check(early == deck and n4 == nil, "after a host restart the stored name waits a minute for its window")
+	local fresh = Model.heal_session(Store.empty(), "devbox", "me@devbox", only, false, NOW)
+	check(fresh.session.host == "me@devbox", "a missing host name is filled at once")
 end
 
 -- hold: one case per reason, from the same inputs queue.due reads.

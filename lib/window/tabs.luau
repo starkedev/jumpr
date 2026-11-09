@@ -2,11 +2,14 @@
 -- The last-tab toggle: `cmd+\` jumps to the tab focused before this one
 -- and lands on its AGENT pane — the pane the user works in, never the list's copy, even when they left that
 -- tab through the list. Pressing the chord again returns, because the jump itself makes the tab it left
--- the new "last". One slot, scoped to the session in view. The pure state decisions live here, testable
--- without Tern; the shell reads the session, resolves the landing pane and switches focus through compat.
+-- the new "last". One slot, scoped to the session in view. The jump also names the deck agent of the tab it landed
+-- in, so the list's highlight can follow it (window.luau hands that to pusher.follow). The pure state decisions live
+-- here, testable without Tern; the shell reads the session, resolves the landing pane and switches focus through
+-- compat.
 
 local compat = require("../compat")
 local protocol = require("../shared/protocol")
+local agents = require("./agents")
 local diag = require("./diag")
 
 local M = {}
@@ -64,6 +67,22 @@ function M.after_jump(state: State, tab: number, pane: number): State
 	return { session = state.session, prev = state.cur, cur = tab, agent_pane = clone_with(state.agent_pane, tab, pane) }
 end
 
+-- The deck agent pane of the tab a jump landed in on `land`: `land` itself when it is an agent, else the tab's
+-- lowest agent pane among `panes` (a shell the jump landed on still names the agent beside it), nil when the tab
+-- holds no agent.
+function M.tab_agent(land: number, panes: { number }, is_agent: (number) -> boolean): number?
+	if is_agent(land) then
+		return land
+	end
+	local best: number? = nil
+	for _, p in panes do
+		if is_agent(p) and (best == nil or p < best) then
+			best = p
+		end
+	end
+	return best
+end
+
 local state = M.new_state()
 
 -- `focus`: fold the event into the toggle's history. The pane is read authoritatively (`session_pane`),
@@ -80,19 +99,20 @@ end
 -- `cmd+\` and "Jumpr: last tab": jump to the tab focused before this one, landing on its agent pane —
 -- the tab's last focused agent pane when there was one, else its first pane that is not a copy of the
 -- list, else its focused pane. Silent when there is nothing to jump to; a target whose tab closed is
--- dropped, not jumped to.
-function M.last_tab(cx: WindowCx)
+-- dropped, not jumped to. Returns the deck agent pane of the tab it jumped to (`tab_agent`), nil when it did not
+-- jump or that tab holds no agent.
+function M.last_tab(cx: WindowCx): number?
 	local session = compat.current_session(cx)
 	if session == nil then
-		return
+		return nil
 	end
 	local want = M.target(state, session.id)
 	if want == nil then
-		return
+		return nil
 	end
 	local tabs = compat.tabs_list(cx)
 	if tabs == nil then
-		return
+		return nil
 	end
 	local info: TabInfo? = nil
 	for _, t in tabs do
@@ -103,21 +123,19 @@ function M.last_tab(cx: WindowCx)
 	end
 	if info == nil then
 		state = M.new_state()
-		return
+		return nil
 	end
 	local pane: number? = state.agent_pane[want]
 	if pane ~= nil and compat.session_pane(cx, pane) == nil then
 		pane = nil
 	end
-	if pane == nil then
-		local panes = compat.tab_panes(cx, want)
-		if panes ~= nil then
-			for _, p in panes do
-				local info_p = compat.session_pane(cx, p)
-				if info_p ~= nil and info_p.block ~= protocol.BLOCK_KIND then
-					pane = p
-					break
-				end
+	local panes = compat.tab_panes(cx, want)
+	if pane == nil and panes ~= nil then
+		for _, p in panes do
+			local info_p = compat.session_pane(cx, p)
+			if info_p ~= nil and info_p.block ~= protocol.BLOCK_KIND then
+				pane = p
+				break
 			end
 		end
 	end
@@ -126,7 +144,9 @@ function M.last_tab(cx: WindowCx)
 	local ok, err = compat.focus(cx, land)
 	if not ok then
 		diag.error("tabs", "jump to the last tab: " .. tostring(err))
+		return nil
 	end
+	return M.tab_agent(land, panes or {}, agents.is_agent)
 end
 
 return M

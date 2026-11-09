@@ -46,6 +46,23 @@ check(Protocol.check_status(older, last) == "bad_p_older", "an older p gives bad
 check(Protocol.check_status({ w = "w1", seq = 6, full = true }, last) == "bad_p_older", "no p gives bad_p_older")
 check(Protocol.check_status({ p = P, full = true }, last) == "old", "a message with no w or seq is ignored")
 
+-- Focus messages: the deck id the last-tab chord landed on, versioned like every message; the act stays "fo".
+do
+	local fm = Protocol.focus_msg("w1", "ab12cd34")
+	check(fm.p == P and fm.w == "w1" and fm.id == "ab12cd34", "a focus message carries p, the window and the id")
+	check(Protocol.FOCUS_ACT == "fo", "its act is fo")
+	local verdict, id = Protocol.check_focus(fm)
+	check(verdict == "ok" and id == "ab12cd34", "a focus message of this version names its agent")
+	verdict, id = Protocol.check_focus({ p = P + 1, w = "w1", id = "ab12cd34" })
+	check(verdict == "bad_p_newer" and id == nil, "a newer p gives bad_p_newer and no id")
+	verdict, id = Protocol.check_focus({ w = "w1", id = "ab12cd34" })
+	check(verdict == "bad_p_older" and id == nil, "no p gives bad_p_older and no id")
+	verdict, id = Protocol.check_focus({ p = P, w = "w1", id = "" })
+	check(verdict == "ok" and id == nil, "an empty id names no agent")
+	verdict, id = Protocol.check_focus({ p = P, w = "w1", id = 5 })
+	check(verdict == "ok" and id == nil, "a non-string id names no agent")
+end
+
 -- URLs round-trip with encoded labels.
 local LABELS = {
 	"fix the tests",
@@ -240,6 +257,111 @@ do
 	check(empty_s == nil and empty_h == nil, "empty values and unknown args give nil")
 	local first_s = Protocol.parse_launch_args({ "session=one", "session=two" })
 	check(first_s == "one", "the first repeated key wins")
+end
+
+-- request URLs carry the sending list's deck session as `sn`, when the host has one.
+do
+	local with_sn = Protocol.request_url("jump", "b", 3, "devbox", { id = "ab" }, "main deck")
+	check(with_sn == "jumpr://jump?p=2&b=b&r=3&host=devbox&sn=main%20deck&id=ab", "sn follows host, encoded")
+	local req = Protocol.parse_url(with_sn)
+	assert(req ~= nil, "a URL with sn parses")
+	check(req.sn == "main deck" and req.fields.sn == nil and req.fields.id == "ab", "sn is read apart from the fields")
+	local none = Protocol.parse_url(Protocol.request_url("jump", "b", 3, "devbox", { id = "ab" }, nil))
+	check(none ~= nil and none.sn == nil, "a URL without sn parses with sn nil")
+	local empty = Protocol.parse_url(Protocol.request_url("jump", "b", 3, "devbox", { id = "ab" }, ""))
+	check(empty ~= nil and empty.sn == nil, "an empty session sends no sn")
+	check(not pcall(Protocol.request_url, "jump", "b", 1, "h", { sn = "x" }), "a verb field named sn is refused")
+end
+
+-- request_host, with two hosts: `devbox` (deck session "devbox") and `build` (deck session "build"). Window 1 names
+-- them "devbox" and "build"; window 2 names them "me@devbox" and "me@build". `devbox` stores the name "devbox".
+local function route(over: { [string]: any }): (string?, Protocol.Route)
+	local i: Protocol.RouteIn = {
+		answer = false,
+		pane = nil,
+		pane_host = nil,
+		pane_session = nil,
+		focused = nil,
+		url_host = "devbox",
+		url_session = "devbox",
+		known = true,
+		session_host = nil,
+	}
+	for k, v in over do
+		(i :: any)[k] = v
+	end
+	-- A nil in `over` sets nothing, so `no_sn` stands for a URL without sn.
+	if over.no_sn then
+		i.url_session = nil
+		(i :: any).no_sn = nil
+	end
+	return Protocol.request_host(i)
+end
+
+-- A request from devbox's list acts only in the window whose focus is in a copy of devbox's list.
+do
+	local host, how = route({ pane = 41, pane_host = "devbox", pane_session = "devbox", focused = 41 })
+	check(host == "devbox" and how == "pane", "a focused copy of the sending list acts")
+	host, how = route({ pane = 41, pane_host = "me@devbox", pane_session = "devbox", focused = 41, known = false })
+	check(host == "me@devbox" and how == "pane", "under this window's own name for the host")
+	host, how = route({ pane = 41, pane_host = "devbox", pane_session = "devbox", focused = 99 })
+	check(host == nil and how == "elsewhere", "a copy that is not this window's focus is another window's")
+	host, how = route({ pane = 77, focused = 77 })
+	check(host == nil and how == "elsewhere", "a link from a pane that is no copy here is another window's")
+	host, how = route({ pane = 50, pane_host = "build", pane_session = "build", focused = 50 })
+	check(host == nil and how == "elsewhere", "focus in another host's list never acts for it")
+	host, how = route({ pane = 50, pane_host = "me@build", pane_session = "build", focused = 50, known = false })
+	check(host == nil and how == "elsewhere", "not even when this window does not know the URL's host name")
+	host, how = route({ pane = 50, pane_host = "build", pane_session = "devbox", focused = 50 })
+	check(host == nil and how == "elsewhere", "a same-named session on another host this window knows apart")
+	-- No pane, or no focus to compare: the URL's host by exact name.
+	host, how = route({ pane = 0 })
+	check(host == "devbox" and how == "host", "pane 0 falls back to a known URL host")
+	host, how = route({ pane = nil, known = false })
+	check(host == nil and how == "unknown", "an unknown URL host is not acted on")
+	host, how = route({ pane = 41, pane_host = "devbox", pane_session = "devbox", focused = nil })
+	check(host == "devbox" and how == "host", "a copy with no focus to compare falls back to the exact name")
+end
+
+-- An older host sends no sn: every verb goes by the URL's host, by exact name, as before.
+do
+	local host, how = route({ no_sn = true, pane = 50, pane_host = "build", pane_session = "build", focused = 50 })
+	check(host == "devbox" and how == "host", "no sn: a window that knows the URL's host acts for it")
+	host, how = route({ no_sn = true, known = false, pane = 41, pane_host = "me@devbox", focused = 41 })
+	check(host == nil and how == "unknown", "no sn: a window that does not know the name does not act")
+	host, how = route({ no_sn = true, answer = true, session_host = "devbox" })
+	check(host == "devbox" and how == "host", "no sn: an answer goes by name too")
+end
+
+-- hello and diag answers: the host holding this window's copies of the sending list, else a known URL host.
+do
+	local host, how = route({ answer = true, session_host = "me@devbox", known = false, pane = 50, focused = 50 })
+	check(host == "me@devbox" and how == "session", "an answer finds the list's host by its deck session")
+	host, how = route({ answer = true, session_host = "devbox" })
+	check(host == "devbox" and how == "session", "the same when the names agree")
+	host, how = route({ answer = true, session_host = "build" })
+	check(host == "devbox" and how == "host", "a session held by another known name falls back to the URL's host")
+	host, how = route({ answer = true, session_host = nil, known = false })
+	check(host == nil and how == "unknown", "no copy of that session and an unknown name: dropped")
+end
+
+-- Two windows on two machines, two hosts: a request from devbox's list reaches both windows.
+do
+	-- Window 2's focus is in its copy of build's list; window 1's is in an agent pane.
+	local w1 = route({ pane = 7, focused = 7 })
+	local w2 = route({ pane = 50, pane_host = "me@build", pane_session = "build", focused = 50, known = false })
+	check(w1 == nil and w2 == nil, "focus in another host's list: no window acts on the wrong host")
+	-- Window 2's focus is in its copy of devbox's list: only it acts.
+	w1 = route({ pane = 7, focused = 7 })
+	w2 = route({ pane = 41, pane_host = "me@devbox", pane_session = "devbox", focused = 41, known = false })
+	check(w1 == nil and w2 == "me@devbox", "focus in the sending list: exactly one window acts")
+	-- Window 1's focus is in its copy of build's list, which it knows as a different host: it does not act.
+	w1 = route({ pane = 52, pane_host = "build", pane_session = "build", focused = 52 })
+	check(w1 == nil and w2 == "me@devbox", "still exactly one, on the right host")
+	-- An older host (no sn): only the window that knows the URL's exact name acts, as before.
+	w1 = route({ no_sn = true, pane = 7, focused = 7 })
+	w2 = route({ no_sn = true, known = false, pane = 41, pane_host = "me@devbox", focused = 41 })
+	check(w1 == "devbox" and w2 == nil, "no sn: the exact-name window alone acts")
 end
 
 print("Protocol: " .. checks .. " checks passed")

@@ -24,7 +24,6 @@ local providers: { [string]: () -> any } = {}
 local version: string? = nil
 local version_asked = false
 local pending: Pending? = nil
-local last_window_path: string? = nil
 local tokens = 0
 local writes = 0
 
@@ -124,7 +123,6 @@ function M.write(cx: WindowCx): string?
 		compat.toast(cx, "error", "Jumpr could not write diagnostics on " .. M.local_name(cx), err)
 		return nil
 	end
-	last_window_path = path
 	local old = pending
 	if old ~= nil and old.timer ~= nil then
 		old.timer:cancel()
@@ -166,14 +164,20 @@ function M.ask_host(cx: WindowCx, pane: number?, host: string?)
 	end
 end
 
--- The host wrote its dump at `path` on `host` (a `jumpr://diag`): copy one text naming both dumps.
+-- Whether this window asked a host for its dump and is still waiting: a host's `jumpr://diag` reaches every window
+-- attached to it, and only the one that asked copies the text.
+function M.asking(): boolean
+	return pending ~= nil
+end
+
+-- The host wrote its dump at `path` on `host` (a `jumpr://diag` answering this window's ask): copy one text naming
+-- both dumps.
 function M.host_dump_arrived(cx: WindowCx, host: string, path: string)
 	local p = pending
-	local own = if p ~= nil then p.window_path else last_window_path
-	local text = host .. ":" .. path
-	if own ~= nil then
-		text ..= "\n" .. M.local_name(cx) .. ":" .. own
+	if p == nil then
+		return
 	end
+	local text = host .. ":" .. path .. "\n" .. M.local_name(cx) .. ":" .. p.window_path
 	finish(cx, text)
 	compat.toast(cx, "success", "Jumpr diagnostics copied", text)
 end

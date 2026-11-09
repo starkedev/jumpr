@@ -121,6 +121,12 @@ check(View.clicked("main.cards.g1.a-") == nil, "an item key with no id is not a 
 check(View.clicked("main.cards.g1.other") == nil, "another key is not a row")
 check(View.clicked("dock.main.cards.g1.head") == nil, "an id outside main is not a row")
 
+-- The `?` menu's title and keys fit a 30-column pane, so neither is cut.
+check(View.menu_title(nil, 1, 22) == "commands 1/22", "the menu title is its name and place")
+check(View.menu_title("pick", 3, 9) == "pick 3/9", "a named menu keeps its name")
+check((utf8.len(View.menu_title(nil, 22, 22)) or math.huge) <= 30, "the menu title fits 30 columns")
+check((utf8.len(View.MENU_HINT) or math.huge) <= 30, "the menu keys fit one 30-column line")
+
 -- The reveal decision: a new or resized copy reveals, a moved selection reveals, a clock re-render does not.
 do
 	local sel: any = { kind = "agent", id = "aaaa2222" }

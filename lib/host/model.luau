@@ -28,7 +28,7 @@ export type Selection = { kind: string, id: string?, gid: string? }
 -- (deleting while one of its agents is `live`).
 -- Agent only: id, cwd, state, failed, cancel (a pending record that is being removed), src (the status entries'
 -- sources, for the `i` overlay), asking (a status entry says `waiting_input`: typed text would answer it), hold
--- (why a held `q` message has not been sent; nil with none held).
+-- (why a held `q` message has not been sent; nil with none held), parked (its one running pane runs in no tab).
 export type Row = {
 	kind: string,
 	gid: string,
@@ -52,6 +52,7 @@ export type Row = {
 	src: string?,
 	asking: boolean?,
 	hold: string?,
+	parked: boolean?,
 }
 
 local STOP_WINDOW_MS = 60 * 1000
@@ -75,8 +76,35 @@ function M.is_live(record: store.Record, set: { [number]: true }?): boolean
 end
 
 -- Whether two panes (or two status entries) claim one deck id: a duplicate, which the list flags and refuses to act on.
+-- An entry whose pane's program exited claims nothing: a restart leaves the exited pane open beside the new one, and
+-- an agent restarted again after its new pane exited too has only exited panes, which must not block another restart.
 function M.is_dup(set: { [number]: true }?, entries: { status.Entry }?): boolean
-	return set_size(set) >= 2 or (entries ~= nil and #entries >= 2)
+	if set_size(set) >= 2 then
+		return true
+	end
+	local running = 0
+	if entries ~= nil then
+		for _, e in entries do
+			if not status.exited(e) then
+				running += 1
+			end
+		end
+	end
+	return running >= 2
+end
+
+-- Whether a live agent's one running pane is parked (its program runs in no tab), from fresh entries: a duplicate is
+-- a duplicate first, wherever its panes are.
+function M.is_parked(record: store.Record, entries: { status.Entry }, fresh: boolean, dup: boolean): boolean
+	if not fresh or dup or record.state ~= "live" then
+		return false
+	end
+	for _, e in entries do
+		if not status.exited(e) then
+			return e.k == true
+		end
+	end
+	return false
 end
 
 -- Why a held `q` message waits, from the same inputs `queue.due` reads; nil with nothing held. `health` is the
@@ -223,7 +251,7 @@ function M.rows(
 			local dup = M.is_dup(set, entries)
 			local asking = false
 			for _, e in entries do
-				if e.s == "q" then
+				if status.asking(e) then
 					asking = true
 				end
 			end
@@ -248,6 +276,7 @@ function M.rows(
 				src = if #srcs > 0 then table.concat(srcs, ", ") else nil,
 				asking = asking,
 				hold = M.hold(deck.queue[id], health, live, dup),
+				parked = if M.is_parked(r, entries, fresh, dup) then true else nil,
 			}
 			table.insert(agents, row)
 			table.insert(codes, code)

@@ -33,7 +33,7 @@ function M.error(where: string, text: string)
 	while #errors > MAX_ERRORS do
 		table.remove(errors, 1)
 	end
-	tern.log.warn("jumpr: " .. where .. ": " .. text)
+	compat.log_warn("jumpr: " .. where .. ": " .. text)
 end
 
 -- A copy of the error ring, oldest first.
@@ -76,7 +76,7 @@ end
 
 local function null_or<T>(v: T?): any
 	if v == nil then
-		return tern.json.null
+		return compat.json_null()
 	end
 	return v
 end
@@ -104,7 +104,7 @@ end
 function M.write(cx: WindowCx): string?
 	writes += 1
 	local ms = os.time() * 1000 + writes % 1000
-	local path = tern.plugin.data .. "/diag-window-" .. string.format("%d", ms) .. ".json"
+	local path = compat.data_dir() .. "/diag-window-" .. string.format("%d", ms) .. ".json"
 	local hosts, hosts_err = compat.hosts_list(cx)
 	local dump: { [string]: any } = {
 		t = os.time(),
@@ -117,7 +117,7 @@ function M.write(cx: WindowCx): string?
 		local ok, v = pcall(fn)
 		dump[name] = if ok then v else { error = tostring(v) }
 	end
-	local ok, err = compat.fs_write(path, tern.json.encode(dump, true))
+	local ok, err = compat.fs_write(path, compat.json_encode(dump, true))
 	if not ok then
 		M.error("diag", "write " .. path .. ": " .. tostring(err))
 		compat.toast(cx, "error", "Jumpr could not write diagnostics on " .. M.local_name(cx), err)
@@ -131,7 +131,7 @@ function M.write(cx: WindowCx): string?
 	local token = tokens
 	local p: Pending = { token = token, window_path = path, timer = nil }
 	pending = p
-	p.timer = tern.timer(HOST_WAIT_MS, function(tcx: WindowCx?)
+	p.timer = compat.timer(HOST_WAIT_MS, function(tcx: WindowCx?)
 		local now = pending
 		if now == nil or now.token ~= token then
 			return
@@ -156,7 +156,7 @@ function M.ask_host(cx: WindowCx, pane: number?, host: string?)
 		finish_alone(cx, p.window_path)
 		return
 	end
-	local value = tern.json.encode({ p = protocol.P })
+	local value = compat.json_encode({ p = protocol.P })
 	local ok, err = compat.session_event(cx, pane, { ev = "action", act = "diag", value = value })
 	if not ok then
 		M.error("diag", "diag request to " .. tostring(host) .. ": " .. tostring(err))

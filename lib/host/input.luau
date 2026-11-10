@@ -1,12 +1,28 @@
 --!strict
--- The dock input line's text at the caret. Pure: no `tern` here, so it runs
--- under plain `luau` in tests. Tern's native edit events and the input node's `cursor` prop count UTF-16 units, and
--- typed text lands at the caret; host.luau feeds the resulting line to keys.reduce as an edit event, and view.luau
--- clamps the caret it draws.
-
-local keys = require("./keys")
+-- The dock input line: its text edited at the caret, and where the caret is. Pure: no `tern` here, so it runs under
+-- plain `luau` in tests. Tern's native edit events and the input node's `cursor` prop count UTF-16 units, and typed
+-- text, paste and backspace land at the caret; the host feeds the resulting line to keys.reduce as a whole-line edit
+-- event (keys never sees the keystrokes), and view.luau clamps the caret it draws.
 
 local M = {}
+
+-- The key fields this module reads (a host key, as keys.Event carries it).
+export type KeyEvent = { name: string?, text: string?, ctrl: boolean?, alt: boolean?, meta: boolean? }
+
+-- Where the caret is (`cursor`, nil: at the end) in the line the host last edited (`edited`).
+export type Caret = { cursor: number?, edited: string? }
+
+-- The caret after the line changed to `text`: it stays while the line still holds the text the host last edited,
+-- and goes to the end for any other text (a prefill, a refill) or when the line closed (`open` false).
+function M.follow(caret: Caret, open: boolean, text: string): Caret
+	if not open then
+		return { cursor = nil, edited = nil }
+	end
+	if text ~= caret.edited then
+		return { cursor = nil, edited = text }
+	end
+	return caret
+end
 
 -- UTF-16 units in `s` (bytes when `s` is not valid UTF-8).
 function M.units(s: string): number
@@ -110,7 +126,7 @@ end
 -- A key in the open input line that edits it at the caret: typed text and paste insert there, backspace deletes
 -- before it, left and right move it. Gives the new line and caret, or nil for a key the reducer handles (Enter,
 -- Tab, Escape, chords, and the rest).
-function M.key(text: string, cursor: number?, ev: keys.Event): (string?, number?)
+function M.key(text: string, cursor: number?, ev: KeyEvent): (string?, number?)
 	if ev.ctrl or ev.alt or ev.meta then
 		return nil, nil
 	end

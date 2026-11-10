@@ -236,4 +236,126 @@ do
 	check(held.queue.a.text == "now" and held.queue.a.err == "no pty", "the text is held with the error")
 end
 
+-- A host for `send` and `flush`: it records every save and every typing, in order; `save_ok` and `write_err` make
+-- the save or the typing fail.
+type Host = {
+	ports: Queue.Ports,
+	log: { string },
+	saves: { Store.Deck },
+	typed: { string },
+	sent: { string },
+	save_ok: boolean,
+	write_err: string?,
+}
+
+local function host(): Host
+	local h: Host
+	h = {
+		ports = {
+			save = function(d: Store.Deck): boolean
+				table.insert(h.log, "save")
+				table.insert(h.saves, d)
+				return h.save_ok
+			end,
+			write = function(id: string, text: string): (boolean, string?)
+				table.insert(h.log, "write")
+				if h.write_err ~= nil then
+					return false, h.write_err
+				end
+				table.insert(h.typed, id .. ":" .. text)
+				return true, nil
+			end,
+			sent = function(id: string)
+				table.insert(h.sent, id)
+			end,
+			now = NOW,
+		},
+		log = {},
+		saves = {},
+		typed = {},
+		sent = {},
+		save_ok = true,
+		write_err = nil,
+	}
+	return h
+end
+
+-- `o`: the record is stamped and saved, then the text is typed, and the status side hears of the send.
+do
+	local deck = sample()
+	deck.queue = {}
+	deck.agents.a.last_send_ms = NOW - 5000
+	local h = host()
+	local out, notice = Queue.send(deck, "a", "hello", h.ports)
+	check(table.concat(h.log, ",") == "save,write", "the send is saved before it is typed")
+	check(h.saves[1].agents.a.last_send_ms == NOW, "the saved deck carries the new stamp")
+	check(h.typed[1] == "a:hello" and h.sent[1] == "a", "the text is typed and the send noted")
+	check(out == h.saves[1] and notice == nil, "the saved deck is the one held, with no notice")
+	check(deck.agents.a.last_send_ms == NOW - 5000, "the input deck is untouched")
+end
+
+-- `o` with kv refusing the save types nothing: the stamp goes back and the text is held with the reason.
+do
+	local deck = sample()
+	deck.queue = {}
+	deck.agents.a.last_send_ms = NOW - 5000
+	deck.session.host = "devbox"
+	local h = host()
+	h.save_ok = false
+	local out, notice = Queue.send(deck, "a", "hello", h.ports)
+	check(#h.typed == 0 and #h.sent == 0, "nothing is typed when the save fails")
+	check(out.agents.a.last_send_ms == NOW - 5000, "the stamp goes back to what it was")
+	check(out.queue.a ~= nil and out.queue.a.text == "hello", "the text is held")
+	check(out.queue.a.err == "jumpr data not saved", "with the reason")
+	check(h.saves[#h.saves] == out, "and the rolled-back deck is saved too")
+	check(notice ~= nil and string.find(notice, "not sent on devbox: jumpr data not saved", 1, true) ~= nil, "said")
+end
+
+-- `o` whose typing fails: the stamp goes back and the text is held with the error, unless one is already held.
+do
+	local deck = sample()
+	deck.queue = {}
+	local h = host()
+	h.write_err = "pane gone"
+	local out, notice = Queue.send(deck, "a", "hello", h.ports)
+	check(out.agents.a.last_send_ms == nil and out.queue.a.err == "pane gone", "rolled back and held with the error")
+	check(notice ~= nil and string.find(notice, "message for ", 1, true) == 1, "the notice names the message")
+	local held = sample()
+	local kept = Queue.send(held, "a", "other", h.ports)
+	check(kept.queue.a.text == "go", "an already-held message is kept")
+end
+
+-- `q`: each due message is deleted and its record stamped and saved before it is typed.
+do
+	local deck = sample()
+	local h = host()
+	local due = Queue.sweep(deck, { a = { [11] = true } }, { a = { { s = "i" } } }, true, {}, NOW)
+	local out, changed, notice = Queue.flush(deck, due, h.ports)
+	check(table.concat(h.log, ",") == "save,write", "the held message is saved as sent before it is typed")
+	check(h.saves[1].queue.a == nil and h.saves[1].agents.a.last_send_ms == NOW, "deleted and stamped")
+	check(h.typed[1] == "a:go" and h.sent[1] == "a", "then typed, and the send noted")
+	check(changed and out.queue.a == nil and notice == "queued message sent", "the list says it was sent")
+end
+
+-- `q` whose typing fails keeps the message held with its error for the next idle; a failed save types nothing.
+do
+	local deck = sample()
+	deck.session.host = "devbox"
+	local due = Queue.sweep(deck, { a = { [11] = true } }, { a = { { s = "i" } } }, true, {}, NOW)
+	local h = host()
+	h.write_err = "no pty"
+	local out, changed, notice = Queue.flush(deck, due, h.ports)
+	check(changed and out.queue.a ~= nil and out.queue.a.text == "go" and out.queue.a.err == "no pty", "held")
+	check(out.agents.a.last_send_ms == NOW, "the stamp stays, so the retry waits for the guard")
+	check(h.saves[#h.saves] == out, "the held message is saved")
+	check(notice ~= nil and string.find(notice, "queued message for ", 1, true) == 1, "the notice says why")
+	local refused = host()
+	refused.save_ok = false
+	Queue.flush(deck, due, refused.ports)
+	check(#refused.typed == 0 and #refused.sent == 0, "a failed save types nothing")
+	local none = host()
+	local same, nothing = Queue.flush(deck, {}, none.ports)
+	check(same == deck and not nothing and #none.log == 0, "nothing due does nothing")
+end
+
 print("Queue: " .. checks .. " checks passed")

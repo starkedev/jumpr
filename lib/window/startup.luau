@@ -6,6 +6,7 @@
 -- armed when this module loads (a window-context timer gets a fresh cx) and from every event and command that
 -- carries a cx. Once per VM: every call after the first is one boolean check.
 
+local compat = require("../compat")
 local copies = require("./copies")
 local diag = require("./diag")
 local leader = require("./leader")
@@ -30,7 +31,7 @@ end
 -- Arms the load-time start: the next timer tick after the module loads, so a reloaded window starts its
 -- heartbeats without waiting for an event (a fresh window's `window_start` usually gets there first).
 function M.arm()
-	tern.timer(0, function(tcx: WindowCx?)
+	compat.timer(0, function(tcx: WindowCx?)
 		if tcx ~= nil then
 			M.ensure(tcx)
 		end

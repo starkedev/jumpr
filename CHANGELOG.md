@@ -6,6 +6,44 @@ Update with `tern plugin install github.com/starkedev/jumpr --force` on each mac
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-10
+
+The count tiles at the top of the list are now clickable, each as its filter key.
+With two computers' Tern windows on one machine, `n` starts one agent, not two, and statuses no longer flicker between the windows.
+An agent you park in Tern stays on the list as `in no tab`, and `Enter` brings it back into a tab of its own.
+The machine running the agents now lets only one omp run per agent, whoever starts the second one.
+Tested with Tern 0.9.13 windows, on hosts running Tern 0.9.10 and 0.9.13.
+
+### Added
+
+- The four count tiles at the top of the list (error, waiting, running, idle) are clickable: a click turns on that tile's filter, exactly as its key (`!` `@` `#` `$`) does, a click on the outlined tile clears it, and a click on another tile switches to it.
+  A tile with nobody in it still filters, and the list says nothing matches.
+  Like clicks on rows, tile clicks only act in the list itself.
+
+### Changed
+
+- New README screenshots: the list beside a waiting agent's tab, the command menu, and a parked agent's row, plus a short recording of moving through the list, going into an agent and back with `cmd+\`.
+
+### Fixed
+
+- `cmd+\` now toggles between the last two tabs you actually worked in: moving through the list with `j`/`k` (which shows each agent's tab) no longer counts as visiting those tabs, so the chord goes back to the tab you last worked in rather than the last agent you scrolled past. Pressed from the list, it goes to the tab you last worked in, or to the one before that when you are already in it.
+- With two computers' Tern windows attached to the same machine, an agent's status no longer flickers when you open a fresh list, and no longer settles on idle when it is waiting. When the windows disagree (one has not seen the agent's finished turn yet, the other attached after it), the list follows the window that most recently saw the agent change, and the more urgent status when neither did. An agent one window no longer lists stays on the list while another window still reports it.
+- When Jumpr cannot save its data (for example when the plugin's data folder is read-only), the list now says why in one line, such as "jumpr data not saved on devbox: Permission denied (os error 13)", instead of following it with a Lua stack traceback. Every other error Jumpr passes on from a Tern call (in the list, a toast or the diagnostics) is cut to its one-line reason the same way, and the full error, traceback included, goes to Tern's log.
+- Restarting an exited agent with Enter no longer leaves its row stuck on `error · duplicate` until you close the old pane by hand.
+  The old pane, whose program has exited, stays open so you can still read what it printed, but it no longer counts as a second copy of the agent: the row shows the restarted agent's status, Enter jumps to it, and held messages are typed into it.
+  Two running panes for one agent are still flagged as a duplicate.
+- A copy of the list that the window cannot reach (its block never started on the other machine, so Tern answers "no program runs in that pane") no longer floods Tern's log with two lines and a traceback every second.
+  The window says so once per copy, then tries it less and less often (up to every 30 s); once it answers again it gets the whole list at once and its normal updates.
+  Tern's log keeps one full copy of each error's traceback per session.
+- An agent you park in Tern (it keeps running in no tab) now says `in no tab` on its row, beside its status.
+  `Enter` on it brings it back into a tab of its own, with its copy of the list, and goes to it; before, `Enter` dropped it into whichever tab you were looking at, beside another agent.
+  Moving onto its row leaves your tabs as they are, where before the list showed a "has no tab" error.
+  When Tern cannot bring it back (an older session daemon, including one that answers as if it had and moves nothing), the list says why in one line and the agent stays parked.
+  An agent with one pane parked and another in a tab is still flagged as a duplicate.
+- With two computers' Tern windows attached to the same machine, `n` no longer starts the agent twice (one omp in a tab and a second one in no tab, its row stuck on `duplicate`).
+  Both windows still act on the start, but the machine now lets only the first omp for an agent run: the second pane prints that the agent already runs and closes, and the list says "a second start was stopped".
+  The same guard stops a new pane started by hand with the session folder of an agent that is already running; a restart of an exited agent is not affected.
+
 ## [0.1.1] - 2026-11-09
 
 ### Added
@@ -63,6 +101,7 @@ Tested on Tern 0.9.10 and 0.9.11.
 - Every message between the halves carries a protocol version, and a mismatch shows a banner naming the machine to update.
 - `scripts/check.sh` runs stylua, the unit suites, a strict `luau-lsp` type check and design-rule checks.
 
-[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/starkedev/jumpr/releases/tag/v0.1.2
 [0.1.1]: https://github.com/starkedev/jumpr/releases/tag/v0.1.1
 [0.1.0]: https://github.com/starkedev/jumpr/releases/tag/v0.1.0

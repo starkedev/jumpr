@@ -85,4 +85,19 @@ do
 	check(text == nil and cursor == nil, "a chord is left to the reducer")
 end
 
+-- The caret rule: the caret stays while the line holds the text the host last edited; any other text (a prefill or a
+-- refill) puts it at the end, and a closed line forgets it.
+do
+	local edited: Input.Caret = { cursor = 1, edited = "ab" }
+	local same = Input.follow(edited, true, "ab")
+	check(same.cursor == 1 and same.edited == "ab", "the caret stays on the text the host edited")
+	local refill = Input.follow(edited, true, "xyz")
+	check(refill.cursor == nil and refill.edited == "xyz", "other text puts the caret at the end")
+	check(Input.follow(refill, true, "xyz").cursor == nil, "and it stays at the end")
+	local closed = Input.follow(edited, false, "ab")
+	check(closed.cursor == nil and closed.edited == nil, "a closed line forgets the caret")
+	local typed, at = Input.key("Auth", nil, key("backspace"))
+	check(typed == "Aut" and at == 3, "Backspace at the end deletes the last character")
+end
+
 print("Input: " .. checks .. " checks passed")

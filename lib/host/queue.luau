@@ -1,11 +1,13 @@
 --!strict
--- Pure queue transitions for `q` (queue a message for an agent that is busy). No `tern` here: the host
--- passes the deck, the pane sets and the merged status in, saves what comes back, and only then types the text.
--- Each agent holds at most one message, in `deck.queue`, which lives in kv. A held message is sent once, when its
--- agent is idle on a fresh status; `mark_sent` deletes it and stamps the record's `last_send_ms` so a reload between
--- the save and the typing cannot send it twice (at most one message is lost, never two sent).
+-- Messages to agents: `q` holds one until its agent is idle, and `o` and a due held message are typed through
+-- `send` and `flush`, which own the order that keeps a message from going twice: stamp the record's `last_send_ms`,
+-- save, and only then type; a failed save types nothing, and a failed typing rolls the stamp back (`o`) or keeps the
+-- message held with its error (`q`). Each agent holds at most one message, in `deck.queue`, which lives in kv. A held
+-- message is sent once, when its agent is idle on a fresh status, so a reload between the save and the typing cannot
+-- send it twice (at most one message is lost, never two sent). No `tern` here: saving and typing are handed in.
 -- Times here are wall-clock ms, the clock stored in `jumpr.v1`.
 
+local status = require("../shared/status")
 local model = require("./model")
 local store = require("./store")
 
@@ -50,14 +52,15 @@ function M.set(q: Queue, id: string, text: string, now: number): (Queue, string?
 end
 
 -- The held message of `id` when it may be typed now, else nil. `status_entry` is the pane's single status entry, not
--- its status code, because `waiting` covers both `waiting_input` and idle with an unseen finish: only `s = "i"` is idle
--- (seen or unseen), never `s = "q"`. All of these must hold: the status is `fresh`; the record is `live` with a bound
+-- its status code, because `waiting` covers both `waiting_input` and idle with an unseen finish: only an idle entry
+-- (seen or unseen, `status.idle`) takes a message, never one asking a question.
+-- All of these must hold: the status is `fresh`; the record is `live` with a bound
 -- pane (`live`) that is not a duplicate; and there is no `last_send_ms`, or a working status was seen since it
 -- (`seen_working`, memory only, false after a reload), or `GUARD_MS` have passed since it.
 function M.due(
 	q: Queue,
 	id: string,
-	status_entry: { s: string }?,
+	status_entry: status.Entry?,
 	fresh: boolean,
 	live: boolean,
 	dup: boolean,
@@ -66,7 +69,7 @@ function M.due(
 	now: number
 ): store.QueueEntry?
 	local held = q[id]
-	if held == nil or status_entry == nil or status_entry.s ~= "i" then
+	if held == nil or status_entry == nil or not status.idle(status_entry) then
 		return nil
 	end
 	if not fresh or not live or dup then
@@ -158,6 +161,77 @@ function M.unsent(deck: store.Deck, id: string, text: string, prev: number?, err
 		out.queue = M.mark_failed(out.queue, id, { text = text, at_ms = now }, err)
 	end
 	return out
+end
+
+-- What sending needs of the host. `save` saves a deck (it becomes the deck the host holds) and says whether kv took
+-- it; `write` types text and Enter into agent `id`'s pane; `sent` tells the status side a message went to `id`, so the
+-- next held one waits for a working status after it; `now` is wall-clock ms.
+export type Ports = {
+	save: (deck: store.Deck) -> boolean,
+	write: (id: string, text: string) -> (boolean, string?),
+	sent: (id: string) -> (),
+	now: number,
+}
+
+-- Types `text` into `id` once `deck`, which records the send, is saved; a failed save types nothing.
+local function write_saved(ports: Ports, deck: store.Deck, id: string, text: string): (boolean, string?)
+	if not ports.save(deck) then
+		return false, "jumpr data not saved"
+	end
+	ports.sent(id)
+	return ports.write(id, text)
+end
+
+local function not_sent(what: string, deck: store.Deck, id: string, err: string?): string
+	return what .. model.agent_label(deck, id) .. " not sent on " .. model.host_label(deck) .. ": " .. tostring(err)
+end
+
+-- `o`: types `text` into agent `id` now. The record is stamped and saved first; when the text could not be typed,
+-- the stamp goes back to what it was and the text is kept as the agent's held message with the error (unless one is
+-- already held), and that is saved too. Returns the deck the host now holds and the notice when it was not sent.
+function M.send(deck: store.Deck, id: string, text: string, ports: Ports): (store.Deck, string?)
+	local record = deck.agents[id]
+	if record == nil then
+		return deck, nil
+	end
+	local prev = record.last_send_ms
+	local stamped = store.clone(deck)
+	stamped.agents[id].last_send_ms = ports.now
+	local ok, err = write_saved(ports, stamped, id, text)
+	if ok then
+		return stamped, nil
+	end
+	local back = M.unsent(stamped, id, text, prev, tostring(err), ports.now)
+	ports.save(back)
+	return back, not_sent("message for ", stamped, id, err)
+end
+
+-- The held messages that are due (`sweep`), typed in order: each is deleted from the queue with its record stamped
+-- and saved, then typed; a failed typing keeps it held with its error, saved, for the next idle. Returns the deck
+-- the host now holds, whether anything changed, and the notice of the last message (sent, or why not).
+function M.flush(deck: store.Deck, due: { Due }, ports: Ports): (store.Deck, boolean, string?)
+	local out = deck
+	local changed = false
+	local notice: string? = nil
+	for _, item in due do
+		local held = out.queue[item.id]
+		if held ~= nil then
+			local _, marked = M.mark_sent(out.queue, out, item.id, ports.now)
+			out = marked
+			changed = true
+			local ok, err = write_saved(ports, marked, item.id, held.text)
+			if ok then
+				notice = "queued message sent"
+			else
+				local failed = store.clone(marked)
+				failed.queue = M.mark_failed(failed.queue, item.id, held, tostring(err))
+				ports.save(failed)
+				out = failed
+				notice = not_sent("queued message for ", failed, item.id, err)
+			end
+		end
+	end
+	return out, changed, notice
 end
 
 return M

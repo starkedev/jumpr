@@ -121,6 +121,14 @@ check(View.clicked("main.cards.g1.a-") == nil, "an item key with no id is not a 
 check(View.clicked("main.cards.g1.other") == nil, "another key is not a row")
 check(View.clicked("dock.main.cards.g1.head") == nil, "an id outside main is not a row")
 
+-- A count tile's node id names its filter key, and is never a row.
+check(View.clicked_tile("main.tiles.error") == "!", "the error tile is the ! key")
+check(View.clicked_tile("main.tiles.idle") == "$", "the idle tile is the $ key")
+check(View.clicked_tile("main.tiles.stopped") == nil, "a status with no tile names no key")
+check(View.clicked_tile("main.tiles") == nil and View.clicked_tile(nil) == nil, "the tile row itself names no key")
+check(View.clicked("main.tiles.error") == nil, "a tile is not a row")
+check(View.clicked_tile("main.cards.g1.head") == nil, "a row is not a tile")
+
 -- The `?` menu's title and keys fit a 30-column pane, so neither is cut.
 check(View.menu_title(nil, 1, 22) == "commands 1/22", "the menu title is its name and place")
 check(View.menu_title("pick", 3, 9) == "pick 3/9", "a named menu keeps its name")

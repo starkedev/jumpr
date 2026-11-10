@@ -19,10 +19,16 @@ export type State = {
 	sets: model.PaneSets,
 	-- Bindings in arrival order, applied by `apply_queued`.
 	queued: { Bind },
+	-- Second starts the spawn filter stopped since the last tick, in order.
+	blocked: { Blocked },
 }
 
 -- What the hooks pass in (the shapes of SpawnSpec, CommandStartedEvent and PaneExitedEvent this module reads).
 export type Spec = { program: string?, args: { string }?, env: { [string]: string }? }
+-- What a spawn runs instead, when it is replaced.
+export type Replace = { program: string, args: { string } }
+-- A second start the spawn filter stopped, for the next tick's notice.
+export type Blocked = { id: string, running: number }
 export type Started = { pane: number, line: string? }
 export type Exited = { pane: number, status: number? }
 
@@ -30,7 +36,7 @@ export type Exited = { pane: number, status: number? }
 M.NO_PANE_MS = model.NO_PANE_MS
 
 function M.new(): State
-	return { sets = {}, queued = {} }
+	return { sets = {}, queued = {}, blocked = {} }
 end
 
 local function lowest(set: { [number]: true }?): number?
@@ -79,9 +85,28 @@ local function seen(state: State, deck: store.Deck?, text: string, pane: number?
 	table.insert(state.queued, { id = id, pane = pane })
 end
 
+-- The pane already running deck agent `id` here, other than `pane`: a live bound pane, or one whose spawn this
+-- filter has just seen (a start in progress). An exited pane has left the set, so it never counts.
+local function running_pane(state: State, id: string, pane: number): number?
+	local set = state.sets[id]
+	if set == nil then
+		return nil
+	end
+	local best: number? = nil
+	for p in set do
+		if p ~= pane and (best == nil or p < best) then
+			best = p
+		end
+	end
+	return best
+end
+
 -- The `spawn` filter: string work only. Joins program and args with spaces and records `env.TERN_PANE`.
--- Returns nil, so the spawn is never changed.
-function M.on_spawn(state: State, deck: store.Deck?, spec: Spec): nil
+-- One omp per agent: a spawn of a deck agent this machine already runs in another pane (two windows acting on one
+-- start, or a pane started by hand with the same session folder) is replaced by a line saying so, which exits 0, so
+-- Tern closes the pane; it is never bound, and the next tick says so in the list. Two omp processes on one session
+-- folder would both write it. Otherwise nil: the spawn is not changed.
+function M.on_spawn(state: State, deck: store.Deck?, spec: Spec): Replace?
 	local parts: { string } = { spec.program or "" }
 	local args: { string } = spec.args or {}
 	for _, arg in args do
@@ -89,8 +114,26 @@ function M.on_spawn(state: State, deck: store.Deck?, spec: Spec): nil
 	end
 	local env: { [string]: string } = spec.env or {}
 	local pane = tonumber(env.TERN_PANE)
-	seen(state, deck, table.concat(parts, " "), pane)
+	local line = table.concat(parts, " ")
+	local id = identity.match(line)
+	if id ~= nil and pane ~= nil and (deck == nil or deck.agents[id] ~= nil) then
+		local running = running_pane(state, id, pane)
+		if running ~= nil then
+			table.insert(state.blocked, { id = id, running = running })
+			local text =
+				string.format("jumpr: agent %s already runs in pane %.0f; this second start was stopped.", id, running)
+			return { program = "/bin/sh", args = { "-c", 'printf "%s\\n" "$1"', "jumpr", text } }
+		end
+	end
+	seen(state, deck, line, pane)
 	return nil
+end
+
+-- The second starts stopped since the last call, oldest first; the list is emptied.
+function M.take_blocked(state: State): { Blocked }
+	local out = state.blocked
+	state.blocked = {}
+	return out
 end
 
 -- `command_started`: the same rule on the typed command line (covers an agent restored after a restart).

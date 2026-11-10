@@ -2,7 +2,7 @@
 
 A keyboard-driven list of your [omp](https://github.com/can1357/oh-my-pi) agents for [Tern](https://stencil.so/tern), grouped by project, one list per machine.
 
-![Jumpr's list beside an agent's tab: count tiles for error, waiting, running and idle agents above project groups, with the selected waiting agent's question open in its tab](docs/jumpr.png)
+![Jumpr's list beside an agent's tab: count tiles for one agent in error, one waiting, one running and two idle above three project groups, with the selected waiting agent's question open in its tab](docs/jumpr.png)
 
 Agents sit in groups, one per project folder, and each row shows whether its agent is running, waiting for you, idle or in error.
 Moving through the list brings each agent's tab to the front, so the live agent is the preview, and Enter takes you into it.
@@ -23,7 +23,7 @@ It works for agents on the machine in front of you and on remote machines Tern i
 
 ## Requirements
 
-- Tern 0.9.10 or newer (tested on 0.9.10 and 0.9.11).
+- Tern 0.9.10 or newer (tested with 0.9.13 windows, on machines running 0.9.10 and 0.9.13).
 - omp on every machine that runs agents, on the login shell's `PATH`.
 - `git` on every machine you install Jumpr on, since `tern plugin install` clones the repository with it.
 - macOS or Linux; Windows is untested.
@@ -81,7 +81,7 @@ Pressed in the list, it goes back to the pane you came from and hides the list.
 |---|---|---|
 | `cmd+j` (⌘J, Super+J) | Show and focus the list, or go back and hide it | Jumpr: toggle list |
 | `cmd+shift+j` (⌘⇧J, Super+Shift+J) | Hide the list from anywhere | Jumpr: hide list |
-| `cmd+\` (⌘\\, Super+\\) | Jump to the tab you were in before this one; press again to come back. The list's highlight follows to that tab's agent | Jumpr: last tab |
+| `cmd+\` (⌘\\, Super+\\) | Jump to the tab you last worked in; press again to come back. Scrolling through the list doesn't count as working in a tab. The list's highlight follows to that tab's agent | Jumpr: last tab |
 | | Focus the list | Jumpr: focus list |
 | | Hide or show the list without moving focus | Jumpr: hide or show list |
 | | Copy the paths of a diagnostics dump | Jumpr: diagnostics |
@@ -105,7 +105,7 @@ Free them in the window manager's config, or bind other chords to the same two c
 | `j` / `k`, `↓` / `↑` | Move the selection by one |
 | `J` / `K` (Shift+j / Shift+k) | Move to the next or previous group's header; from an agent, `K` goes to its own group's header first |
 | `G` / `End`, `Home` | Move to the last or first row |
-| `Enter` | On an agent: focus its pane, or restart it in its own session if it has exited. On a group: fold or unfold it |
+| `Enter` | On an agent: focus its pane, or restart it in its own session if it has exited. A parked agent (running in no tab) gets a tab of its own first. On a group: fold or unfold it |
 | `Tab` | Fold or unfold a group |
 | `h` / `l` | Fold or unfold the selected group |
 | `n` | Start a new agent in the selected group |
@@ -124,7 +124,7 @@ The command menu lists every key in the list with what it does on the selected r
 `j` / `k` or `↓` / `↑` move, `Enter` or the command's own key runs it, and `Esc` or `?` closes it.
 Commands the selected row does not suit are dimmed.
 
-<img src="docs/jumpr-menu.png" width="284" alt="The ? command menu open in the list">
+<img src="docs/jumpr-menu.png" width="308" alt="The ? command menu open under the list, with go to agent, the first command, highlighted for the selected waiting agent">
 
 ### Filters
 
@@ -141,12 +141,15 @@ The keys run along the shifted number row in priority order, what needs you firs
 
 Pressing a filter key a second time clears it.
 The count tiles at the top show the same symbols in the same order, error first: each tile shows its status key next to the count and the word under it (`@ 2` / waiting), and the tile whose filter is on is outlined.
+Clicking a tile is the same as pressing its key: it turns that filter on, and clicking the outlined tile again clears it.
 The head line names an active filter in words, for example `filter @ waiting`.
 
 ### Preview and Esc
 
 When a move rests on a live agent for 120 ms, that agent's tab comes to the front.
 Any other key in that pause cancels it.
+
+![Moving through the list with j and k brings each live agent's tab to the front; Enter goes into the waiting agent, and cmd+\ goes back to the tab last worked in, then returns](docs/jumpr.gif)
 
 Esc clears an open input, search or filter first.
 With none open, it returns focus to the pane you were in before the list.
@@ -156,6 +159,7 @@ If `esc_mode` in `window.json` (in Jumpr's data folder) is `"B"`, Esc only cance
 ### Mouse
 
 Click a group's header to fold or unfold it, and click an agent to select it, as if you had moved onto it.
+Click a count tile to filter by its status, as its key does.
 Clicks only act in the list itself; while an input, a question, the group picker, the command menu or a reorder is open, they do nothing.
 
 ## How it works
@@ -189,12 +193,17 @@ Jumpr recognises its agents by that session folder, so agents started any other 
 Status comes from Tern's own agent tracking: running, waiting for you, idle, error or stopped.
 Each row shows its status, how long it has been in it, its folder when that is not the group's, and what is waiting on it.
 Press `i` to see where each row's status comes from.
+An agent you parked in Tern keeps running, and its row keeps its status and says `in no tab`.
+Moving onto it leaves your tabs as they are; `Enter` brings it back into a tab of its own, with its copy of the list, and goes to it.
+
+<img src="docs/jumpr-parked.png" width="308" alt="The list with a parked agent selected, its row saying in no tab and that Enter brings it back">
 
 ## What it runs and writes
 
 It runs:
 
 - `omp --continue --session-dir ~/.omp/deck/<id>`, in a terminal tab, to start or restart an agent.
+  While an agent runs, a second pane started with its session folder (from another window, or by hand) runs a line saying so instead, and closes: two omp processes never share one session.
 - `git rev-parse --git-common-dir`, to name a group after its repository.
 - `tern --version`, for the diagnostics dump.
 

@@ -2,7 +2,10 @@
 -- The window's binding of deck agents and their raw status. It applies
 -- `identity.match` to `AgentItem.command` and `PaneItem.line`, joins each pane to its host through
 -- `compat.hosts_list(cx)` `.panes`, and keeps `{host name -> {deck id -> {window pane id}}}` in memory. Window pane
--- ids never leave the window: `entries` is keyed by deck id.
+-- ids never leave the window: `entries` is keyed by deck id. Each entry carries when this window last saw it change,
+-- so the host can prefer the window that watched a change over one that only read the state afterwards.
+-- A parked pane (its program running in no tab) is bound like any other and its entry says so. Tern lists a parked
+-- pane in its host's panes; should a host listing ever leave one out, it keeps the host this window last bound it to.
 
 local compat = require("../compat")
 local identity = require("../shared/identity")
@@ -22,6 +25,11 @@ type Facts = {
 	error: string?,
 	exited: number?,
 	delivery_error: string?,
+	-- Parked: the program runs in no tab.
+	parked: boolean,
+	-- Wall-clock ms when this window last saw the pane's entry change; 0 while it has seen none since it first saw
+	-- the pane (a window that attaches after an agent finished never saw the finish).
+	c: number,
 }
 
 local STATE_CODE: { [string]: string } = {
@@ -40,6 +48,49 @@ local finished: { [number]: string } = {}
 
 local function pane_key(pane: number): string
 	return string.format("%.0f", pane)
+end
+
+-- The entry the window sends for `pane`, with the time it last saw that entry change (none while it has seen none).
+local function entry(pane: number, f: Facts): status.Entry
+	local s: string
+	if f.exited ~= nil then
+		s = "x"
+	elseif f.state ~= nil and STATE_CODE[f.state] ~= nil then
+		s = STATE_CODE[f.state]
+	elseif f.busy then
+		s = "w"
+	else
+		s = "i"
+	end
+	local e: string? = nil
+	if f.delivery_error ~= nil and f.delivery_error ~= "" then
+		e = f.delivery_error
+	elseif f.error ~= nil and f.error ~= "" then
+		e = f.error
+	elseif f.exited ~= nil and f.exited ~= 0 then
+		e = "exit status " .. string.format("%d", f.exited)
+	end
+	return {
+		s = s,
+		u = if f.alert then true else nil,
+		f = if finished[pane] == "failed" then true else nil,
+		e = e,
+		src = "agents",
+		c = if f.c > 0 then f.c else nil,
+		k = if f.parked then true else nil,
+	}
+end
+
+-- What the entry of `pane` reads, its change time aside, to tell a change from a re-read of the same state.
+local function seen_as(pane: number, f: Facts): string
+	return status.seen_key(entry(pane, f))
+end
+
+-- Stamps `f` with the time now when the entry of `pane` reads differently from `before`.
+local function stamp(pane: number, f: Facts, before: string)
+	if seen_as(pane, f) ~= before then
+		f.c = compat.wall_ms()
+	end
 end
 
 -- Re-reads agents and rebuilds the binding. `read_hosts` and `read_panes` are the caller's read when it already made
@@ -90,7 +141,11 @@ function M.rebuild(cx: WindowCx, read_hosts: { ManagedHost }?, read_panes: { com
 		if id == nil and p ~= nil and p.line ~= nil then
 			id = identity.match(p.line)
 		end
-		local host = host_of[pane]
+		local host: string? = host_of[pane]
+		if host == nil and p ~= nil and p.parked then
+			local before = facts[pane]
+			host = if before ~= nil then before.host else nil
+		end
 		if id == nil or host == nil then
 			new_ignored[pane] = true
 		else
@@ -103,6 +158,8 @@ function M.rebuild(cx: WindowCx, read_hosts: { ManagedHost }?, read_panes: { com
 				error = if p ~= nil then p.error else nil,
 				exited = if p ~= nil then p.exited else nil,
 				delivery_error = if a ~= nil then a.delivery_error else nil,
+				parked = p ~= nil and p.parked,
+				c = 0,
 			}
 			local by_id = new_bindings[host]
 			if by_id == nil then
@@ -127,11 +184,18 @@ function M.rebuild(cx: WindowCx, read_hosts: { ManagedHost }?, read_panes: { com
 			finished[pane] = nil
 		end
 	end
+	-- A pane already known keeps its change time while its entry reads the same, and is stamped now when it differs.
+	for pane, f in new_facts do
+		local old = facts[pane]
+		if old ~= nil and old.id == f.id and old.host == f.host then
+			f.c = if seen_as(pane, old) == seen_as(pane, f) then old.c else compat.wall_ms()
+		end
+	end
 	bindings, facts, ignored = new_bindings, new_facts, new_ignored
 	return true
 end
 
--- Refreshes one pane's alert, error, exit status and busy flag.
+-- Refreshes one pane's alert, error, exit status, busy flag and whether it is parked.
 local function refresh_pane(cx: WindowCx, f: Facts, pane: number)
 	local p, err = compat.session_pane(cx, pane)
 	if p == nil then
@@ -144,6 +208,7 @@ local function refresh_pane(cx: WindowCx, f: Facts, pane: number)
 	f.busy = p.busy
 	f.error = p.error
 	f.exited = p.exited
+	f.parked = p.parked
 end
 
 -- The facts of `pane`, rebuilding first when the pane is new to the window. Nil for a pane that is no deck agent.
@@ -162,11 +227,13 @@ function M.on_state(cx: WindowCx, ev: AgentStateEvent): boolean
 	if f == nil then
 		return false
 	end
+	local before = seen_as(ev.pane, f)
 	f.state = ev.new
 	if ev.new == "working" then
 		finished[ev.pane] = nil
 	end
 	refresh_pane(cx, f, ev.pane)
+	stamp(ev.pane, f, before)
 	return true
 end
 
@@ -180,11 +247,13 @@ function M.on_finished(cx: WindowCx, ev: AgentFinishedEvent): boolean
 		M.rebuild(cx)
 		return true
 	end
+	local before = seen_as(ev.pane, f)
 	finished[ev.pane] = ev.result
 	if ev.result == "exited" then
 		f.state = "exited"
 	end
 	refresh_pane(cx, f, ev.pane)
+	stamp(ev.pane, f, before)
 	return true
 end
 
@@ -194,42 +263,17 @@ function M.on_focus(pane: number): boolean
 	if f == nil then
 		return false
 	end
+	local before = seen_as(pane, f)
 	f.alert = false
 	if finished[pane] == "failed" then
 		finished[pane] = "seen"
 	end
+	stamp(pane, f, before)
 	return true
 end
 
-local function entry(pane: number, f: Facts): status.Entry
-	local s: string
-	if f.exited ~= nil then
-		s = "x"
-	elseif f.state ~= nil and STATE_CODE[f.state] ~= nil then
-		s = STATE_CODE[f.state]
-	elseif f.busy then
-		s = "w"
-	else
-		s = "i"
-	end
-	local e: string? = nil
-	if f.delivery_error ~= nil and f.delivery_error ~= "" then
-		e = f.delivery_error
-	elseif f.error ~= nil and f.error ~= "" then
-		e = f.error
-	elseif f.exited ~= nil and f.exited ~= 0 then
-		e = "exit status " .. string.format("%d", f.exited)
-	end
-	return {
-		s = s,
-		u = if f.alert then true else nil,
-		f = if finished[pane] == "failed" then true else nil,
-		e = e,
-		src = "agents",
-	}
-end
-
--- The status entries of every deck agent on `host`: one entry per live pane, keyed by deck id.
+-- The status entries of every deck agent on `host`, keyed by deck id: one entry per pane, a pane whose program exited
+-- included (as "x"; the host leaves it out while the agent runs in another pane).
 function M.entries(host: string): { [string]: { status.Entry } }
 	local out: { [string]: { status.Entry } } = {}
 	local by_id = bindings[host]
@@ -251,14 +295,44 @@ function M.entries(host: string): { [string]: { status.Entry } }
 	return out
 end
 
--- The window pane of deck agent `id` on `host` (the first when it is a duplicate), and how many panes it has.
+-- The window pane of deck agent `id` on `host`, and how many panes it has. With several, the lowest whose program
+-- still runs in a tab, else the lowest still running parked: a restart starts the agent in a new pane and leaves the
+-- exited one open, and a jump, a tab name or a shown tab is for the running agent. With none running, the lowest.
 function M.pane_for(host: string, id: string): (number?, number)
 	local by_id = bindings[host]
 	local panes = if by_id ~= nil then by_id[id] else nil
 	if panes == nil or #panes == 0 then
 		return nil, 0
 	end
-	return panes[1], #panes
+	local parked: number? = nil
+	for _, pane in panes do
+		local f = facts[pane]
+		if f ~= nil and not status.exited(entry(pane, f)) then
+			if not f.parked then
+				return pane, #panes
+			end
+			parked = parked or pane
+		end
+	end
+	return parked or panes[1], #panes
+end
+
+-- Whether agent pane `pane` was parked (running in no tab) when the binding last read it.
+function M.parked(pane: number): boolean
+	local f = facts[pane]
+	return f ~= nil and f.parked
+end
+
+-- Whether a bound agent pane in `panes` (the window's pane read) was parked or dealt back into a tab since the
+-- binding last read it: Tern sends no event for either, so the caller rebuilds the binding when this is true.
+function M.park_moved(panes: { compat.PaneItem }): boolean
+	for _, p in panes do
+		local f = facts[p.pane]
+		if f ~= nil and f.parked ~= p.parked then
+			return true
+		end
+	end
+	return false
 end
 
 -- Every window pane of deck agent `id` on `host`, lowest first (more than one is a duplicate); empty when none.

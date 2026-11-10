@@ -26,24 +26,35 @@ export type Settings = {
 	deck_sessions: { [string]: string },
 }
 
--- A new random id each time the window's plugin VM starts, so a restarted window's seq is never read as old.
-math.randomseed(os.time() + math.floor((tern.now() % 1000) * 1000))
-local function rand(n: number): number
-	return math.random(n)
+-- A new random id each time the window's plugin VM starts, so a restarted window's seq is never read as old. It is
+-- made on first use, not when this module loads, so the seed reads the clock through compat.
+local window_uid: string? = nil
+
+local function uid(): string
+	local made = window_uid
+	if made ~= nil then
+		return made
+	end
+	math.randomseed(os.time() + math.floor((compat.now() % 1000) * 1000))
+	local function rand(n: number): number
+		return math.random(n)
+	end
+	local fresh = identity.new_id(rand) .. identity.new_id(rand)
+	window_uid = fresh
+	return fresh
 end
-local window_uid = identity.new_id(rand) .. identity.new_id(rand)
 
 local state: Settings = { leader = nil, hidden = false, esc_mode = "A", deck_sessions = {} }
 local fs_ok = true
 local started = false
 
 local function path(): string
-	return tern.plugin.data .. "/window.json"
+	return compat.data_dir() .. "/window.json"
 end
 
--- Wall clock in ms: every window on this machine compares it, so it cannot be tern.now() (per process).
+-- Wall clock in ms: every window on this machine compares it, so it cannot be the monotonic clock (per process).
 local function wall_ms(): number
-	return os.time() * 1000
+	return compat.wall_ms()
 end
 
 local function normalise(raw: any): Settings
@@ -77,9 +88,9 @@ local function read(): Settings
 	if text == nil then
 		return normalise(nil)
 	end
-	local ok, raw = pcall(tern.json.decode, text)
-	if not ok then
-		diag.error("leader", "window.json is not JSON: " .. tostring(raw))
+	local raw, decode_err = compat.json_decode(text)
+	if decode_err ~= nil then
+		diag.error("leader", "window.json is not JSON: " .. decode_err)
 		return normalise(nil)
 	end
 	return normalise(raw)
@@ -88,12 +99,12 @@ end
 local function write(s: Settings)
 	local l = s.leader
 	local out = {
-		leader = if l ~= nil then { uid = l.uid, hb_ms = l.hb_ms } else tern.json.null,
+		leader = if l ~= nil then { uid = l.uid, hb_ms = l.hb_ms } else compat.json_null(),
 		hidden = s.hidden,
 		deck_sessions = s.deck_sessions,
 		esc_mode = s.esc_mode,
 	}
-	local ok, err = compat.fs_write(path(), tern.json.encode(out, true))
+	local ok, err = compat.fs_write(path(), compat.json_encode(out, true))
 	if not ok then
 		if fs_ok then
 			diag.error("leader", "write window.json: " .. tostring(err) .. " (acting as leader alone)")
@@ -105,13 +116,13 @@ end
 
 -- This window's uid (the status messages' `w`).
 function M.uid(): string
-	return window_uid
+	return uid()
 end
 
 -- Takes the lock now: this window saw focus, so it is the one in front.
 function M.take()
 	local s = read()
-	s.leader = { uid = window_uid, hb_ms = wall_ms() }
+	s.leader = { uid = uid(), hb_ms = wall_ms() }
 	write(s)
 end
 
@@ -127,8 +138,8 @@ function M.tick()
 	M.last_tick_ms = wall_ms()
 	local s = read()
 	local l = s.leader
-	if l == nil or l.uid == window_uid or wall_ms() - l.hb_ms > STALE_MS then
-		s.leader = { uid = window_uid, hb_ms = wall_ms() }
+	if l == nil or l.uid == uid() or wall_ms() - l.hb_ms > STALE_MS then
+		s.leader = { uid = uid(), hb_ms = wall_ms() }
 		write(s)
 	else
 		state = s
@@ -144,7 +155,7 @@ function M.start()
 	M.tick()
 	local function beat()
 		M.timer_runs += 1
-		tern.timer(HEARTBEAT_MS, function(_tcx: WindowCx?)
+		compat.timer(HEARTBEAT_MS, function(_tcx: WindowCx?)
 			beat()
 			M.tick()
 		end)
@@ -159,7 +170,7 @@ function M.is_leader(): boolean
 	end
 	state = read()
 	local l = state.leader
-	return l ~= nil and l.uid == window_uid
+	return l ~= nil and l.uid == uid()
 end
 
 -- The Esc mode sent to blocks as `em`: "A" (default) or "B".
@@ -178,7 +189,7 @@ function M.leading(): boolean
 		return true
 	end
 	local l = state.leader
-	return l ~= nil and l.uid == window_uid
+	return l ~= nil and l.uid == uid()
 end
 
 -- The name of `host`'s deck session as last recorded, nil when none is.
@@ -207,12 +218,12 @@ end
 diag.provide("leader", function(): any
 	local l = state.leader
 	return {
-		uid = window_uid,
-		leader = if l ~= nil then { uid = l.uid, hb_ms = l.hb_ms } else tern.json.null,
+		uid = uid(),
+		leader = if l ~= nil then { uid = l.uid, hb_ms = l.hb_ms } else compat.json_null(),
 		timer_runs = M.timer_runs,
 		ticks = M.ticks,
 		last_tick_ms = M.last_tick_ms,
-		is_leader = not fs_ok or (l ~= nil and l.uid == window_uid),
+		is_leader = not fs_ok or (l ~= nil and l.uid == uid()),
 		file_ok = fs_ok,
 		hidden = state.hidden,
 		deck_sessions = state.deck_sessions,

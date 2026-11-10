@@ -147,8 +147,9 @@ if [ "${#pure[@]}" -gt 0 ]; then
 	fi
 fi
 
-# P4: JSON is encoded only in the entry files, the transport edges and the file writers.
-json_allowed=" host.luau window.luau lib/host/transport.luau lib/window/pusher.luau lib/window/router.luau lib/window/leader.luau lib/window/diag.luau "
+# P4: JSON is encoded only in the entry files, the transport edges, the file writers and compat (which encodes for the
+# window modules, so a test can replace it).
+json_allowed=" host.luau window.luau lib/compat.luau lib/host/transport.luau lib/window/pusher.luau lib/window/router.luau lib/window/leader.luau lib/window/diag.luau "
 json_files=()
 for f in ${plugin_files[@]+"${plugin_files[@]}"}; do
 	if [[ "$json_allowed" != *" $f "* ]]; then

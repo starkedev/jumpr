@@ -99,9 +99,11 @@ local function char(b: Block, c: string)
 	key(b, string.lower(c), c)
 end
 
+-- Typing in the open input line: the host edits the line at its caret and gives keys the whole new line, one
+-- character at a time.
 local function type_text(b: Block, s: string)
 	for i = 1, #s do
-		char(b, string.sub(s, i, i))
+		send(b, { kind = "edit", text = b.ui.text .. string.sub(s, i, i) })
 	end
 end
 
@@ -126,7 +128,7 @@ local function request_of(effects: { Keys.Effect }, verb: string): { [string]: s
 	return nil
 end
 
--- The host's answer to the last `check_folder` effect: its fields echoed back with `ok`.
+-- The host's answer to the last `check_folder` effect, as the host gives it (`Keys.folder_checked`).
 local function answer(b: Block, ok: boolean, rand: ((number) -> number)?)
 	local e: Keys.Effect? = nil
 	for _, x in b.effects do
@@ -135,15 +137,7 @@ local function answer(b: Block, ok: boolean, rand: ((number) -> number)?)
 		end
 	end
 	assert(e ~= nil, "a check_folder effect to answer: " .. kinds(b.effects))
-	send(b, {
-		kind = "folder_checked",
-		purpose = e.purpose,
-		folder = e.folder,
-		ok = ok,
-		gid = e.gid,
-		id = e.id,
-		text = e.text,
-	}, rand)
+	send(b, Keys.folder_checked(e, ok), rand)
 end
 
 -- Filters: each key along the shifted number row sets its status (the filter holds the code, never the key), the
@@ -617,8 +611,6 @@ do
 	check(named ~= nil and named.id == "a" and named.label == "Auth", "the name request carries id and label")
 	char(b, "r")
 	check(b.ui.text == "Auth", "r prefills the current label")
-	key(b, "backspace")
-	check(b.ui.text == "Aut", "Backspace deletes a character")
 	send(b, { kind = "edit", text = "" })
 	check(b.ui.text == "", "an edit event replaces the input text")
 	key(b, "enter")
@@ -821,7 +813,7 @@ do
 	end
 end
 
--- o on a live agent: an input line, Enter types the text, and kv is saved with last_send_ms before the write.
+-- o on a live agent: an input line, and Enter asks the host to send the text (the host stamps and saves the send).
 do
 	local b = block(sample())
 	select(b, { kind = "agent", id = "a" })
@@ -831,10 +823,10 @@ do
 	check(b.ui.notice == "type a message" and b.ui.mode == "input", "an empty message is refused")
 	type_text(b, " hello ")
 	key(b, "enter")
-	check(kinds(b.effects) == "save_kv,write,render", "save_kv comes before the write: " .. kinds(b.effects))
+	check(kinds(b.effects) == "write,render", "Enter asks for the send: " .. kinds(b.effects))
 	local w = effect_of(b.effects, "write")
 	check(w ~= nil and w.id == "a" and w.text == "hello", "the write names the deck id and the trimmed text")
-	check(b.deck.agents.a.last_send_ms == NOW, "the record's last_send_ms is stamped for the guard")
+	check(b.deck.agents.a.last_send_ms == nil, "the record is left for the host to stamp when it sends")
 	check(b.ui.mode == "list" and b.deck.queue.a == nil, "the line closes and nothing is held")
 end
 
@@ -843,7 +835,7 @@ do
 	local b = block(sample())
 	select(b, { kind = "agent", id = "a" })
 	char(b, "o")
-	send(b, { kind = "key", name = "paste", text = "line one\nline two" })
+	send(b, { kind = "edit", text = "line one\nline two" })
 	key(b, "enter")
 	check(b.ui.notice == "single line only" and b.ui.mode == "input", "a pasted newline is refused")
 	check(effect_of(b.effects, "write") == nil and b.deck.agents.a.last_send_ms == nil, "nothing is typed or stamped")
@@ -1035,7 +1027,8 @@ do
 	check(request_of(c.effects, "stop") == nil, "and sends no stop")
 end
 
--- The write effect carries the stamp it replaced; the q line being open is reported by editing().
+-- o leaves the record's stamp alone (the host stamps it when it sends, and puts it back if the typing fails); the q
+-- line being open is reported by editing().
 do
 	local deck = sample()
 	deck.agents.a.last_send_ms = NOW - 5000
@@ -1046,16 +1039,9 @@ do
 	key(b, "enter")
 	local w = effect_of(b.effects, "write")
 	check(
-		w ~= nil and w.prev == NOW - 5000 and b.deck.agents.a.last_send_ms == NOW,
-		"write carries the previous last_send_ms"
+		w ~= nil and b.deck == deck and b.deck.agents.a.last_send_ms == NOW - 5000,
+		"o asks for the send and leaves the deck as it was"
 	)
-	local fresh = block(sample())
-	select(fresh, { kind = "agent", id = "b" })
-	char(fresh, "o")
-	type_text(fresh, "hi")
-	key(fresh, "enter")
-	local w2 = effect_of(fresh.effects, "write")
-	check(w2 ~= nil and w2.prev == nil, "and nil when there was none")
 
 	local e = block(sample())
 	select(e, { kind = "agent", id = "a" })
@@ -1173,7 +1159,7 @@ do
 	char(b, "g")
 	key(b, "enter")
 	answer(b, true)
-	char(b, "z")
+	send(b, { kind = "edit", text = b.ui.text .. "z" })
 	send(b, { kind = "git_root", folder = "/home/a/block", common_dir = "/r/repo/.git" })
 	check(b.ui.text == "blockz", "an answer never overwrites an edited name")
 end

@@ -40,7 +40,7 @@ end
 
 -- Sends a `res` to every deck block on the request's host; toasts when none could be sent.
 local function reply(cx: WindowCx, req: protocol.Request, ok: boolean, err: string?)
-	local value = tern.json.encode(protocol.reply(req.b, req.r, ok, err))
+	local value = compat.json_encode(protocol.reply(req.b, req.r, ok, err))
 	local sent = 0
 	local last_err: string? = "no jumpr list on " .. req.host
 	for _, pane in pusher.blocks_for(req.host) do
@@ -81,6 +81,16 @@ local function jump(cx: WindowCx, req: protocol.Request)
 		fail(cx, req, text)
 		compat.toast(cx, "error", "Jumpr: " .. text)
 		return
+	end
+	-- Focusing a parked pane would deal it into whichever tab is in view, beside another agent; it gets its own tab.
+	if agents.parked(pane) then
+		local tab, why = copies.deal(cx, req.host, id, pane)
+		if tab == nil then
+			local text = tostring(why)
+			fail(cx, req, text)
+			compat.toast(cx, "error", "Jumpr: " .. text)
+			return
+		end
 	end
 	local ok, err = compat.focus(cx, pane)
 	if not ok then

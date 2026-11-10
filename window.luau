@@ -132,8 +132,8 @@ tern.command({
 		block.hide_list(cx)
 	end,
 })
--- The last-tab chord's action: jump to the tab focused before this one; pressing it again returns. The list's
--- highlight follows onto the agent of the tab it landed in.
+-- The last-tab chord's action: jump to the tab the user last worked in (focus on a copy of the list never counts as
+-- working in a tab); pressing it again returns. The list's highlight follows onto the agent of the tab it landed in.
 tern.command({
 	id = "last_tab",
 	title = "Jumpr: last tab",

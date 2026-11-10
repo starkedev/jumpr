@@ -5,7 +5,7 @@
 -- (a gone id is an empty list) coalesced on a 250 ms timer (at most 4 per second per copy), an empty diff as a 1 s
 -- heartbeat, and a full snapshot on the window half's start (startup.ensure), budget resumed, hello and every 30 s.
 -- A copy this window has not sent to yet (created or first seen after the start) gets its first snapshot on first
--- contact. Every window pushes; the block keeps the newest message per window uid.
+-- contact. Every window pushes; the block merges the windows' reports by when each saw an agent's entry change.
 -- The scan also finds two copies in one tab (`dupb`), records the session holding each host's copies in the
 -- window file (leader only), and rebuilds the tab -> agent title map the tab-title formatter reads. `follow` sends the
 -- copies one focus message (`act = "fo"`) when the last-tab chord lands on an agent, so the list highlights it.
@@ -32,7 +32,7 @@ type Block = { pane: number, host: string, session: string?, tab: number? }
 
 -- The host fields the scan joins a block to.
 type HostRef = { name: string, sessions: { number } }
-type Sent = { sigs: { [string]: string }, last: { [string]: { status.Entry } }, at: number }
+type Sent = { keys: { [string]: string }, last: { [string]: { status.Entry } }, at: number }
 
 local blocks_by_host: { [string]: { number } } = {}
 local block_of: { [number]: Block } = {}
@@ -48,6 +48,14 @@ local sent: { [number]: Sent } = {}
 -- the block remembers this window's last seq (a renumbered pane's restart is read as such from its full
 -- message).
 local seqs: { [number]: number } = {}
+-- A copy whose last send failed (its block is listed but Tern refuses its events, as for a block that never
+-- started): the reason already logged for it, how long it waits before the next try, and when that is (monotonic
+-- ms). The wait doubles from 1 s up to 30 s, so a dead copy is tried a few times a minute and logged once per reason,
+-- never every beat; the first send that goes through clears it, and that send is a full first contact.
+type Failing = { reason: string, wait_ms: number, next_ms: number }
+local failing: { [number]: Failing } = {}
+local RETRY_FIRST_MS = 1000
+local RETRY_MAX_MS = 30000
 local dirty = false
 local coalescing = false
 local started = false
@@ -200,6 +208,11 @@ function M.scan(cx: WindowCx, read_hosts: { ManagedHost }?, read_panes: { compat
 			sent[pane] = nil
 		end
 	end
+	for pane in failing do
+		if by_pane[pane] == nil then
+			failing[pane] = nil
+		end
+	end
 	local titles_changed = not same_titles(agent_titles, titles)
 	blocks_by_host, block_of, copies_by_tab, host_state = by_host, by_pane, by_tab, new_state
 	agent_titles = titles
@@ -240,24 +253,6 @@ function M.rebuild(cx: WindowCx): boolean
 	return M.scan(cx, hosts, panes)
 end
 
--- A stable text for one id's entries, to tell a changed id from an unchanged one.
-local function signature(list: { status.Entry }): string
-	local parts: { string } = {}
-	for _, e in list do
-		table.insert(
-			parts,
-			table.concat({
-				e.s,
-				if e.u then "u" else "",
-				if e.f then "f" else "",
-				e.e or "",
-				e.src or "",
-			}, "\31")
-		)
-	end
-	return table.concat(parts, "\30")
-end
-
 -- Whether `pane` shares its tab with another copy of the list.
 local function duplicate_in_tab(b: Block): boolean
 	if b.tab == nil then
@@ -267,42 +262,32 @@ local function duplicate_in_tab(b: Block): boolean
 	return in_tab ~= nil and #in_tab > 1
 end
 
--- Sends one status message to `pane`: the whole list when `full`, else the ids changed since the last send.
-local function send(cx: WindowCx, pane: number, full: boolean): boolean
+-- Sends one status message to `pane`: the whole list when `full` (or on first contact with the copy), else the ids
+-- changed since the last send and the ids gone (`status.diff`). A copy backing off after a failed send is skipped
+-- until its wait is over, unless `now_anyway` (a hello from its machine).
+local function send(cx: WindowCx, pane: number, full: boolean, now_anyway: boolean?): boolean
 	local b = block_of[pane]
 	if b == nil then
 		return false
 	end
+	local f = failing[pane]
+	if f ~= nil and not now_anyway and compat.now() < f.next_ms then
+		return false
+	end
 	local entries = agents.entries(b.host)
 	local s = sent[pane]
-	-- First contact with this copy: a diff from nothing is the whole list, so it goes as a full snapshot.
-	if s == nil then
-		full = true
-	end
-	local last_sigs: { [string]: string } = if s ~= nil then s.sigs else {}
-	local a: { [string]: any } = {}
-	local sigs: { [string]: string } = {}
-	for id, list in entries do
-		local sig = signature(list)
-		sigs[id] = sig
-		if full or last_sigs[id] ~= sig then
-			a[id] = list
-		end
-	end
+	local d = status.diff(if s ~= nil then s.keys else nil, entries, full)
+	local a: { [string]: any } = table.clone(d.changed)
 	-- A gone id is an empty list: tern.json.decode drops null members, so JSON null would never arrive.
-	if not full then
-		for id in last_sigs do
-			if sigs[id] == nil then
-				a[id] = tern.json.array()
-			end
-		end
+	for _, id in d.gone do
+		a[id] = compat.json_array()
 	end
 	local seq = (seqs[pane] or 0) + 1
 	local msg = protocol.status_msg(
 		leader.uid(),
 		seq,
-		full,
-		os.time() * 1000,
+		d.full,
+		compat.wall_ms(),
 		host_state[b.host],
 		b.session,
 		b.host,
@@ -310,19 +295,27 @@ local function send(cx: WindowCx, pane: number, full: boolean): boolean
 		leader.esc_mode(),
 		a
 	)
-	local ok, err = compat.session_event(cx, pane, { ev = "action", act = "st", value = tern.json.encode(msg) })
+	local ok, err = compat.session_event(cx, pane, { ev = "action", act = "st", value = compat.json_encode(msg) })
 	if not ok then
-		diag.error("pusher", "status to the deck list on " .. b.host .. ": " .. tostring(err))
+		local reason = tostring(err)
+		if f == nil or f.reason ~= reason then
+			diag.error("pusher", "status to the deck list on " .. b.host .. ": " .. reason)
+		end
+		local wait = if f ~= nil then math.min(f.wait_ms * 2, RETRY_MAX_MS) else RETRY_FIRST_MS
+		failing[pane] = { reason = reason, wait_ms = wait, next_ms = compat.now() + wait }
+		-- The copy may have lost what it was sent: the next send that goes through starts over with a full snapshot.
+		sent[pane] = nil
 		return false
 	end
+	failing[pane] = nil
 	seqs[pane] = seq
-	sent[pane] = { sigs = sigs, last = entries, at = tern.now() }
+	sent[pane] = { keys = d.keys, last = entries, at = compat.now() }
 	return true
 end
 
 -- Sends to every copy: full snapshots, or diffs to the copies quiet for at least `quiet_ms`.
 local function push_all(cx: WindowCx, full: boolean, quiet_ms: number)
-	local now = tern.now()
+	local now = compat.now()
 	for pane in block_of do
 		local s = sent[pane]
 		if full or s == nil or now - s.at >= quiet_ms then
@@ -334,12 +327,12 @@ end
 -- Re-arms itself until every copy has got the change, keeping 250 ms between messages to one copy.
 local function coalesce(delay: number)
 	coalescing = true
-	tern.timer(delay, function(tcx: WindowCx?)
+	compat.timer(delay, function(tcx: WindowCx?)
 		coalescing = false
 		if tcx == nil or not dirty then
 			return
 		end
-		local now = tern.now()
+		local now = compat.now()
 		local wait = 0
 		for pane in block_of do
 			local s = sent[pane]
@@ -373,15 +366,21 @@ end
 
 -- The 1 s beat: a re-scan, so h, sn, hn and dupb are current, then a heartbeat (an empty diff, or the pending
 -- changes) to every copy quiet for 750 ms; every 30th beat sends a full snapshot, which rebuilds the binding. A
--- pending change stays the coalescer's to finish.
+-- pending change stays the coalescer's to finish. Tern sends no event when a pane is parked or dealt back, so the
+-- beat's pane read rebuilds the binding when a bound agent pane did either.
 local function beat(cx: WindowCx)
 	beats += 1
-	last_beat_ms = tern.now()
+	last_beat_ms = compat.now()
 	if beats % FULL_EVERY_BEATS == 0 then
 		M.full(cx)
 		return
 	end
-	M.scan(cx)
+	local hosts = compat.hosts_list(cx)
+	local panes = compat.session_panes(cx)
+	if hosts ~= nil and panes ~= nil and agents.park_moved(panes) then
+		agents.rebuild(cx, hosts, panes)
+	end
+	M.scan(cx, hosts, panes)
 	push_all(cx, false, QUIET_MS)
 end
 
@@ -394,7 +393,7 @@ function M.start(cx: WindowCx)
 	started = true
 	local function arm()
 		fires += 1
-		tern.timer(HEARTBEAT_MS, function(tcx: WindowCx?)
+		compat.timer(HEARTBEAT_MS, function(tcx: WindowCx?)
 			arm()
 			if tcx ~= nil then
 				beat(tcx)
@@ -412,7 +411,7 @@ function M.hello(cx: WindowCx, host: string): number
 	local n = 0
 	local panes: { number } = blocks_by_host[host] or {}
 	for _, pane in panes do
-		if send(cx, pane, true) then
+		if send(cx, pane, true, true) then
 			n += 1
 		end
 	end
@@ -428,7 +427,7 @@ function M.follow(cx: WindowCx, pane: number): number
 	if host == nil or id == nil then
 		return 0
 	end
-	local value = tern.json.encode(protocol.focus_msg(leader.uid(), id))
+	local value = compat.json_encode(protocol.focus_msg(leader.uid(), id))
 	local n = 0
 	local panes: { number } = blocks_by_host[host] or {}
 	for _, copy in panes do
@@ -523,10 +522,11 @@ diag.provide("pusher", function(): any
 		local s = sent[pane]
 		out[pane_key(pane)] = {
 			host = b.host,
-			session = if b.session ~= nil then b.session else tern.json.null,
-			tab = if b.tab ~= nil then pane_key(b.tab) else tern.json.null,
+			session = if b.session ~= nil then b.session else compat.json_null(),
+			tab = if b.tab ~= nil then pane_key(b.tab) else compat.json_null(),
 			seq = seqs[pane] or 0,
 			last = if s ~= nil then s.last else {},
+			failing = if failing[pane] ~= nil then failing[pane].reason else compat.json_null(),
 		}
 	end
 	local tabs: { [string]: { string } } = {}

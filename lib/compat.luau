@@ -1,10 +1,15 @@
 --!strict
 -- The one seam to Tern. Every `cx` call and every `tern.pane`, `tern.kv`, `tern.fs`,
 -- `tern.process` and `tern.chrome` call in the plugin goes through this file, so a Tern API change breaks one file.
+-- The window modules also reach `tern.now`, `tern.timer`, `tern.log`, `tern.plugin.data` and `tern.json` only
+-- through it, so a test can replace those on this one module table (a test cannot give a required module a
+-- `tern` global).
 --
 -- Conventions:
 -- * Every function runs its Tern call through `pcall` and returns `(value, err?)`; `err` is a string exactly when
---   the call failed. For a call with no result the value is `true` on success and `false` on failure.
+--   the call failed. For a call with no result the value is `true` on success and `false` on failure. The clock,
+--   timer, log, data-folder and JSON functions are the exception: they pass straight through, raising as the direct
+--   call would, except `json_decode`, which returns `(value, err?)`.
 -- * Window functions take the window `cx` (WindowCx) first, host block functions the block `cx` (BlockCx); calls
 --   on the `tern` global take no `cx`.
 -- * Field reads that differ between Tern versions are normalised here: optional fields that arrive as
@@ -75,24 +80,57 @@ local function flag(x: any): boolean
 	return x == true
 end
 
--- Runs `f` and returns its result, or nil and the error text.
+-- The reasons whose full text went to Tern's log in this session (this plugin VM), and how many: a call that keeps
+-- failing the same way logs its traceback once. The set starts over past `TRACED_MAX`, so reasons that carry
+-- changing ids cannot grow it without bound.
+local traced: { [string]: boolean } = {}
+local traced_count = 0
+local TRACED_MAX = 200
+
+-- The reason a Tern call failed, in one line. Tern's error values carry the Lua stack traceback after the reason
+-- (from the call through compat to whoever called it), which no list or toast should show: only the first line that
+-- is not blank is kept. The whole text, when it held more, goes to Tern's log for whoever reads it there, once per
+-- reason per session.
+local function reason(err: any): string
+	local text = tostring(err)
+	local first = string.match(text, "^%s*([^\n]-)%s*\n") or string.match(text, "^%s*(.-)%s*$") or text
+	if first == "" then
+		first = "unknown error"
+	end
+	if string.find(text, "\n", 1, true) ~= nil and not traced[first] then
+		if traced_count >= TRACED_MAX then
+			traced, traced_count = {}, 0
+		end
+		traced[first] = true
+		traced_count += 1
+		pcall(function()
+			M.log_warn("jumpr: " .. text)
+		end)
+	end
+	return first
+end
+
+-- Runs `f` and returns its result, or nil and the reason it failed.
 local function call<T>(f: () -> T): (T?, string?)
 	local ok, res = pcall(f)
 	if ok then
 		return res, nil
 	end
-	return nil, tostring(res)
+	return nil, reason(res)
 end
 
--- Runs `f`, which returns nothing: true, or false and the error text.
+-- Runs `f`, which returns nothing: true, or false and the reason it failed.
 local function act(f: () -> ()): (boolean, string?)
 	-- Typed as returning anything, so the error value pcall adds on failure type-checks.
 	local ok, err = pcall(f :: () -> ...any)
 	if ok then
 		return true, nil
 	end
-	return false, tostring(err)
+	return false, reason(err)
 end
+
+-- Runs a Tern call that returns nothing the way every compat call runs it: true, or false and the one-line reason.
+M.attempt = act
 
 local function pane_item(p: PaneInfo): PaneItem
 	local running: any = p.running
@@ -139,6 +177,55 @@ end
 
 local function trim(s: string): string
 	return (string.gsub(s, "^%s*(.-)%s*$", "%1"))
+end
+
+-- Clock, timers, log, data folder, JSON -----------------------------------------------------------------------------
+
+-- Wall-clock ms, to second precision; the window stamps when it saw an agent's entry change. A test replaces it.
+function M.wall_ms(): number
+	return os.time() * 1000
+end
+
+-- Monotonic ms (`tern.now`), fractional.
+function M.now(): number
+	return tern.now()
+end
+
+-- Calls `fn` once after `ms` (`tern.timer`); in a window it gets a fresh `cx`. The handle cancels it.
+function M.timer(ms: number, fn: (cx: WindowCx?) -> ()): TimerHandle
+	return tern.timer(ms, fn)
+end
+
+-- Writes a warning to Tern's log (`tern.log.warn`).
+function M.log_warn(text: string)
+	tern.log.warn(text)
+end
+
+-- The plugin's data folder (`tern.plugin.data`).
+function M.data_dir(): string
+	return tern.plugin.data
+end
+
+-- Encodes a value as JSON (`tern.json.encode`), indented when `pretty`.
+function M.json_encode(value: any, pretty: boolean?): string
+	return tern.json.encode(value, pretty)
+end
+
+-- Decodes JSON text (`tern.json.decode`); nil and the error text when it is not JSON.
+function M.json_decode(text: string): (any, string?)
+	return call(function(): any
+		return tern.json.decode(text)
+	end)
+end
+
+-- A new empty table tagged as a JSON array (`tern.json.array`), so it encodes as `[]`.
+function M.json_array(): { any }
+	return tern.json.array()
+end
+
+-- JSON null (`tern.json.null`), for an explicit null in a table.
+function M.json_null(): any
+	return tern.json.null
 end
 
 -- Window: agents ---------------------------------------------------------------------------------------------------
@@ -354,6 +441,22 @@ function M.close(cx: WindowCx, pane: number): (boolean, string?)
 	return act(function()
 		cx.layout:close(pane)
 	end)
+end
+
+-- Regroups tabs in one call (`cx.layout:arrange`); a parked pane named in a group is dealt into that group's tab, and
+-- a group with no `tab` is a new tab. The tabs it reports, or nil and why in one line: Tern's own refusal, or the
+-- reason the call raised (a session daemon that cannot serve it).
+function M.arrange(cx: WindowCx, spec: Arrange): ({ TabArrangement }?, string?)
+	local ok, made, refused = pcall(function(): ({ TabArrangement }?, string?)
+		return cx.layout:arrange(spec)
+	end)
+	if not ok then
+		return nil, reason(made)
+	end
+	if made == nil then
+		return nil, if typeof(refused) == "string" and refused ~= "" then reason(refused) else "Tern gave no reason"
+	end
+	return made, nil
 end
 
 -- Window: feedback ------------------------------------------------------------------------------------------------

@@ -1,21 +1,23 @@
 --!strict
--- The block side of both routes between the halves: status in, requests out.
--- Status, replies, the diagnostics action and focus messages arrive as view `action` events (`act = "st" | "res" |
--- "diag" | "fo"`, the JSON in `value`); requests leave as `jumpr://` URLs the host opens through `compat.open`. Every
--- message carries the protocol version, and a mismatch is kept as a banner, never handled silently.
--- Agents are named by deck id only, never by a pane id from the other half. The host passes the deck in and saves any deck that comes back
--- changed; file writes go through the `io` it passes (Tern is reached only through compat).
+-- The block side of the routes between the halves: status, replies, the diagnostics action and focus messages
+-- arrive as view `action` events (`act = "st" | "res" | "diag" | "fo"`, the JSON in `value`). Requests leave as
+-- `jumpr://` URLs built by `requests`, whose ledger the host keeps and passes in for replies. Every message carries
+-- the protocol version, and a mismatch is kept as a banner, never handled silently.
+-- Agents are named by deck id only, never by a pane id from the other half. The host passes the deck in and saves
+-- any deck that comes back changed; file writes and JSON go through the `io` it passes (Tern is reached only
+-- through compat).
 --
--- Two kinds of state: `State` is the machine's (requests waiting for a reply, remembered jumps, the error ring, and
--- the merged view over every copy's status: arrival marks, row ages), `Status` is one copy's (the window numbers
--- `seq` per block pane, so a recreated copy starts its status afresh: the window's first message to it is a full
--- snapshot, a full message at or below the last `seq` is read as a restart of the numbering, and a first diff,
--- after a host-side restart under the same pane, is a gap, which asks for one with `jumpr://hello`). The rows,
--- health, age and version banner every copy shows come from the machine's merged view.
+-- Two kinds of state: `State` is the machine's (the error ring and the merged view over every copy's status:
+-- arrival marks, row ages), `Status` is one copy's (the window numbers `seq` per block pane, so a recreated copy
+-- starts its status afresh: the window's first message to it is a full snapshot, a full message at or below the last
+-- `seq` is read as a restart of the numbering, and a first diff, after a host-side restart under the same pane, is a
+-- gap, which asks for one with `jumpr://hello`). The rows, health, age and version banner every copy shows come from
+-- the machine's merged view.
 
 local model = require("./model")
 local protocol = require("../shared/protocol")
 local queue = require("./queue")
+local requests = require("./requests")
 local status = require("../shared/status")
 local store = require("./store")
 
@@ -23,27 +25,9 @@ local M = {}
 
 -- No status for this long: "status stale".
 M.STALE_MS = 3000
--- No `res` to a start this long after it was sent: `model.start_failed(…, "no_reply")`.
-M.REPLY_MS = 10 * 1000
 -- A window silent this long is forgotten.
 local WINDOW_FORGET_MS = 60 * 1000
--- A jump failure `res` still names its agent this long after the jump was sent.
-local SENT_KEEP_MS = 60 * 1000
 local ERRORS_KEPT = 50
-
--- A request that waits for its `res` (start, stop), or a jump remembered to name its agent in a failure notice.
-export type Sent = { verb: string, id: string?, b: string, r: number, sent_ms: number }
-
--- The newest status from one window uid: its entries per deck id, which accepted message last carried each id
--- (`Status.arrived` at that message, so two windows' messages in the same millisecond still have an order; also for
--- ids it reported gone, whose entries are then nil), and the name its machine gives this host (`hn`).
-export type Window = {
-	seq: number,
-	at_ms: number,
-	a: { [string]: { status.Entry } },
-	carried: { [string]: number },
-	hn: string?,
-}
 
 -- The latest message's header fields.
 export type Latest = {
@@ -61,7 +45,7 @@ export type Verdict = { v: string, at_ms: number }
 -- One copy of the list's status route. Every copy checks its own messages (the window numbers `seq` per block);
 -- what the rows show is the machine's merged view over every registered copy.
 export type Status = {
-	windows: { [string]: Window },
+	windows: { [string]: status.Window },
 	last_seq: { [string]: number },
 	-- When the last status message arrived (tern.now() ms); nil until the first one.
 	last_ms: number?,
@@ -71,13 +55,11 @@ export type Status = {
 	versions: { [string]: Verdict },
 }
 
--- The machine's request bookkeeping, error ring, and the copies' statuses it merges.
+-- The machine's error ring, and the copies' statuses it merges.
 export type State = {
-	pending: { [string]: Sent },
-	jumps: { [string]: Sent },
 	errors: { string },
 	statuses: { [Status]: boolean },
-	-- Accepted status messages so far, across every copy: orders `Window.carried`.
+	-- Accepted status messages so far, across every copy: orders `status.Window.carried`.
 	arrived: number,
 	-- When each deck id's merged entries last changed (tern.now() ms), for the `i` overlay's per-row age.
 	changed: { [string]: number },
@@ -89,10 +71,12 @@ export type State = {
 	since: number?,
 }
 
--- The block sending a request: its uid `b`, the last `r` it sent, and its in-memory count for read-only data.
-export type Sender = { b: string, last_r: number?, mem_r: number }
-
-export type Io = { fs_write: (path: string, text: string) -> (boolean, string?) }
+-- The machine calls an action needs: the diagnostics file write and JSON both ways.
+export type Io = {
+	fs_write: (path: string, text: string) -> (boolean, string?),
+	json_encode: (value: any, pretty: boolean?) -> string,
+	json_decode: (text: string) -> (any, string?),
+}
 
 -- What `on_action` reads. `now` is tern.now() (intervals); `wall` is wall-clock ms (stored times). `sets` are the
 -- live panes per deck id (the held messages' `queue.due` reads them).
@@ -109,6 +93,8 @@ export type Ctx = {
 	sets: model.PaneSets,
 	-- the deck id whose `q` line is open (`keys.editing`): never swept
 	skip: string?,
+	-- the machine's request ledger, which a reply settles
+	requests: requests.Ledger,
 }
 
 export type Req = { verb: string, fields: { [string]: string } }
@@ -128,8 +114,6 @@ export type Outcome = {
 
 function M.new(): State
 	return {
-		pending = {},
-		jumps = {},
 		errors = {},
 		statuses = {},
 		arrived = 0,
@@ -158,80 +142,11 @@ function M.unregister(state: State, st: Status)
 	state.statuses[st] = nil
 end
 
--- A block's sender. It keeps the uid saved by `save()` only while `next_req` still counts on from it; with no
--- saved uid, read-only data (`r` counted in memory from 1) or `next_req` restarted (kv reset) it takes a new one,
--- so the window never drops its requests as repeats.
-function M.new_sender(saved_uid: any, deck: store.Deck, readonly: boolean, new_uid: () -> string): Sender
-	local keep = type(saved_uid) == "string" and saved_uid ~= "" and not readonly and deck.next_req > 1
-	return { b = if keep then saved_uid else new_uid(), last_r = nil, mem_r = 0 }
-end
-
 -- Keeps one line in the error ring (the last 50 go into the diagnostics dump).
 function M.note_error(state: State, text: string)
 	table.insert(state.errors, text)
 	while #state.errors > ERRORS_KEPT do
 		table.remove(state.errors, 1)
-	end
-end
-
-local function key(b: string, r: number): string
-	return b .. ":" .. string.format("%d", r)
-end
-
-local function host_name(deck: store.Deck): string
-	local host = deck.session.host
-	if host == nil or host == "" then
-		return "unknown"
-	end
-	return host
-end
-
--- The URL of a request from `sender`, and the deck with `next_req` advanced (the host saves it, then opens the
--- URL). `r` comes from `deck.next_req`; when that restarted below the sender's last `r` (kv reset to empty) the
--- sender takes a new random `b`, so the window never drops its requests as repeats. With read-only data `r` is
--- counted in memory and the deck is unchanged. Only `start` and `stop` are recorded as waiting for a reply. The URL
--- names the deck session (`sn`) beside the stored host name, so a window can tell this list's requests from another
--- host's.
-function M.request(
-	state: State,
-	sender: Sender,
-	deck: store.Deck,
-	readonly: boolean,
-	verb: string,
-	fields: { [string]: string },
-	now: number,
-	new_uid: () -> string
-): (string, store.Deck)
-	local r: number
-	local out = deck
-	if readonly then
-		sender.mem_r += 1
-		r = sender.mem_r
-	else
-		r = math.max(math.floor(deck.next_req), 1)
-		if sender.last_r ~= nil and r <= sender.last_r then
-			sender.b = new_uid()
-		end
-		out = store.clone(deck)
-		out.next_req = r + 1
-	end
-	sender.last_r = r
-	local url = protocol.request_url(verb, sender.b, r, host_name(deck), fields, deck.session.name)
-	local sent: Sent = { verb = verb, id = fields.id, b = sender.b, r = r, sent_ms = now }
-	if protocol.expects_reply(verb) then
-		state.pending[key(sender.b, r)] = sent
-	elseif verb == "jump" or verb == "show" then
-		state.jumps[key(sender.b, r)] = sent
-	end
-	return url, out
-end
-
--- A binding settled the start of `id`: its pending `start` request is cleared, whatever the reply route did.
-function M.clear_start(state: State, id: string)
-	for k, p in state.pending do
-		if p.verb == "start" and p.id == id then
-			state.pending[k] = nil
-		end
 	end
 end
 
@@ -254,36 +169,6 @@ function M.due(
 	skip: string?
 ): { queue.Due }
 	return queue.sweep(deck, sets, M.status_by_id(state, now), M.fresh(state, now), state.seen_working, wall, skip)
-end
-
--- The host timer's reply rule: a start with no `res` within `REPLY_MS` goes through
--- `model.start_failed(…, "no_reply")`, and a stop with none through `model.stop_failed`, whose notice comes back
--- (the stop may have happened with the reply lost: the record still goes when `pane_exited` arrives within 60 s of
--- `stop_ms`). Also forgets old jumps.
-function M.expire(state: State, deck: store.Deck, now: number, wall: number): (store.Deck, { string })
-	local out = deck
-	local notices: { string } = {}
-	for k, p in state.pending do
-		if now - p.sent_ms >= M.REPLY_MS then
-			state.pending[k] = nil
-			if p.verb == "start" and p.id ~= nil then
-				out = model.start_failed(out, p.id, "no_reply", wall)
-			elseif p.verb == "stop" and p.id ~= nil then
-				local failed, notice = model.stop_failed(out, p.id)
-				out = failed
-				if notice ~= nil then
-					M.note_error(state, "stop " .. p.id .. ": no reply")
-					table.insert(notices, notice)
-				end
-			end
-		end
-	end
-	for k, p in state.jumps do
-		if now - p.sent_ms >= SENT_KEEP_MS then
-			state.jumps[k] = nil
-		end
-	end
-	return out, notices
 end
 
 -- Forgets the windows of one copy's status that have been silent for a minute, with their last `seq`: a forgotten
@@ -393,80 +278,30 @@ function M.version(state: State, now: number): string?
 	return if older then "bad_p_older" else nil
 end
 
--- The entries per deck id, merged across every copy's windows: for each id, the list from the copy and
--- window whose message carrying it arrived last (never two lists joined, which would fake a duplicate). A copy or
--- window whose last message is over `STALE_MS` old is skipped as a whole (per window, never per entry, so
--- unchanged agents keep their entries).
+-- The entries per deck id, merged across every copy's windows by when each window saw the agent change
+-- (`status.merged`); a window silent at a copy for over `STALE_MS` is left out there.
 function M.status_by_id(state: State, now: number): model.StatusById
-	local best: { [string]: number } = {}
-	local out: model.StatusById = {}
+	local copies: { { [string]: status.Window } } = {}
 	for st in state.statuses do
-		for _, win in st.windows do
-			if now - win.at_ms <= M.STALE_MS then
-				for id, n in win.carried do
-					local seen = best[id]
-					if seen == nil or n > seen then
-						best[id] = n
-						out[id] = win.a[id]
-					end
-				end
-			end
-		end
+		table.insert(copies, st.windows)
 	end
-	return out
+	return status.merged(copies, now, M.STALE_MS)
 end
 
-local function decode(value: any): any
+local function decode(io: Io, value: any): any
 	if type(value) ~= "string" then
 		return nil
 	end
-	local ok, res = pcall(tern.json.decode, value)
-	if not ok then
+	local res, err = io.json_decode(value)
+	if err ~= nil then
 		return nil
 	end
 	return res
 end
 
-local function entries_of(list: any): { status.Entry }
-	local out: { status.Entry } = {}
-	if type(list) ~= "table" then
-		return out
-	end
-	for _, e in ipairs(list) do
-		if type(e) == "table" and type(e.s) == "string" then
-			table.insert(out, {
-				s = e.s,
-				u = if e.u == true then true else nil,
-				f = if e.f == true then true else nil,
-				e = if type(e.e) == "string" and e.e ~= "" then e.e else nil,
-				src = if type(e.src) == "string" then e.src else nil,
-			})
-		end
-	end
-	return out
-end
-
-local function same_entries(a: { status.Entry }?, b: { status.Entry }?): boolean
-	if a == nil or b == nil then
-		return a == b
-	end
-	if #a ~= #b then
-		return false
-	end
-	for i, x in a do
-		local y = b[i]
-		if x.s ~= y.s or x.u ~= y.u or x.f ~= y.f or x.e ~= y.e or x.src ~= y.src then
-			return false
-		end
-	end
-	return true
-end
-
--- Merges one message into its window. A full snapshot replaces the window's entries (ids it no longer lists count
--- as carried gone by this message); a diff replaces only the ids it carries, an empty list meaning gone. Carried ids
--- are stamped with this message's arrival number. An id this message carries gets a new `changed` time only when
--- its merged-for-display entries (`status_by_id`) differ from before, so a second window reporting the same
--- entries, or a window that went quiet resuming with them, leaves the row's age alone.
+-- Merges one message into its window (`status.apply`, as the next arrival). An id this message carries gets a new
+-- `changed` time only when its merged-for-display entries (`status_by_id`) differ from before, so a second window
+-- reporting the same entries, or a window that went quiet resuming with them, leaves the row's age alone.
 local function merge(state: State, st: Status, w: string, msg: { [string]: any }, now: number): boolean
 	state.arrived += 1
 	local mark = state.arrived
@@ -476,56 +311,25 @@ local function merge(state: State, st: Status, w: string, msg: { [string]: any }
 		old.at_ms = now
 	end
 	local before = M.status_by_id(state, now)
-	local full = msg.full == true
-	local win: Window
-	if old == nil or full then
-		win = { seq = msg.seq, at_ms = now, a = {}, carried = {} }
-		if old ~= nil then
-			for id, n in old.carried do
-				win.carried[id] = n
-			end
-			for id in old.a do
-				win.carried[id] = mark
-			end
-		end
-	else
-		win = old
-		win.seq = msg.seq
-		win.at_ms = now
-	end
-	local any = false
-	if type(msg.a) == "table" then
-		for id, list in msg.a do
-			if type(id) == "string" then
-				local entries = entries_of(list)
-				if #entries > 0 then
-					win.a[id] = entries
-				else
-					win.a[id] = nil
-				end
-				win.carried[id] = mark
-				any = true
-			end
-		end
-	end
+	local win, carried = status.apply(old, msg, mark, now)
 	st.windows[w] = win
 	local after = M.status_by_id(state, now)
 	for id, n in win.carried do
 		if n == mark then
-			if not same_entries(before[id], after[id]) then
+			if not status.same_display(before[id], after[id]) then
 				state.changed[id] = now
 			end
 			local merged = after[id]
 			if merged ~= nil then
 				for _, e in merged do
-					if e.s == "w" then
+					if status.working(e) then
 						state.seen_working[id] = true
 					end
 				end
 			end
 		end
 	end
-	return any or full
+	return carried
 end
 
 local function none(deck: store.Deck, render: boolean): Outcome
@@ -541,7 +345,7 @@ end
 
 local function on_status(state: State, st: Status, value: any, ctx: Ctx): Outcome
 	local deck = ctx.deck
-	local msg = decode(value)
+	local msg = decode(ctx.io, value)
 	if type(msg) ~= "table" then
 		M.note_error(state, "status message is not JSON")
 		return none(deck, false)
@@ -609,7 +413,7 @@ end
 
 local function on_reply(state: State, st: Status, value: any, ctx: Ctx): Outcome
 	local deck = ctx.deck
-	local msg = decode(value)
+	local msg = decode(ctx.io, value)
 	if type(msg) ~= "table" then
 		M.note_error(state, "reply is not JSON")
 		return none(deck, false)
@@ -621,69 +425,20 @@ local function on_reply(state: State, st: Status, value: any, ctx: Ctx): Outcome
 	if not protocol.reply_for_me(msg, ctx.b) or type(msg.r) ~= "number" then
 		return none(deck, false)
 	end
-	local k = key(ctx.b, msg.r)
-	local ok = msg.ok == true
-	local err = if type(msg.err) == "string" and msg.err ~= "" then msg.err else "no reason given"
-	local host = model.host_label(deck)
-	local p = state.pending[k]
-	if p ~= nil then
-		state.pending[k] = nil
-		if not ok and p.verb == "start" and p.id ~= nil then
-			local label = model.agent_label(deck, p.id)
-			M.note_error(state, "start " .. p.id .. " failed: " .. err)
-			return {
-				deck = model.start_failed(deck, p.id, "res", ctx.wall),
-				notice = "start " .. label .. " failed on " .. host .. ": " .. err,
-				requests = {},
-				due = {},
-				render = true,
-			}
-		end
-		if not ok and p.verb == "stop" and p.id ~= nil then
-			M.note_error(state, "stop " .. p.id .. " failed: " .. err)
-			local failed, notice = model.stop_failed(deck, p.id)
-			if notice ~= nil then
-				return { deck = failed, notice = notice .. ": " .. err, requests = {}, due = {}, render = true }
-			end
-		end
-		return none(deck, false)
+	local err = if type(msg.err) == "string" then msg.err else nil
+	local deck_after, notice, line = requests.reply(ctx.requests, ctx.b, msg.r, msg.ok == true, err, deck, ctx.wall)
+	if line ~= nil then
+		M.note_error(state, line)
 	end
-	if ok then
-		return none(deck, false)
+	if notice == nil then
+		return none(deck_after, false)
 	end
-	local jump = state.jumps[k]
-	state.jumps[k] = nil
-	local id = if jump ~= nil then jump.id else nil
-	local verb = if jump ~= nil and jump.verb == "show" then "show" else "jump"
-	M.note_error(state, verb .. " " .. (id or "?") .. " failed: " .. err)
-	return {
-		deck = deck,
-		notice = (if verb == "show" then "show " else "jump to ")
-			.. model.agent_label(deck, id)
-			.. " failed on "
-			.. host
-			.. ": "
-			.. err,
-		requests = {},
-		due = {},
-		render = true,
-	}
-end
-
-local function pending_list(state: State): { Sent }
-	local out: { Sent } = {}
-	for _, p in state.pending do
-		table.insert(out, p)
-	end
-	table.sort(out, function(a: Sent, b: Sent): boolean
-		return a.r < b.r
-	end)
-	return out
+	return { deck = deck_after, notice = notice, requests = {}, due = {}, render = true }
 end
 
 local function on_diag(state: State, st: Status, value: any, ctx: Ctx): Outcome
 	local deck = ctx.deck
-	local msg = decode(value)
+	local msg = decode(ctx.io, value)
 	if type(msg) ~= "table" then
 		msg = {}
 	end
@@ -707,11 +462,11 @@ local function on_diag(state: State, st: Status, value: any, ctx: Ctx): Outcome
 			latest = st.latest,
 			versions = st.versions,
 		},
-		pending = pending_list(state),
+		pending = requests.pending(ctx.requests),
 		binding = ctx.binding(),
 		errors = state.errors,
 	}
-	local encoded, text = pcall(tern.json.encode, dump, true)
+	local encoded, text = pcall(ctx.io.json_encode, dump, true)
 	local ok, err = false, nil
 	if encoded then
 		ok, err = ctx.io.fs_write(path, text)
@@ -740,7 +495,7 @@ end
 -- A focus message: the deck id to highlight, or the version banner for a window on another version. One naming no
 -- agent is logged and changes nothing.
 local function on_focus(state: State, st: Status, value: any, ctx: Ctx): Outcome
-	local msg = decode(value)
+	local msg = decode(ctx.io, value)
 	if type(msg) ~= "table" then
 		M.note_error(state, "focus message is not JSON")
 		return none(ctx.deck, false)
@@ -779,7 +534,7 @@ function M.on_action(state: State, st: Status, ev: { [string]: any }, ctx: Ctx):
 	end
 	-- An act this version does not know: still read its version (a missing `p` reads as older), so a message from
 	-- another version shows the banner; one of this version is logged, never dropped silently.
-	local msg = decode(value)
+	local msg = decode(ctx.io, value)
 	if type(msg) == "table" then
 		local verdict = protocol.check_request(msg)
 		if verdict == "bad_p_newer" or verdict == "bad_p_older" then

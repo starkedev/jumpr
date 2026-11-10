@@ -50,9 +50,12 @@ M.INPUT_ID = "dock.input"
 local CARDS_KEY = "cards"
 local HEAD_KEY = "head"
 local ITEM_KEY = "a-"
+-- The count tiles' row; each tile is keyed by its status code, so a tile's node id is `main.tiles.<code>`.
+local TILES_KEY = "tiles"
 
--- The action a click on a row sends (`{ev = "action", id = <the row's node id>, act = CLICK}`); the host maps the id
--- back to the row with `M.clicked`. Not one of Tern's own names (toggle, copy, open, zoom, select, activate).
+-- The action a click on a row or a count tile sends (`{ev = "action", id = <the node id>, act = CLICK}`); the host
+-- maps the id back with `M.clicked` (a row) or `M.clicked_tile` (a tile). Not one of Tern's own names (toggle, copy,
+-- open, zoom, select, activate).
 M.CLICK = "row"
 
 -- The styles.css role of a status code: a ranked status's own (`status.ORDER`), else stopped or unknown.
@@ -101,8 +104,8 @@ local function with_role(node: Node, role: string): Node
 	return node
 end
 
--- Makes a row's node clickable in list mode (Tern gives it .sf-act and the pointing hand); in any other mode a click
--- does nothing, so the row offers none.
+-- Makes a row's or a tile's node clickable in list mode (Tern gives it .sf-act and the pointing hand); in any other
+-- mode a click does nothing, so the node offers none.
 local function clickable(f: Frame, node: Node): Node
 	if f.ui.mode == "list" then
 		local p: { [string]: any } = node.p or {}
@@ -254,9 +257,9 @@ local function base(path: string): string
 	return string.match(path, "([^/]+)/*$") or path
 end
 
--- An agent's dim second line: how long in this state, its folder when it is not the group's, and anything
--- waiting on it (a failed start, a held message, a duplicate).
-local function meta(f: Frame, row: model.Row, group_cwd: string?): string
+-- The parts of an agent's dim second line, in order: how long in this state, its folder when it is not the group's,
+-- and anything waiting on it (a failed start, a held message, a duplicate, an agent running in no tab).
+function M.meta_parts(f: Frame, row: model.Row, group_cwd: string?): { string }
 	local parts: { string } = {}
 	local age = age_of(f, row)
 	if age ~= nil then
@@ -269,6 +272,9 @@ local function meta(f: Frame, row: model.Row, group_cwd: string?): string
 		table.insert(parts, "⏎ restarts")
 	elseif row.state == "pending" and row.failed and not row.cancel then
 		table.insert(parts, "⏎ retries")
+	elseif row.parked then
+		table.insert(parts, "in no tab")
+		table.insert(parts, "⏎ brings it back")
 	end
 	if row.dup then
 		table.insert(parts, "duplicate")
@@ -279,7 +285,7 @@ local function meta(f: Frame, row: model.Row, group_cwd: string?): string
 	if f.ui.show_src then
 		table.insert(parts, row_age(f, row))
 	end
-	return table.concat(parts, " · ")
+	return parts
 end
 
 -- A leaf of text. Inside an `el` tree only `el` children render (a `text` node there draws empty), so every leaf of
@@ -325,7 +331,7 @@ local function state_words(f: Frame, row: model.Row, selected: boolean, extra: s
 end
 
 -- The count tiles: every agent on the deck, folded and filtered groups included. Each shows its filter key beside
--- the count and the word under it; the tile whose filter is on is marked.
+-- the count and the word under it; the tile whose filter is on is marked. A click on a tile is its key.
 local function tiles(f: Frame): Node
 	local out: { Node } = {}
 	for _, t in M.tile_parts(f.tally, f.ui.filter) do
@@ -335,16 +341,19 @@ local function tiles(f: Frame): Node
 			.. (if t.on then " deck.on" else "")
 		table.insert(
 			out,
-			div(role, {
-				div("deck.tile-top", {
-					text_node(t.key, "deck.tile-key"),
-					text_node(tostring(t.n), "deck.tile-n"),
-				}),
-				text_node(t.word, "deck.tile-label"),
-			})
+			clickable(
+				f,
+				div(role, {
+					div("deck.tile-top", {
+						text_node(t.key, "deck.tile-key"),
+						text_node(tostring(t.n), "deck.tile-n"),
+					}),
+					text_node(t.word, "deck.tile-label"),
+				}, t.code)
+			)
 		)
 	end
-	return div("deck.tiles", out)
+	return div("deck.tiles", out, TILES_KEY)
 end
 
 -- A group card's head: fold arrow and name, then one dot and count per status its agents are in.
@@ -391,7 +400,7 @@ local function agent_item(f: Frame, row: model.Row, selected: boolean, group_cwd
 		text_node(word, "deck.pill " .. word_role),
 	})
 	local children = { first }
-	local m = meta(f, row, group_cwd)
+	local m = table.concat(M.meta_parts(f, row, group_cwd), " · ")
 	if m ~= "" then
 		table.insert(children, text_node(cut(m, math.max(f.cols - 4, 4)), "deck.item-meta"))
 	end
@@ -465,6 +474,17 @@ function M.clicked(node: string?): { gid: string, id: string? }?
 		return { gid = gid, id = string.sub(key, #ITEM_KEY + 1) }
 	end
 	return nil
+end
+
+-- The filter key (`status.ORDER`'s `key`) of the count tile a clicked node id names (`main.tiles.<code>`); nil for
+-- any other id.
+function M.clicked_tile(node: string?): string?
+	if node == nil then
+		return nil
+	end
+	local code = string.match(node, "^main%." .. TILES_KEY .. "%.([^%.]+)$")
+	local st = status.of(code)
+	return if st ~= nil then st.key else nil
 end
 
 -- Whether a view should bring the selection into view. `last` is the key the previous call returned for this copy;

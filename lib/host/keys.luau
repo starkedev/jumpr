@@ -15,15 +15,17 @@
 --   {kind = "click", gid?, id?}  a pointer click on a row of the list (the host maps the clicked node with
 --     view.clicked): `id` an agent, else `gid` a group's header. List mode only; every other mode ignores it, so a
 --     click never answers a question, submits a line or drops a row being moved.
+--   {kind = "tile", text}  a pointer click on a count tile (the host maps the clicked node with view.clicked_tile):
+--     `text` is the tile's filter key, handled exactly as that key pressed in list mode (so a click on the tile whose
+--     filter is on clears it, as the key does). List mode only, like `click`.
 --   {kind = "follow", id}  the window's last-tab chord landed in the tab of agent `id`, so the list highlights it
 --     (list mode only). Never answered with a `show`: the tab is already in front.
 -- Effects, run in order:
 --   {kind = "save_kv"}  write jumpr.v1 (added on every deck change, before any request or write).
 --   {kind = "request", verb, fields}  a jumpr:// request; fields are strings, never a URL.
---   {kind = "write", id, text, prev}  type `text` and Enter into the pane bound to deck id `id` (`o`). The host
---     picks the pane from its own bindings, so no pane id passes through here; it comes after the `save_kv` that
---     stamps the record's `last_send_ms`, and `prev` is the stamp it replaced (the host puts it back if the typing
---     fails, since nothing was sent).
+--   {kind = "write", id, text}  send `text` to the agent with deck id `id` now (`o`). The host stamps the record's
+--     `last_send_ms` and saves it before typing (`queue.send`), and picks the pane from its own bindings, so no pane
+--     id passes through here.
 --   {kind = "git_root", folder}  find the folder's git common dir on this machine.
 --   {kind = "check_folder", purpose, folder, gid?, id?, text?}  check that `folder` is a directory on this machine
 --     and answer with `folder_checked`. Purposes: "folder" (the g folder line), "new" (n, with the group `gid` and
@@ -105,7 +107,6 @@ export type Effect = {
 	folder: string?,
 	id: string?,
 	text: string?,
-	prev: number?,
 	purpose: string?,
 	gid: string?,
 }
@@ -185,6 +186,20 @@ function M.editing(ui: UI): string?
 	return nil
 end
 
+-- The answer to a `check_folder` effect, to feed back to `reduce`: its fields, and whether the folder is a
+-- directory on this machine.
+function M.folder_checked(effect: Effect, ok: boolean): Event
+	return {
+		kind = "folder_checked",
+		purpose = effect.purpose,
+		folder = effect.folder,
+		ok = ok,
+		gid = effect.gid,
+		id = effect.id,
+		text = effect.text,
+	}
+end
+
 local function same_selection(a: Selection?, b: Selection?): boolean
 	if a == nil or b == nil then
 		return a == b
@@ -223,19 +238,6 @@ local function folder_of(text: string): string
 		folder = string.gsub(folder, "/+$", "")
 	end
 	return folder
-end
-
--- Drops the last UTF-8 character.
-local function backspace(s: string): string
-	local n = #s
-	while n > 0 do
-		local b = string.byte(s, n)
-		n -= 1
-		if b < 0x80 or b >= 0xC0 then
-			break
-		end
-	end
-	return string.sub(s, 1, n)
 end
 
 -- The character a key types, read from key.text (Tern fills it with the typed character), else from its single-character name.
@@ -365,14 +367,15 @@ end
 
 -- A move in list mode just set the selection (`before` is the selection it started from). Landing on a different
 -- `live`, non-duplicate agent row emits `show(id)` and marks it pending (that agent's tab comes to the front
--- once no other key follows within the pause); a header, `pending`, `exited` or duplicate row leaves the tab as it
--- is, and so does a move that stayed put.
+-- once no other key follows within the pause); a header, `pending`, `exited`, duplicate or parked row leaves the tab
+-- as it is, and so does a move that stayed put. A parked agent has no tab to show: moving past it must not give it one,
+-- which Enter does.
 local function after_move(s: Step, before: Selection?)
 	local row = selected_row(s)
 	if same_selection(before, s.ui.selection) then
 		return
 	end
-	if row ~= nil and row.kind == "agent" and row.live and not row.dup and row.id ~= nil then
+	if row ~= nil and row.kind == "agent" and row.live and not row.dup and not row.parked and row.id ~= nil then
 		s.ui.show_pending = row.id
 		table.insert(s.effects, { kind = "show", id = row.id })
 	end
@@ -1059,8 +1062,9 @@ local function row_of(s: Step, id: string): model.Row?
 	return nil
 end
 
--- Enter in the `o` input. Types the text now when the agent is live (`last_send_ms` is saved before the `write`
--- effect); with the pane gone it holds the text as the agent's queued message, or refuses when one is already held.
+-- Enter in the `o` input. Asks the host to send the text now when the agent is live (the host stamps and saves the
+-- send before typing); with the pane gone it holds the text as the agent's queued message, or refuses when one is
+-- already held.
 -- The row is read again here, because status may have changed while the line was open; a row a filter now hides
 -- is judged from its record alone.
 local function submit_send(s: Step)
@@ -1085,11 +1089,7 @@ local function submit_send(s: Step)
 	elseif row ~= nil and row.asking == true then
 		ui.notice = M.ASKING
 	elseif live then
-		local out = store.clone(s.deck)
-		out.agents[id].last_send_ms = s.now
-		s.deck = out
-		save(s)
-		table.insert(s.effects, { kind = "write", id = id, text = text, prev = r.last_send_ms })
+		table.insert(s.effects, { kind = "write", id = id, text = text })
 	elseif queue.held(s.deck.queue, id) ~= nil then
 		ui.notice = M.HELD
 	else
@@ -1329,6 +1329,8 @@ local function set_text(s: Step, text: string)
 	end
 end
 
+-- A key in the open input line: Escape, Enter and Tab. Typing, paste and backspace edit the line at its caret in
+-- the host (`input.key`), which sends the whole new line as an `edit` event.
 local function input_key(s: Step, ev: Event)
 	local ui = s.ui
 	local name = ev.name
@@ -1358,14 +1360,6 @@ local function input_key(s: Step, ev: Event)
 		end
 	elseif name == "tab" then
 		return
-	elseif name == "backspace" then
-		set_text(s, backspace(ui.text))
-	elseif name == "paste" then
-		if ev.text ~= nil then
-			set_text(s, ui.text .. ev.text)
-		end
-	elseif not (ev.ctrl or ev.alt or ev.meta) and ev.text ~= nil and ev.text ~= "" then
-		set_text(s, ui.text .. ev.text)
 	end
 end
 
@@ -1482,6 +1476,13 @@ function M.reduce(
 		end
 	elseif event.kind == "click" then
 		click(s, event)
+	elseif event.kind == "tile" then
+		local ch = event.text
+		if s.ui.mode == "list" and ch ~= nil and status.by_key(ch) ~= nil then
+			s.ui.notice = nil
+			s.ui.show_pending = nil
+			list_key(s, { kind = "key", name = ch, text = ch })
+		end
 	elseif event.kind == "follow" then
 		if event.id ~= nil then
 			follow(s, event.id)

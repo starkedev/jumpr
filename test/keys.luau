@@ -1737,18 +1737,25 @@ do
 	check(item(nil, "@").label == "waiting only", "@ keeps waiting agents")
 	check(item(nil, "#").label == "running only", "# keeps running agents")
 	check(item(nil, "$").label == "idle only", "$ keeps idle agents")
-	-- The filter items stand in the one order, together, just before 0.
+	check(item(nil, "1").label == "add or drop error", "1 adds error to the filter or drops it")
+	check(item(nil, "4").label == "add or drop idle", "4 adds idle to the filter or drops it")
+	-- The filter items stand together just before 0: the single filters in the one order, then the combine keys.
 	local order: { string } = {}
 	for _, it in Keys.menu_items(nil) do
-		if Status.by_key(it.key) ~= nil or it.key == "0" then
+		if Status.by_key(it.key) ~= nil or Status.by_add_key(it.key) ~= nil or it.key == "0" then
 			table.insert(order, it.key)
 		end
 	end
 	check(
-		table.concat(order, " ") == "! @ # $ 0",
-		"the menu's filters run ! @ # $ then 0: " .. table.concat(order, " ")
+		table.concat(order, " ") == "! @ # $ 1 2 3 4 0",
+		"the menu's filters run ! @ # $, 1 2 3 4, then 0: " .. table.concat(order, " ")
 	)
-	check(menu_index("0") == menu_index("$") + 1 and menu_index("@") == menu_index("!") + 1, "the filters are adjacent")
+	check(
+		menu_index("0") == menu_index("4") + 1
+			and menu_index("1") == menu_index("$") + 1
+			and menu_index("@") == menu_index("!") + 1,
+		"the filters are adjacent"
+	)
 	local seen: { [string]: boolean } = {}
 	for _, it in Keys.menu_items(nil) do
 		check(not seen[it.key], "menu key " .. it.key .. " appears once")

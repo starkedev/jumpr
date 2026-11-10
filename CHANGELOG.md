@@ -6,6 +6,19 @@ Update with `tern plugin install github.com/starkedev/jumpr --force` on each mac
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-10
+
+Filters now combine: `1` `2` `3` `4`, or Option+click on a count tile, add a status to the filter or drop it.
+So `2` then `3` shows the agents waiting for you and the running ones together, and every tile in the filter is outlined.
+A plain click and `! @ # $` still show one status only.
+Tested with Tern 0.9.13 and 0.9.14 windows, on hosts running Tern 0.9.10, 0.9.13 and 0.9.14.
+
+### Added
+
+- Filters combine: `1` `2` `3` `4` add error, waiting, running or idle to the filter, or drop it, so `2` then `3` shows waiting and running agents together.
+  Option+click (alt+click) on a count tile does the same; a plain click and `! @ # $` still show one status only.
+  Every tile in the filter is outlined, the head line names them all (`filter @ waiting + # running`), the `?` menu lists the new keys, and dropping the last one clears the filter.
+
 ## [0.1.2] - 2026-11-10
 
 The count tiles at the top of the list are now clickable, each as its filter key.
@@ -101,7 +114,8 @@ Tested on Tern 0.9.10 and 0.9.11.
 - Every message between the halves carries a protocol version, and a mismatch shows a banner naming the machine to update.
 - `scripts/check.sh` runs stylua, the unit suites, a strict `luau-lsp` type check and design-rule checks.
 
-[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/starkedev/jumpr/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/starkedev/jumpr/releases/tag/v0.1.2
 [0.1.1]: https://github.com/starkedev/jumpr/releases/tag/v0.1.1
 [0.1.0]: https://github.com/starkedev/jumpr/releases/tag/v0.1.0

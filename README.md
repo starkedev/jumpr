@@ -23,7 +23,7 @@ It works for agents on the machine in front of you and on remote machines Tern i
 
 ## Requirements
 
-- Tern 0.9.10 or newer (tested with 0.9.13 windows, on machines running 0.9.10 and 0.9.13).
+- Tern 0.9.10 or newer (tested with 0.9.13 and 0.9.14 windows, on machines running 0.9.10, 0.9.13 and 0.9.14).
 - omp on every machine that runs agents, on the login shell's `PATH`.
 - `git` on every machine you install Jumpr on, since `tern plugin install` clones the repository with it.
 - macOS or Linux; Windows is untested.
@@ -128,7 +128,7 @@ Commands the selected row does not suit are dimmed.
 
 ### Filters
 
-Filters show only the agents in one state.
+Filters show only the agents in the states you pick.
 The keys run along the shifted number row in priority order, what needs you first:
 
 | Key | Shows |
@@ -138,11 +138,15 @@ The keys run along the shifted number row in priority order, what needs you firs
 | `#` (Shift+3) | Running |
 | `$` (Shift+4) | Idle |
 | `0` | Everything |
+| `1` `2` `3` `4` | Add error, waiting, running or idle to the filter, or drop it |
 
 Pressing a filter key a second time clears it.
-The count tiles at the top show the same symbols in the same order, error first: each tile shows its status key next to the count and the word under it (`@ 2` / waiting), and the tile whose filter is on is outlined.
-Clicking a tile is the same as pressing its key: it turns that filter on, and clicking the outlined tile again clears it.
-The head line names an active filter in words, for example `filter @ waiting`.
+`! @ # $` always show one status only, even when several are on.
+`1 2 3 4` combine them: `2` then `3` shows waiting and running agents together, and pressing a key again drops its status; dropping the last one clears the filter.
+The count tiles at the top show the same symbols in the same order, error first: each tile shows its status key next to the count and the word under it (`@ 2` / waiting), and every tile whose status is in the filter is outlined.
+Clicking a tile shows that status only, as its key does, and clicking the only outlined tile again clears the filter.
+Option+click (alt+click) on a tile adds its status to the filter, or drops it when it is already on, as `1 2 3 4` do.
+The head line names the filter in words, for example `filter @ waiting` or `filter @ waiting + # running`.
 
 ### Preview and Esc
 
@@ -159,7 +163,7 @@ If `esc_mode` in `window.json` (in Jumpr's data folder) is `"B"`, Esc only cance
 ### Mouse
 
 Click a group's header to fold or unfold it, and click an agent to select it, as if you had moved onto it.
-Click a count tile to filter by its status, as its key does.
+Click a count tile to show that status only, as its key does, and Option+click (alt+click) it to add it to the filter or drop it.
 Clicks only act in the list itself; while an input, a question, the group picker, the command menu or a reorder is open, they do nothing.
 
 ## How it works

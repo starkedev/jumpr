@@ -19,27 +19,30 @@ export type Code = string
 -- The host record fields the mapping reads when no usable entry exists.
 export type RecordState = { state: string, exit: number? }
 
--- One ranked status: its code, the filter key (also the symbol a tile and the `?` menu show), the word a pill and a
--- tile show, and the styles.css role that colours it.
-export type Status = { code: Code, key: string, word: string, role: string }
+-- One ranked status: its code, the filter key (also the symbol a tile and the `?` menu show), the key that adds it to
+-- or drops it from a combined filter, the word a pill and a tile show, and the styles.css role that colours it.
+export type Status = { code: Code, key: string, add: string, word: string, role: string }
 
 -- The ranked statuses in the one priority order, what needs you first: error, waiting, running, idle, with the
--- filter keys along the shifted number row. Tiles, filter keys, the `?` menu, the head line, pills, roles and the
--- folded-group rank all read this table; `stopped` and `unknown` rank nowhere and match no filter.
+-- filter keys along the shifted number row and the combine keys on the same keys unshifted (on a US layout). Tiles,
+-- filter keys, the `?` menu, the head line, pills, roles and the folded-group rank all read this table; `stopped` and
+-- `unknown` rank nowhere and match no filter.
 M.ORDER = table.freeze({
-	table.freeze({ code = "error", key = "!", word = "error", role = "deck.err" }),
-	table.freeze({ code = "waiting", key = "@", word = "waiting", role = "deck.wait" }),
-	table.freeze({ code = "running", key = "#", word = "running", role = "deck.run" }),
-	table.freeze({ code = "idle", key = "$", word = "idle", role = "deck.idle" }),
+	table.freeze({ code = "error", key = "!", add = "1", word = "error", role = "deck.err" }),
+	table.freeze({ code = "waiting", key = "@", add = "2", word = "waiting", role = "deck.wait" }),
+	table.freeze({ code = "running", key = "#", add = "3", word = "running", role = "deck.run" }),
+	table.freeze({ code = "idle", key = "$", add = "4", word = "idle", role = "deck.idle" }),
 }) :: { Status }
 
 local RANK: { [string]: number } = {}
 local BY_CODE: { [string]: Status } = {}
 local BY_KEY: { [string]: Status } = {}
+local BY_ADD: { [string]: Status } = {}
 for i, st in M.ORDER do
 	RANK[st.code] = i
 	BY_CODE[st.code] = st
 	BY_KEY[st.key] = st
+	BY_ADD[st.add] = st
 end
 
 -- The ranked status with code `code`, or nil (`stopped`, `unknown`, anything else).
@@ -55,6 +58,11 @@ end
 -- The ranked status whose filter key is `key`, or nil.
 function M.by_key(key: string?): Status?
 	return if key ~= nil then BY_KEY[key] else nil
+end
+
+-- The ranked status whose combine key is `key`, or nil.
+function M.by_add_key(key: string?): Status?
+	return if key ~= nil then BY_ADD[key] else nil
 end
 
 local function exited_code(record: RecordState?): Code
@@ -107,12 +115,73 @@ function M.worst(codes: { Code }): Code?
 	return best
 end
 
+-- Filters --------------------------------------------------------------------------------------------------------
+-- A filter is one status code, or several joined by "," in `M.ORDER`'s order ("waiting,running"); nil is no filter.
+-- It stays a plain string so the list's UI state and its saved copy keep their shape, and two filters compare with ==.
+
+-- The codes of `filter`, in `M.ORDER`'s order; empty for nil. Anything that is not a ranked code is left out.
+function M.filter_codes(filter: string?): { Code }
+	local out: { Code } = {}
+	if filter == nil then
+		return out
+	end
+	local has: { [string]: boolean } = {}
+	for part in string.gmatch(filter, "[^,]+") do
+		has[part] = true
+	end
+	for _, st in M.ORDER do
+		if has[st.code] then
+			table.insert(out, st.code)
+		end
+	end
+	return out
+end
+
+-- The filter holding exactly `codes` (any order, unranked ones dropped), or nil when none is left.
+local function filter_of(codes: { [string]: boolean }): string?
+	local out: { string } = {}
+	for _, st in M.ORDER do
+		if codes[st.code] then
+			table.insert(out, st.code)
+		end
+	end
+	return if #out > 0 then table.concat(out, ",") else nil
+end
+
+-- `filter` as a valid filter: its ranked codes in order, or nil when it holds none (a saved value from an older
+-- version, or anything else, is read through this).
+function M.filter_clean(filter: any): string?
+	if type(filter) ~= "string" then
+		return nil
+	end
+	local has: { [string]: boolean } = {}
+	for _, c in M.filter_codes(filter) do
+		has[c] = true
+	end
+	return filter_of(has)
+end
+
+-- Whether `filter` holds `code`.
+function M.filter_has(filter: string?, code: Code): boolean
+	return table.find(M.filter_codes(filter), code) ~= nil
+end
+
+-- `filter` with `code` added when it was not in it, or taken out when it was; nil once the last code goes.
+function M.filter_toggle(filter: string?, code: Code): string?
+	local has: { [string]: boolean } = {}
+	for _, c in M.filter_codes(filter) do
+		has[c] = true
+	end
+	has[code] = not has[code]
+	return filter_of(has)
+end
+
 -- Whether a row with `code` shows under `filter`. No filter shows everything; `unknown` and `stopped` match no filter.
 function M.matches(code: Code, filter: string?): boolean
 	if filter == nil then
 		return true
 	end
-	return RANK[code] ~= nil and code == filter
+	return RANK[code] ~= nil and M.filter_has(filter, code)
 end
 
 -- Entries ---------------------------------------------------------------------------------------------------------

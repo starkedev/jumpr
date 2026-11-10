@@ -656,11 +656,15 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 		if ev.ev == "action" and ev.act == view.CLICK then
 			-- A click on a row (view.clicked maps its node id back to it) or on a count tile (view.clicked_tile maps it
 			-- to the tile's filter key) goes through keys.reduce like a key, so every copy follows it as it follows keys.
+			-- A block event lists the modifiers held in `mods` (absent with none), so an alt (Option) click on a tile is
+			-- known.
 			local row = view.clicked(ev.id)
 			local tile = if row == nil then view.clicked_tile(ev.id) else nil
+			local mods: any = ev.mods
+			local alt = type(mods) == "table" and table.find(mods, "alt") ~= nil
 			local event: keys.Event? = if row ~= nil
 				then { kind = "click", gid = row.gid, id = row.id }
-				elseif tile ~= nil then { kind = "tile", text = tile }
+				elseif tile ~= nil then { kind = "tile", text = tile, alt = alt }
 				else nil
 			if event ~= nil and dispatch(blk, event) then
 				render_all()

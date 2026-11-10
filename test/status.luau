@@ -372,4 +372,20 @@ do
 	check(#merged.id == 1 and merged.id[1].s == "i", "the merge leaves the exited pane out")
 end
 
+-- Filter sets: toggling adds and drops in the one order, the last one dropped is no filter, `matches` takes any code
+-- in the set, and a saved value is cleaned to the ranked codes it names (an older single filter stays as it was).
+do
+	check(Status.filter_toggle(nil, "running") == "running", "toggling into no filter gives that one")
+	check(Status.filter_toggle("running", "waiting") == "waiting,running", "a second code joins in the one order")
+	check(Status.filter_toggle("waiting,running", "waiting") == "running", "toggling a code in the set drops it")
+	check(Status.filter_toggle("running", "running") == nil, "dropping the last one is no filter")
+	check(Status.filter_has("error,idle", "idle") and not Status.filter_has("error,idle", "running"), "has")
+	check(Status.matches("idle", "error,idle") and not Status.matches("running", "error,idle"), "matches a set")
+	check(not Status.matches("stopped", "error,idle"), "stopped matches no filter")
+	check(Status.filter_clean("idle,error") == "error,idle", "a saved set is put in order")
+	check(Status.filter_clean("waiting") == "waiting", "an older single filter is kept")
+	check(Status.filter_clean("!") == nil and Status.filter_clean(3) == nil, "anything else is no filter")
+	check(Status.by_add_key("3") ~= nil and (Status.by_add_key("3") :: any).code == "running", "3 is running's key")
+end
+
 print("Status: " .. checks .. " checks passed")

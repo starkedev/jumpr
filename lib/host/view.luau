@@ -145,9 +145,14 @@ function M.head_parts(f: Frame): { string }
 	if f.h ~= nil and f.h ~= "" then
 		table.insert(parts, f.h)
 	end
-	local st = status.of(f.ui.filter)
-	if st ~= nil then
-		table.insert(parts, "filter " .. st.key .. " " .. st.word)
+	-- Every status the filter holds, by key and word: "filter @ waiting + # running".
+	local named: { string } = {}
+	for _, code in status.filter_codes(f.ui.filter) do
+		local st = status.of(code) :: status.Status
+		table.insert(named, st.key .. " " .. st.word)
+	end
+	if #named > 0 then
+		table.insert(parts, "filter " .. table.concat(named, " + "))
 	end
 	if f.ui.search ~= nil and f.ui.mode ~= "input" then
 		table.insert(parts, "/" .. f.ui.search)
@@ -187,10 +192,13 @@ export type Tile = { code: string, key: string, n: number, word: string, on: boo
 function M.tile_parts(tally: { [string]: number }, filter: string?): { Tile }
 	local out: { Tile } = {}
 	for _, st in status.ORDER do
-		table.insert(
-			out,
-			{ code = st.code, key = st.key, n = tally[st.code] or 0, word = st.word, on = filter == st.code }
-		)
+		table.insert(out, {
+			code = st.code,
+			key = st.key,
+			n = tally[st.code] or 0,
+			word = st.word,
+			on = status.filter_has(filter, st.code),
+		})
 	end
 	return out
 end
@@ -487,6 +495,15 @@ function M.clicked_tile(node: string?): string?
 	return if st ~= nil then st.key else nil
 end
 
+-- What the list says when it has no row to draw: "nothing matches" under a filter (one status or several) or a
+-- search, else how to add a group; nil when there are rows.
+function M.empty_text(f: Frame): string?
+	if #f.rows > 0 then
+		return nil
+	end
+	return if f.ui.filter ~= nil or f.ui.search ~= nil then "nothing matches" else "no groups: g adds one"
+end
+
 -- Whether a view should bring the selection into view. `last` is the key the previous call returned for this copy;
 -- the selection is revealed when it is on another node or at another place in the list than then, or always when
 -- `force` (a new or resized copy). Returns the node id to reveal (nil: none) and the key to keep for the next call,
@@ -654,12 +671,11 @@ function M.view(f: Frame): BlockView
 	for _, text in banners(f) do
 		table.insert(top, para(text, "deck.banner"))
 	end
-	local rows = f.rows
-	if #rows == 0 then
-		local empty = if f.ui.filter ~= nil or f.ui.search ~= nil then "nothing matches" else "no groups: g adds one"
+	local empty = M.empty_text(f)
+	if empty ~= nil then
 		table.insert(top, line(empty, "deck.empty", cols))
 	else
-		table.insert(top, div("deck.cards", cards(f, model.index_of(rows, f.ui.selection)), CARDS_KEY))
+		table.insert(top, div("deck.cards", cards(f, model.index_of(f.rows, f.ui.selection)), CARDS_KEY))
 	end
 	return { main = with_role(tern.ui.col(top), "deck.main"), dock = dock(f) }
 end

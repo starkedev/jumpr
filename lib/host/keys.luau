@@ -15,9 +15,10 @@
 --   {kind = "click", gid?, id?}  a pointer click on a row of the list (the host maps the clicked node with
 --     view.clicked): `id` an agent, else `gid` a group's header. List mode only; every other mode ignores it, so a
 --     click never answers a question, submits a line or drops a row being moved.
---   {kind = "tile", text}  a pointer click on a count tile (the host maps the clicked node with view.clicked_tile):
---     `text` is the tile's filter key, handled exactly as that key pressed in list mode (so a click on the tile whose
---     filter is on clears it, as the key does). List mode only, like `click`.
+--   {kind = "tile", text, alt?}  a pointer click on a count tile (the host maps the clicked node with
+--     view.clicked_tile): `text` is the tile's filter key, handled exactly as that key pressed in list mode (so a
+--     click on the tile whose filter is the only one on clears it, as the key does); with `alt` (Option) held it is
+--     the tile's combine key instead, which adds the status to the filter or drops it. List mode only, like `click`.
 --   {kind = "follow", id}  the window's last-tab chord landed in the tab of agent `id`, so the list highlights it
 --     (list mode only). Never answered with a `show`: the tab is already in front.
 -- Effects, run in order:
@@ -156,7 +157,7 @@ function M.new_ui(saved: any?): UI
 		title = nil,
 		selection = valid_selection(s.selection),
 		search = if type(s.search) == "string" and s.search ~= "" then s.search else nil,
-		filter = if type(s.filter) == "string" and status.of(s.filter) ~= nil then s.filter else nil,
+		filter = status.filter_clean(s.filter),
 		show_src = s.show_src == true,
 		show_pending = nil,
 		notice = nil,
@@ -698,7 +699,7 @@ local MENU: { MenuSpec } = {
 	{ key = "n", label = "new agent", short = "new" },
 	{ key = "g", label = "new group", short = "group" },
 	{ key = "/", label = "search" },
-	-- (one "<word> only" item per `status.ORDER` entry goes here, in its order)
+	-- (per `status.ORDER` entry a "<word> only" item, then per entry an "add or drop <word>" item, go here in its order)
 	{ key = "0", label = "every status" },
 	{ key = "i", label = "show status sources" },
 	{ key = "h", label = "fold group", needs = "group" },
@@ -709,7 +710,8 @@ local MENU: { MenuSpec } = {
 	{ key = "k", label = "up" },
 }
 
--- The status filters sit just before "every status", one per ranked status, in the one priority order.
+-- The status filters sit just before "every status": one "only" item per ranked status in the one priority order,
+-- then the keys that add a status to a combined filter or drop it, in the same order.
 do
 	local at = #MENU + 1
 	for i, spec in MENU do
@@ -719,6 +721,9 @@ do
 	end
 	for i, st in status.ORDER do
 		table.insert(MENU, at + i - 1, { key = st.key, label = st.word .. " only" })
+	end
+	for i, st in status.ORDER do
+		table.insert(MENU, at + #status.ORDER + i - 1, { key = st.add, label = "add or drop " .. st.word })
 	end
 end
 
@@ -815,8 +820,12 @@ local function list_key(s: Step, ev: Event)
 		ui.title = "commands"
 		ui.menu = 1
 	elseif status.by_key(ch) ~= nil then
+		-- `! @ # $` set one filter (or clear it when it is the only one on), even over a combined filter.
 		local code = (status.by_key(ch) :: status.Status).code
 		ui.filter = if ui.filter == code then nil else code
+	elseif status.by_add_key(ch) ~= nil then
+		-- `1 2 3 4` add their status to the filter or drop it, as an alt+click on its tile does.
+		ui.filter = status.filter_toggle(ui.filter, (status.by_add_key(ch) :: status.Status).code)
 	elseif ch == "0" then
 		ui.filter = nil
 	elseif ch == "i" then
@@ -1477,8 +1486,9 @@ function M.reduce(
 	elseif event.kind == "click" then
 		click(s, event)
 	elseif event.kind == "tile" then
-		local ch = event.text
-		if s.ui.mode == "list" and ch ~= nil and status.by_key(ch) ~= nil then
+		local st = status.by_key(event.text)
+		if s.ui.mode == "list" and st ~= nil then
+			local ch = if event.alt then st.add else st.key
 			s.ui.notice = nil
 			s.ui.show_pending = nil
 			list_key(s, { kind = "key", name = ch, text = ch })

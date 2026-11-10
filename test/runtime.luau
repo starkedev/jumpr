@@ -690,4 +690,86 @@ do
 	check(f.ui.mode == "input" and f.ui.filter == nil, "with the search line open a click changes nothing")
 end
 
+-- Combined filters. An alt (Option) click on a tile (Tern lists `alt` in the event's `mods`) adds that status to the
+-- filter and drops it again; dropping the last clears the filter; a plain click after that sets one filter; `1 2 3 4`
+-- do what an alt+click does, and mix with clicks; `! @ # $` still set one filter. Every active tile is outlined, the
+-- head line names every status in the filter, and a combined filter nobody matches still says nothing matches.
+do
+	local list, m = list_on(deck())
+	local c, cx = open(list, 101)
+	list.event(
+		c,
+		status_action(m, "win1", 1, {
+			["agent-a"] = { { s = "q", src = "agents" } },
+			["agent-b"] = { { s = "w", src = "agents" } },
+		}),
+		cx
+	)
+	local function tile(code: string, alt: boolean?)
+		local ev: any = { ev = "action", act = View.CLICK, id = "main.tiles." .. code }
+		if alt then
+			ev.mods = { "alt" }
+		end
+		list.event(c, ev, cx)
+	end
+	local function shown(): string
+		local ids: { string } = {}
+		for _, row in list.frame(c, cx).rows do
+			if row.kind == "agent" and row.id ~= nil then
+				table.insert(ids, row.id)
+			end
+		end
+		return table.concat(ids, ",")
+	end
+	local function filter(): string?
+		return list.frame(c, cx).ui.filter
+	end
+	local function outlined(): string
+		local f = list.frame(c, cx)
+		local on: { string } = {}
+		for _, t in View.tile_parts(f.tally, f.ui.filter) do
+			if t.on then
+				table.insert(on, t.code)
+			end
+		end
+		return table.concat(on, ",")
+	end
+	tile("waiting")
+	check(filter() == "waiting" and shown() == "agent-a", "a plain click sets one filter")
+	tile("running", true)
+	check(filter() == "waiting,running", "alt+click adds running: " .. tostring(filter()))
+	check(shown() == "agent-a,agent-b", "the list shows waiting and running agents together: " .. shown())
+	check(outlined() == "waiting,running", "both tiles are outlined: " .. outlined())
+	local head = table.concat(View.head_parts(list.frame(c, cx)), " · ")
+	check(string.find(head, "filter @ waiting + # running", 1, true) ~= nil, "the head names both: " .. head)
+	tile("waiting", true)
+	check(filter() == "running" and shown() == "agent-b", "alt+click on an active tile drops it")
+	tile("running", true)
+	check(filter() == nil and shown() == "agent-a,agent-b", "dropping the last one clears the filter")
+	tile("error", true)
+	tile("idle", true)
+	check(filter() == "error,idle" and shown() == "", "a combined filter nobody matches shows nothing")
+	check(View.empty_text(list.frame(c, cx)) == "nothing matches", "and says nothing matches")
+	check(outlined() == "error,idle", "and outlines both tiles")
+	tile("running")
+	check(filter() == "running" and shown() == "agent-b", "a plain click after a combined filter sets one filter")
+	press(list, c, cx, "2")
+	check(filter() == "waiting,running", "2 adds waiting, as an alt+click does")
+	tile("waiting", true)
+	check(filter() == "running", "an alt+click drops what the key added")
+	press(list, c, cx, "3")
+	check(filter() == nil, "3 drops the last one and clears the filter")
+	press(list, c, cx, "1")
+	press(list, c, cx, "1")
+	check(filter() == nil, "1 twice turns error on and off again")
+	press(list, c, cx, "1")
+	press(list, c, cx, "2")
+	press(list, c, cx, "@")
+	check(filter() == "waiting", "@ over a combined filter sets waiting alone")
+	press(list, c, cx, "/")
+	press(list, c, cx, "3")
+	local f = list.frame(c, cx)
+	check(f.ui.mode == "input" and f.ui.filter == "waiting", "in the search line a digit is typed, not a filter")
+end
+
 print("Runtime: " .. checks .. " checks passed")

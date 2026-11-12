@@ -6,6 +6,21 @@ Update with `tern plugin install github.com/starkedev/jumpr --force` on each mac
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-12
+
+On Linux and Windows the jumpr key now works out of the box: it is Ctrl+Alt+J there, since Tern's own Super+J joins lines in its editor.
+macOS keeps ⌘J.
+The README gains a "Change the keys" section showing how to give Jumpr's commands chords of your own.
+
+### Added
+
+- The README has a "Change the keys" section: Jumpr's three chords are ordinary Tern keybinds, so `"ctrl+alt+k": "plugin.jumpr.toggle_focus"` under `keybinds` in Tern's `settings.json`, then "Reload settings", makes `ctrl+alt+k` the jumpr key.
+
+### Changed
+
+- On Linux and Windows the default chords are now Ctrl+Alt+J (the jumpr key), Ctrl+Alt+Shift+J (hide the list) and Ctrl+Alt+; (last tab), so the jumpr key works out of the box: Tern's own Win/Super+J joins lines in its editor and left Jumpr's Super+J out, and tiling window managers take Super chords.
+  macOS keeps ⌘J, ⌘⇧J and ⌘\.
+
 ## [0.1.3] - 2026-11-10
 
 Filters now combine: `1` `2` `3` `4`, or Option+click on a count tile, add a status to the filter or drop it.
@@ -114,7 +129,8 @@ Tested on Tern 0.9.10 and 0.9.11.
 - Every message between the halves carries a protocol version, and a mismatch shows a banner naming the machine to update.
 - `scripts/check.sh` runs stylua, the unit suites, a strict `luau-lsp` type check and design-rule checks.
 
-[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/starkedev/jumpr/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/starkedev/jumpr/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/starkedev/jumpr/releases/tag/v0.1.2
 [0.1.1]: https://github.com/starkedev/jumpr/releases/tag/v0.1.1

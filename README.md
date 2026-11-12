@@ -46,8 +46,6 @@ Install it on every machine whose Tern windows you use, and on every machine tha
 When your windows and your agents are on the same computer, that is one install.
 To install on a remote host, run the command in a pane on that host.
 
-On Linux and Windows, add the two keybinds under [The jumpr key](#the-jumpr-key) too, or Super+J does nothing.
-
 To update, install again over the old copy, on each machine:
 
 ```sh
@@ -60,7 +58,7 @@ Tern has no separate update command; `--force` replaces the installed copy and r
 ## Getting started
 
 1. Open a Tern session on the machine whose agents you want in the list.
-2. Press the jumpr key (`cmd+j`: ⌘J on macOS, Super+J on Linux and Windows) to show the list.
+2. Press the jumpr key (⌘J on macOS, Ctrl+Alt+J on Linux and Windows) to show the list.
    That session becomes Jumpr's session for that machine, and every tab in it gets a copy of the list on its left.
 3. Press `g` and give a project folder to make a group.
    The folder must already exist on that machine; a git repository's group is named after the repository.
@@ -73,30 +71,32 @@ Agents you start yourself in a plain tab are left alone; [How it works](#how-it-
 
 ### The jumpr key
 
-The jumpr key is `cmd+j`: ⌘J on macOS, Super+J on Linux and Windows.
+The jumpr key is ⌘J on macOS and Ctrl+Alt+J on Linux and Windows.
 Pressed outside the list, it shows the list if it is hidden and focuses it.
 Pressed in the list, it goes back to the pane you came from and hides the list.
 
 | Key | Does | Palette command |
 |---|---|---|
-| `cmd+j` (⌘J, Super+J) | Show and focus the list, or go back and hide it | Jumpr: toggle list |
-| `cmd+shift+j` (⌘⇧J, Super+Shift+J) | Hide the list from anywhere | Jumpr: hide list |
-| `cmd+\` (⌘\\, Super+\\) | Jump to the tab you last worked in; press again to come back. Scrolling through the list doesn't count as working in a tab. The list's highlight follows to that tab's agent | Jumpr: last tab |
+| ⌘J · Ctrl+Alt+J | Show and focus the list, or go back and hide it | Jumpr: toggle list |
+| ⌘⇧J · Ctrl+Alt+Shift+J | Hide the list from anywhere | Jumpr: hide list |
+| ⌘\\ · Ctrl+Alt+; | Jump to the tab you last worked in; press again to come back. Scrolling through the list doesn't count as working in a tab. The list's highlight follows to that tab's agent | Jumpr: last tab |
 | | Focus the list | Jumpr: focus list |
 | | Hide or show the list without moving focus | Jumpr: hide or show list |
 | | Copy the paths of a diagnostics dump | Jumpr: diagnostics |
 
-**Linux and Windows:** Tern's PC key preset already binds Win+J to `editor.join_lines`, and a preset bind wins over a plugin's, so Super+J does nothing until you add a user keybind.
-Add these two lines to the `keybinds` in Tern's `settings.json` on each machine whose windows you use, then run "Reload settings" from the palette:
+### Change the keys
+
+Jumpr's three chords are ordinary Tern keybinds, so you change them under `keybinds` in Tern's `settings.json` (`~/.config/tern/settings.json` on Linux), on each machine whose windows you use:
 
 ```json
-"cmd+j": "plugin.jumpr.toggle_focus",
-"cmd+shift+j": "plugin.jumpr.hide_list"
+"keybinds": {
+  "ctrl+alt+k": "plugin.jumpr.toggle_focus"
+}
 ```
 
-Your own keybinds win over the preset.
-On Linux, a tiling window manager (Hyprland, Sway, i3 and others) often binds Super+J and Super+Shift+J itself, so the keys never reach Tern.
-Free them in the window manager's config, or bind other chords to the same two commands.
+Then run "Reload settings" from the palette; no restart is needed.
+The three commands are `plugin.jumpr.toggle_focus` (the jumpr key), `plugin.jumpr.hide_list` and `plugin.jumpr.last_tab`.
+Ctrl+J is a poor choice of your own: on Linux and Windows it is Tern's own join lines, and in a shell it is Enter.
 
 ### In the list
 
@@ -246,8 +246,8 @@ Delete that folder by hand to start fresh.
 
 ## Troubleshooting
 
-- **Super+J does nothing on Linux or Windows.**
-  Add the user keybinds under [The jumpr key](#the-jumpr-key), and check that your window manager is not taking the chord.
+- **The jumpr key does nothing.**
+  Check that your window manager or desktop is not taking the chord, or give it one of your own under [Change the keys](#change-the-keys).
 - **A remote machine's list shows, but keys and clicks do nothing.**
   The window half is missing on the machine showing the window: install Jumpr there too.
 - **A banner says "update Jumpr on …".**

@@ -53,7 +53,7 @@ local function enter(state: State, tab: number, pane: number?): State
 end
 
 -- A focus event: a session switch starts over; focus always moves `here`; focus on a pane that is not a copy of the
--- list enters its tab and makes that pane the tab's landing pane, while focus on a copy (a preview, `cmd+j`) enters
+-- list enters its tab and makes that pane the tab's landing pane, while focus on a copy (a preview, the jumpr key) enters
 -- nothing. Moving between the copy and the agent inside one tab only ever re-enters that same tab.
 function M.on_focus(state: State, session: number, tab: number, pane: number, is_list: boolean): State
 	local base = state

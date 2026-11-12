@@ -22,10 +22,13 @@ if not ok_title then
 	diag.error("window", "tab-title formatter: " .. tostring(title_err))
 end
 
--- Three chords on every OS, the same on each: `cmd` is ⌘ on macOS and the Super/Win key on PCs in tern.bind chords.
-local CHORD = "cmd+j"
-local HIDE_CHORD = "cmd+shift+j"
-local LAST_TAB_CHORD = "cmd+\\"
+-- Three default chords, chosen by the window's OS so none clashes with Tern's own defaults (a plugin bind on a chord
+-- Tern already binds is left out). On macOS: ⌘J, ⌘⇧J, ⌘\. On a PC keyboard Tern gives Win/Super+J to the editor's
+-- join lines and tiling window managers take Super chords, so Linux and Windows get Ctrl+Alt chords Tern leaves free.
+local MAC = tern.runtime.os == "macos" or tern.runtime.os == "ios"
+local CHORD = if MAC then "cmd+j" else "ctrl+alt+j"
+local HIDE_CHORD = if MAC then "cmd+shift+j" else "ctrl+alt+shift+j"
+local LAST_TAB_CHORD = if MAC then "cmd+\\" else "ctrl+alt+;"
 local JUMPR_SCHEME = "jumpr://"
 
 tern.on("window_start", function(cx: WindowCx)
@@ -145,7 +148,7 @@ tern.command({
 		end
 	end,
 })
--- The jumpr key is `cmd+j`; `cmd+shift+j` hides the list from anywhere; `cmd+\` toggles the last tab.
+-- The jumpr key toggles the list; the hide chord hides it from anywhere; the last-tab chord toggles the last tab.
 tern.bind(CHORD, "plugin.jumpr.toggle_focus")
 tern.bind(HIDE_CHORD, "plugin.jumpr.hide_list")
 tern.bind(LAST_TAB_CHORD, "plugin.jumpr.last_tab")

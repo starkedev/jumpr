@@ -6,6 +6,16 @@ Update with `tern plugin install github.com/starkedev/jumpr --force` on each mac
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-16
+
+### Changed
+
+- The list renders far less with many copies open: one agent's status change renders each copy once instead of once per copy per message, a status snapshot that changes nothing the rows show renders no copy at all, and the copy a key was pressed in renders before the others (they follow on the host's next turn, once per run of keys).
+  With 13 copies open this took a status change from 169 renders to 13, and the every-30-second full snapshot from 169 to none.
+
+  Measured live on a machine with 13 copies and 6 agents: the half-second freeze the periodic snapshot used to cause is gone, and the list's own thread dropped from 15–18% of a core to about 9%.
+  No stored data changes, and machines may update one at a time: the protocol is unchanged.
+
 ## [0.2.1] - 2026-11-16
 
 ### Added
@@ -175,7 +185,8 @@ Tested on Tern 0.9.10 and 0.9.11.
 - Every message between the halves carries a protocol version, and a mismatch shows a banner naming the machine to update.
 - `scripts/check.sh` runs stylua, the unit suites, a strict `luau-lsp` type check and design-rule checks.
 
-[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/starkedev/jumpr/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/starkedev/jumpr/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/starkedev/jumpr/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/starkedev/jumpr/compare/v0.1.3...v0.1.4

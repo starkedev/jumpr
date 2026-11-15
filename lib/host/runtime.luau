@@ -245,13 +245,31 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 		end
 	end
 
-	-- Renders every copy but `except`: a key or edit in one copy changes the state all of them show.
+	-- Renders every copy but `except`, deferred to the host's next turn and coalesced: a key or edit in one copy
+	-- changes the state all of them show, but the copy it happened in is the one being watched, and Tern renders it
+	-- as soon as the key hook returns — so it must not wait behind the others, and a run of keys renders the others
+	-- once, not once each.
+	local others_dirty: { [Copy]: true } = {}
+	local others_scheduled = false
 	local function render_others(except: Copy)
 		for blk in blocks do
 			if blk ~= except then
-				render(blk)
+				others_dirty[blk] = true
 			end
 		end
+		if next(others_dirty) == nil or others_scheduled then
+			return
+		end
+		others_scheduled = true
+		compat.timer(0, function()
+			others_scheduled = false
+			for blk in others_dirty do
+				others_dirty[blk] = nil
+				if blocks[blk] then
+					render(blk)
+				end
+			end
+		end)
 	end
 
 	-- Moves the caret to the dock input when one opens and clears it when it closes, after the view that adds or

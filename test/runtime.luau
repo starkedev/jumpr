@@ -150,16 +150,25 @@ local function status_action(m: Fake.Machine, w: string, seq: number, a: { [stri
 	return { ev = "action", act = "st", value = m.json(msg) }
 end
 
--- A key in one copy changes the list every copy shows: the other copies are rendered, and their frames follow.
+-- A key in one copy changes the list every copy shows: the keyed copy renders first (Tern does it when the key
+-- hook returns) and the others follow on the host's next turn, coalesced, so a run of keys renders them once.
 do
-	local list = list_on(deck())
+	local list, m = list_on(deck())
 	local c1, cx1, b1 = open(list, 101)
 	local c2, cx2, b2 = open(list, 102)
 	local before1, before2 = b1.renders, b2.renders
 	check(press(list, c1, cx1, "j"), "a move in a copy changes its view")
-	check(b2.renders == before2 + 1 and b1.renders == before1, "the other copy is rendered, the keyed one is not")
+	check(b1.renders == before1 and b2.renders == before2, "no copy is rendered inside the key hook")
+	m.advance(0)
+	check(b2.renders == before2 + 1 and b1.renders == before1, "the other copy is rendered after, the keyed one is not")
+	local moved = press(list, c1, cx1, "j")
+	moved = press(list, c1, cx1, "k") or moved
+	moved = press(list, c1, cx1, "j") or moved
+	check(moved, "a run of moves changes its view")
+	m.advance(0)
+	check(b2.renders == before2 + 2, "a run of keys renders the other copy once per flush, not once per key")
 	local f2 = list.frame(c2, cx2)
-	check(f2.ui.selection ~= nil and f2.ui.selection.id == "agent-a", "the other copy shows the moved selection")
+	check(f2.ui.selection ~= nil and f2.ui.selection.id == "agent-b", "the other copy shows the moved selection")
 end
 
 -- A move onto an agent asks the window to show its tab only after a 120 ms pause; a move inside the pause replaces it.
@@ -342,6 +351,41 @@ do
 	check(stored(m).queue["agent-a"] == nil, "and clears the hold")
 end
 
+-- The window pushes one agent's change to every copy, and a full snapshot to every copy every 30 s: a change
+-- renders each copy once, and a message that changes nothing the rows show renders none — not one render per copy
+-- per message, which with many copies cost more than the list could keep up with.
+do
+	local list, m = list_on(deck())
+	local c1, cx1, b1 = open(list, 101)
+	local c2, cx2, b2 = open(list, 102)
+	local c3, cx3, b3 = open(list, 103)
+	local r1, r2, r3 = b1.renders, b2.renders, b3.renders
+	local entries = { ["agent-a"] = { { s = "w", src = "agents" } } }
+	list.event(c1, status_action(m, "win1", 1, entries), cx1)
+	check(b1.renders == r1 + 1 and b2.renders == r2 + 1 and b3.renders == r3 + 1, "a change renders every copy once")
+	r1, r2, r3 = b1.renders, b2.renders, b3.renders
+	list.event(c2, status_action(m, "win1", 2, entries), cx2)
+	list.event(c3, status_action(m, "win1", 3, entries), cx3)
+	check(
+		b1.renders == r1 and b2.renders == r2 and b3.renders == r3,
+		"the same change at the other copies renders nothing"
+	)
+	m.advance(30000)
+	-- The silence turned the header's health to "stale", so the first snapshot after it changes the head line
+	-- and renders once; the same snapshot at the other copies changes nothing.
+	list.event(c1, status_action(m, "win1", 4, entries), cx1)
+	check(
+		b1.renders == r1 + 1 and b2.renders == r2 + 1 and b3.renders == r3 + 1,
+		"a snapshot after silence renders once"
+	)
+	r1, r2, r3 = b1.renders, b2.renders, b3.renders
+	list.event(c2, status_action(m, "win1", 5, entries), cx2)
+	list.event(c3, status_action(m, "win1", 6, entries), cx3)
+	check(
+		b1.renders == r1 and b2.renders == r2 and b3.renders == r3,
+		"a full snapshot that changes nothing renders nothing"
+	)
+end
 -- A status message from another protocol version shows the banner and changes nothing else.
 do
 	local list, m = list_on(deck())

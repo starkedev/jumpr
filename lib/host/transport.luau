@@ -300,24 +300,29 @@ local function decode(io: Io, value: any): any
 end
 
 -- Merges one message into its window (`status.apply`, as the next arrival). An id this message carries gets a new
--- `changed` time only when its merged-for-display entries (`status_by_id`) differ from before, so a second window
--- reporting the same entries, or a window that went quiet resuming with them, leaves the row's age alone.
+-- `changed` time only when its merged-for-display entries (`status_by_id`) differ from before. Returns whether
+-- what the rows show changed: the window sends one agent's change to every copy, so the copies after the first
+-- merge a view that reads the same and ask for no render, and a window back from silence renders only when its
+-- return changes what the rows show — its entries had left the merged view while it was silent.
 local function merge(state: State, st: Status, w: string, msg: { [string]: any }, now: number): boolean
 	state.arrived += 1
 	local mark = state.arrived
 	local old = st.windows[w]
-	-- The display before this message, with the receiving window counted as live (its own silence is not a change).
+	-- What the rows show now: a window silent past `STALE_MS` has no entries in the merged view, so its return
+	-- counts as a change even when it reports what it last said.
+	local before = M.status_by_id(state, now)
 	if old ~= nil then
 		old.at_ms = now
 	end
-	local before = M.status_by_id(state, now)
-	local win, carried = status.apply(old, msg, mark, now)
+	local win = status.apply(old, msg, mark, now)
 	st.windows[w] = win
 	local after = M.status_by_id(state, now)
+	local shown_changed = false
 	for id, n in win.carried do
 		if n == mark then
 			if not status.same_display(before[id], after[id]) then
 				state.changed[id] = now
+				shown_changed = true
 			end
 			local merged = after[id]
 			if merged ~= nil then
@@ -329,7 +334,7 @@ local function merge(state: State, st: Status, w: string, msg: { [string]: any }
 			end
 		end
 	end
-	return carried
+	return shown_changed
 end
 
 local function none(deck: store.Deck, render: boolean): Outcome
@@ -359,9 +364,14 @@ local function on_status(state: State, st: Status, value: any, ctx: Ctx): Outcom
 	end
 	local before_version = M.version(state, ctx.now)
 	local render = M.health(state, ctx.now) ~= "ok"
+	-- The head line's connection state and emulator mark come from the machine's newest message, and the duplicate
+	-- banner from this copy's own: render when either of those changes, not when a copy that spoke later repeats
+	-- what the machine already shows. Captured before this route's own message makes it the newest.
+	local prev_newest = M.newest(state)
 	local w: string = msg.w
 	st.versions[w] = nil
-	if M.version(state, ctx.now) ~= before_version then
+	local version_changed = M.version(state, ctx.now) ~= before_version
+	if version_changed then
 		render = true
 	end
 	st.last_seq[w] = msg.seq
@@ -380,12 +390,15 @@ local function on_status(state: State, st: Status, value: any, ctx: Ctx): Outcom
 		em = if msg.em == "B" then "B" else "A",
 		t = if type(msg.t) == "number" then msg.t else nil,
 	}
-	local prev = st.latest
-	if prev.h ~= latest.h or prev.dupb ~= latest.dupb or prev.em ~= latest.em then
+	if latest.dupb ~= st.latest.dupb then
 		render = true
 	end
 	st.latest = latest
 	st.windows[w].hn = latest.hn
+	local newest = M.newest(state)
+	if newest ~= nil and prev_newest ~= nil and (newest.h ~= prev_newest.h or newest.em ~= prev_newest.em) then
+		render = true
+	end
 
 	local requests: { Req } = {}
 	if verdict == "gap" then

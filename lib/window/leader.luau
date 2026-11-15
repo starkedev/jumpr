@@ -203,6 +203,17 @@ function M.set_hidden(hidden: boolean)
 	write(s)
 end
 
+-- Sets the Esc mode when it is one of the two modes understood by list blocks.
+function M.set_esc_mode(mode: string): boolean
+	if mode ~= "A" and mode ~= "B" then
+		return false
+	end
+	local s = read()
+	s.esc_mode = mode
+	write(s)
+	return true
+end
+
 -- Records `host`'s deck session (leader only; the file is written only when the name changes), or forgets it with nil.
 function M.set_deck_session(host: string, name: string?)
 	local s = read()

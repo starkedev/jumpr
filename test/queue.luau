@@ -1,4 +1,5 @@
 --!strict
+-- Held-message queue behavior and its model and transport boundaries. Pure test harness: no `tern`.
 
 local Model = require("../lib/host/model")
 local Queue = require("../lib/host/queue")
@@ -20,11 +21,11 @@ local function sample(): (Store.Deck, Model.PaneSets, Model.StatusById)
 	deck.agents.a = {
 		gid = "g1",
 		pos = 1,
-		dir = "~/.omp/deck/a",
 		cwd = "/w",
 		created_ms = NOW - 100000,
 		state = "live",
 		pane = 11,
+		cli = "omp",
 	}
 	deck.queue.a = { text = "go", at_ms = NOW - 100 }
 	return deck, { a = { [11] = true } }, { a = { { s = "i", src = "agents" } } }
@@ -204,11 +205,11 @@ do
 	deck.agents.b = {
 		gid = "g1",
 		pos = 2,
-		dir = "~/.omp/deck/b",
 		cwd = "/w",
 		created_ms = NOW - 100000,
 		state = "live",
 		pane = 12,
+		cli = "omp",
 	}
 	deck.queue.b = { text = "second agent", at_ms = NOW - 50 }
 	sets.b = { [12] = true }

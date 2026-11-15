@@ -1,8 +1,9 @@
 --!strict
 -- An in-memory machine for the host half's tests: the second adapter behind the list's `compat` (lib/host/runtime.luau).
--- It holds the host's pane list, its kv, the folders that exist, the text typed into panes, the URLs each copy opened,
--- the renders, and a clock and timers a test steps. JSON is a table of values by token, so a test can send a copy a
--- message the way the window does and read back what the list decoded.
+-- It holds the host's pane list, its kv, the folders that exist, the files it can list and read, the grep answers a
+-- session lookup gets, the text typed into panes, the URLs each copy opened, the renders, and a clock and timers a
+-- test steps. JSON is a table of values by token, so a test can send a copy a message the way the window does and
+-- read back what the list decoded. A session file is planted the same way: its body is a token from `json`.
 
 local compat = require("../../lib/compat")
 local Runtime = require("../../lib/host/runtime")
@@ -36,6 +37,7 @@ export type Machine = {
 	-- kv, and whether a write fails.
 	kv: { [string]: any },
 	kv_fails: boolean,
+	kv_writes: number,
 	-- When set, a kv write raises this error inside the call, as Tern's kv does, and compat's wrapper turns it into
 	-- the failure the list sees.
 	kv_raises: string?,
@@ -45,6 +47,16 @@ export type Machine = {
 	typed: { { pane: number, text: string } },
 	write_fails: boolean,
 	files: { [string]: string },
+	-- The user's home, when the test has set one. Nil until then.
+	home: string?,
+	-- How many times the list asked for home.
+	home_reads: number,
+	-- Exit status a quiet grep of `/proc/<pid>/environ` should report. A missing pid answers 1.
+	grep: { [string]: number },
+	-- Argument vectors `run_status` was given, in order.
+	probes: { { string } },
+	-- Directories `fs_list` was asked for, in order.
+	lists: { string },
 	logs: { string },
 	now: number,
 	-- Encodes a value as the JSON a window would send.
@@ -69,6 +81,20 @@ function M.machine(deck: Store.Deck?): Machine
 	local function block(cx: BlockCx): Block
 		local b: any = cx
 		return b
+	end
+	local function names_under(path: string): { string }
+		local prefix = if string.sub(path, -1) == "/" then path else path .. "/"
+		local names: { string } = {}
+		for file_path in m.files do
+			if string.sub(file_path, 1, #prefix) == prefix then
+				local rest = string.sub(file_path, #prefix + 1)
+				if rest ~= "" and string.find(rest, "/", 1, true) == nil then
+					table.insert(names, rest)
+				end
+			end
+		end
+		table.sort(names)
+		return names
 	end
 	local fake: Runtime.Io = {
 		pane_list = function(): ({ any }?, string?)
@@ -126,6 +152,39 @@ function M.machine(deck: Store.Deck?): Machine
 			m.files[path] = text
 			return true, nil
 		end,
+		fs_list = function(path: string): ({ string }?, string?)
+			table.insert(m.lists, path)
+			local names = names_under(path)
+			if #names == 0 and m.dirs[path] ~= true then
+				return nil, nil
+			end
+			return names, nil
+		end,
+		fs_read = function(path: string, max_bytes: number?): (string?, string?)
+			if string.find(path, "/environ", 1, true) ~= nil or string.match(path, "%.key$") ~= nil then
+				error("refusing to read " .. path)
+			end
+			local text = m.files[path]
+			if text == nil then
+				return nil, nil
+			end
+			if max_bytes ~= nil and #text > max_bytes then
+				return string.sub(text, 1, max_bytes), nil
+			end
+			return text, nil
+		end,
+		run_status = function(argv: { string }, cb: (status: number?) -> ()): (boolean, string?)
+			table.insert(m.probes, table.clone(argv))
+			local proc = argv[6]
+			local pid = if type(proc) == "string" then string.match(proc, "^/proc/(%d+)/environ$") else nil
+			local status = if pid ~= nil then m.grep[pid] else nil
+			cb(if status == nil then 1 else status)
+			return true, nil
+		end,
+		home = function(): string?
+			m.home_reads += 1
+			return m.home
+		end,
 		kv_get = function(key: string): (any, string?)
 			return m.kv[key], nil
 		end,
@@ -139,6 +198,7 @@ function M.machine(deck: Store.Deck?): Machine
 			if m.kv_fails then
 				return false, "kv is read-only"
 			end
+			m.kv_writes += 1
 			m.kv[key] = value
 			return true, nil
 		end,
@@ -146,7 +206,8 @@ function M.machine(deck: Store.Deck?): Machine
 			return m.now
 		end,
 		wall_ms = function(): number
-			return WALL_BASE + math.floor(m.now)
+			local clock = m.now
+			return WALL_BASE + (if type(clock) == "number" then math.floor(clock) else 0)
 		end,
 		timer = function(ms: number, fn: (cx: WindowCx?) -> ()): TimerHandle
 			order += 1
@@ -187,11 +248,17 @@ function M.machine(deck: Store.Deck?): Machine
 		pane_reads = 0,
 		kv = {},
 		kv_fails = false,
+		kv_writes = 0,
 		kv_raises = nil,
 		dirs = {},
 		typed = {},
 		write_fails = false,
 		files = {},
+		home = nil,
+		home_reads = 0,
+		grep = {},
+		probes = {},
+		lists = {},
 		logs = {},
 		now = 0,
 		json = function(value: any): string

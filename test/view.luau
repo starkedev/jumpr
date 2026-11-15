@@ -1,5 +1,7 @@
 --!strict
+-- View formatting and key-bound hint checks under the plain Luau test harness.
 
+local Keymap = require("../lib/host/keymap")
 local Status = require("../lib/shared/status")
 local View = require("../lib/host/view")
 local checks = 0
@@ -9,8 +11,15 @@ local function check(condition: boolean, message: string)
 	checks += 1
 end
 
+local DEFAULT_MAP = Keymap.resolve({})
+
 local function frame(fields: { [string]: any }, ui: { [string]: any }?): any
-	local f: { [string]: any } = { health = "ok", age_ms = 3000, ui = ui or { mode = "list" } }
+	local f: { [string]: any } = {
+		health = "ok",
+		age_ms = 3000,
+		map = DEFAULT_MAP,
+		ui = ui or { mode = "list" },
+	}
 	for k, v in fields do
 		f[k] = v
 	end
@@ -129,11 +138,71 @@ check(View.clicked_tile("main.tiles") == nil and View.clicked_tile(nil) == nil, 
 check(View.clicked("main.tiles.error") == nil, "a tile is not a row")
 check(View.clicked_tile("main.cards.g1.head") == nil, "a row is not a tile")
 
--- The `?` menu's title and keys fit a 30-column pane, so neither is cut.
+-- Hints and titles keep their default wording, use overridden bindings, and keep the default menu hint within a
+-- 30-column pane.
 check(View.menu_title(nil, 1, 22) == "commands 1/22", "the menu title is its name and place")
 check(View.menu_title("pick", 3, 9) == "pick 3/9", "a named menu keeps its name")
 check((utf8.len(View.menu_title(nil, 22, 22)) or math.huge) <= 30, "the menu title fits 30 columns")
-check((utf8.len(View.MENU_HINT) or math.huge) <= 30, "the menu keys fit one 30-column line")
+check(View.menu_hint(DEFAULT_MAP) == "j/k · Enter or key runs · Esc", "the default menu hint is unchanged")
+check((utf8.len(View.menu_hint(DEFAULT_MAP)) or math.huge) <= 30, "the default menu keys fit one 30-column line")
+check(View.pick_title("move to", DEFAULT_MAP) == "move to (j/k, Enter, Esc)", "the default pick title is unchanged")
+check(
+	View.order_title("moving agent", DEFAULT_MAP) == "moving agent (j/k, Enter or V drops, Esc puts back)",
+	"the default order title is unchanged"
+)
+check(View.delete_retry_text(DEFAULT_MAP) == "delete stuck — d retries", "the default retry hint is unchanged")
+check(View.empty_text(frame({ rows = {} })) == "no groups: g adds one", "the default empty-list hint is unchanged")
+check(
+	View.empty_text(frame({ rows = {} }, { mode = "list", filter = "waiting" })) == "nothing matches",
+	"an empty filtered list still says nothing matches"
+)
+
+do
+	local map = Keymap.resolve({ down = "a", up = "b", reorder = "c", stop = "e" })
+	check(View.menu_hint(map) == "a/b · Enter or key runs · Esc", "the menu hint uses movement overrides")
+	check(View.pick_title("move to", map) == "move to (a/b, Enter, Esc)", "the pick title uses movement overrides")
+	check(
+		View.order_title("moving agent", map) == "moving agent (a/b, Enter or c drops, Esc puts back)",
+		"the order title uses movement and drop overrides"
+	)
+	check(View.delete_retry_text(map) == "delete stuck — e retries", "the retry hint uses the stop override")
+end
+
+do
+	local map = Keymap.resolve({ group = "a" })
+	check(
+		View.empty_text(frame({ rows = {}, map = map })) == "no groups: a adds one",
+		"the empty-list hint uses the group override"
+	)
+end
+
+do
+	local function shown(row: any, map: any): { string }
+		local out: { string } = {}
+		for _, item in View.legend_items(row, map) do
+			table.insert(out, item.key .. " " .. item.word)
+		end
+		return out
+	end
+	check(
+		same(shown(rows[1], DEFAULT_MAP), { "⏎ fold", "n new", "g group", "d delete", "? menu" }),
+		"the default group legend is unchanged"
+	)
+	check(
+		same(shown(rows[2], DEFAULT_MAP), { "⏎ go", "n new", "o send", "d stop", "? menu" }),
+		"the default agent legend is unchanged"
+	)
+
+	local map = Keymap.resolve({ new = "a", group = "b", stop = "c", send = "e", menu = "f" })
+	check(
+		same(shown(rows[1], map), { "⏎ fold", "a new", "b group", "c delete", "f menu" }),
+		"the group legend uses its action overrides"
+	)
+	check(
+		same(shown(rows[2], map), { "⏎ go", "a new", "e send", "c stop", "f menu" }),
+		"the agent legend uses its action overrides"
+	)
+end
 
 -- The reveal decision: a new or resized copy reveals, a moved selection reveals, a clock re-render does not.
 do

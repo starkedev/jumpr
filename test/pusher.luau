@@ -8,6 +8,7 @@ local Fake = require("./support/fake_window")
 local Agents = require("../lib/window/agents")
 local Copies = require("../lib/window/copies")
 local Leader = require("../lib/window/leader")
+local Protocol = require("../lib/shared/protocol")
 local Pusher = require("../lib/window/pusher")
 local Startup = require("../lib/window/startup")
 local checks = 0
@@ -87,71 +88,71 @@ end
 
 -- The recorded transcript: every status message of the scripted run, as `<ms> <copy> <message>`.
 local TRANSCRIPT = {
-	[[250 copy1 {a={agent-a={1={s="i",src="agents"}},agent-b={1={s="w",src="agents"}}},dupb=false,em="A",full=true,h="connected",hn="devbox",p=2,seq=1,sn="deck",t=1700000000250,w=W}]],
-	[[250 copy2 {a={agent-a={1={s="i",src="agents"}},agent-b={1={s="w",src="agents"}}},dupb=false,em="A",full=true,h="connected",hn="devbox",p=2,seq=1,sn="deck",t=1700000000250,w=W}]],
-	[[1000 copy1 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=2,sn="deck",t=1700000001000,w=W}]],
-	[[1000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=2,sn="deck",t=1700000001000,w=W}]],
-	[[1250 copy1 {a={agent-b={1={c=1700000001000,s="i",src="agents"}}},dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=3,sn="deck",t=1700000001250,w=W}]],
-	[[1250 copy2 {a={agent-b={1={c=1700000001000,s="i",src="agents"}}},dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=3,sn="deck",t=1700000001250,w=W}]],
-	[[2000 copy1 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=4,sn="deck",t=1700000002000,w=W}]],
-	[[2000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=4,sn="deck",t=1700000002000,w=W}]],
-	[[2750 copy2 {a={agent-a=[]},dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=5,sn="deck",t=1700000002750,w=W}]],
-	[[3750 copy3 {a={agent-b={1={c=1700000001000,s="i",src="agents"}},agent-c={1={s="i",src="agents"}}},dupb=false,em="A",full=true,h="connected",hn="devbox",p=2,seq=1,sn="deck",t=1700000003750,w=W}]],
-	[[3750 copy2 {a={agent-c={1={s="i",src="agents"}}},dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=6,sn="deck",t=1700000003750,w=W}]],
-	[[5000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=2,sn="deck",t=1700000005000,w=W}]],
-	[[5000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=7,sn="deck",t=1700000005000,w=W}]],
-	[[5400 copy3 {a={agent-c={1={c=1700000005150,s="w",src="agents"}}},dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=3,sn="deck",t=1700000005400,w=W}]],
-	[[5400 copy2 {a={agent-c={1={c=1700000005150,s="w",src="agents"}}},dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=8,sn="deck",t=1700000005400,w=W}]],
-	[[7000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=4,sn="deck",t=1700000007000,w=W}]],
-	[[7000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=9,sn="deck",t=1700000007000,w=W}]],
-	[[8000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=5,sn="deck",t=1700000008000,w=W}]],
-	[[8000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=10,sn="deck",t=1700000008000,w=W}]],
-	[[9000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=6,sn="deck",t=1700000009000,w=W}]],
-	[[9000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=11,sn="deck",t=1700000009000,w=W}]],
-	[[10000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=7,sn="deck",t=1700000010000,w=W}]],
-	[[10000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=12,sn="deck",t=1700000010000,w=W}]],
-	[[11000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=8,sn="deck",t=1700000011000,w=W}]],
-	[[11000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=13,sn="deck",t=1700000011000,w=W}]],
-	[[12000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=9,sn="deck",t=1700000012000,w=W}]],
-	[[12000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=14,sn="deck",t=1700000012000,w=W}]],
-	[[13000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=10,sn="deck",t=1700000013000,w=W}]],
-	[[13000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=15,sn="deck",t=1700000013000,w=W}]],
-	[[14000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=11,sn="deck",t=1700000014000,w=W}]],
-	[[14000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=16,sn="deck",t=1700000014000,w=W}]],
-	[[15000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=12,sn="deck",t=1700000015000,w=W}]],
-	[[15000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=17,sn="deck",t=1700000015000,w=W}]],
-	[[16000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=13,sn="deck",t=1700000016000,w=W}]],
-	[[16000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=18,sn="deck",t=1700000016000,w=W}]],
-	[[17000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=14,sn="deck",t=1700000017000,w=W}]],
-	[[17000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=19,sn="deck",t=1700000017000,w=W}]],
-	[[18000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=15,sn="deck",t=1700000018000,w=W}]],
-	[[18000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=20,sn="deck",t=1700000018000,w=W}]],
-	[[19000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=16,sn="deck",t=1700000019000,w=W}]],
-	[[19000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=21,sn="deck",t=1700000019000,w=W}]],
-	[[20000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=17,sn="deck",t=1700000020000,w=W}]],
-	[[20000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=22,sn="deck",t=1700000020000,w=W}]],
-	[[21000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=18,sn="deck",t=1700000021000,w=W}]],
-	[[21000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=23,sn="deck",t=1700000021000,w=W}]],
-	[[22000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=19,sn="deck",t=1700000022000,w=W}]],
-	[[22000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=24,sn="deck",t=1700000022000,w=W}]],
-	[[23000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=20,sn="deck",t=1700000023000,w=W}]],
-	[[23000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=25,sn="deck",t=1700000023000,w=W}]],
-	[[24000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=21,sn="deck",t=1700000024000,w=W}]],
-	[[24000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=26,sn="deck",t=1700000024000,w=W}]],
-	[[25000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=22,sn="deck",t=1700000025000,w=W}]],
-	[[25000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=27,sn="deck",t=1700000025000,w=W}]],
-	[[26000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=23,sn="deck",t=1700000026000,w=W}]],
-	[[26000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=28,sn="deck",t=1700000026000,w=W}]],
-	[[27000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=24,sn="deck",t=1700000027000,w=W}]],
-	[[27000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=29,sn="deck",t=1700000027000,w=W}]],
-	[[28000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=25,sn="deck",t=1700000028000,w=W}]],
-	[[28000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=30,sn="deck",t=1700000028000,w=W}]],
-	[[29000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=26,sn="deck",t=1700000029000,w=W}]],
-	[[29000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=31,sn="deck",t=1700000029000,w=W}]],
-	[[30000 copy3 {a={agent-b={1={c=1700000001000,s="i",src="agents"}},agent-c={1={c=1700000005150,s="w",src="agents"}}},dupb=false,em="A",full=true,h="connected",hn="devbox",p=2,seq=27,sn="deck",t=1700000030000,w=W}]],
-	[[30000 copy2 {a={agent-b={1={c=1700000001000,s="i",src="agents"}},agent-c={1={c=1700000005150,s="w",src="agents"}}},dupb=false,em="A",full=true,h="connected",hn="devbox",p=2,seq=32,sn="deck",t=1700000030000,w=W}]],
-	[[31000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=28,sn="deck",t=1700000031000,w=W}]],
-	[[31000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=2,seq=33,sn="deck",t=1700000031000,w=W}]],
+	[[250 copy1 {a={agent-a={1={s="i",src="agents"}},agent-b={1={s="w",src="agents"}}},dupb=false,em="A",full=true,h="connected",hn="devbox",p=3,seq=1,sn="deck",t=1700000000250,w=W}]],
+	[[250 copy2 {a={agent-a={1={s="i",src="agents"}},agent-b={1={s="w",src="agents"}}},dupb=false,em="A",full=true,h="connected",hn="devbox",p=3,seq=1,sn="deck",t=1700000000250,w=W}]],
+	[[1000 copy1 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=2,sn="deck",t=1700000001000,w=W}]],
+	[[1000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=2,sn="deck",t=1700000001000,w=W}]],
+	[[1250 copy1 {a={agent-b={1={c=1700000001000,s="i",src="agents"}}},dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=3,sn="deck",t=1700000001250,w=W}]],
+	[[1250 copy2 {a={agent-b={1={c=1700000001000,s="i",src="agents"}}},dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=3,sn="deck",t=1700000001250,w=W}]],
+	[[2000 copy1 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=4,sn="deck",t=1700000002000,w=W}]],
+	[[2000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=4,sn="deck",t=1700000002000,w=W}]],
+	[[2750 copy2 {a={agent-a=[]},dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=5,sn="deck",t=1700000002750,w=W}]],
+	[[3750 copy3 {a={agent-b={1={c=1700000001000,s="i",src="agents"}},agent-c={1={s="i",src="agents"}}},dupb=false,em="A",full=true,h="connected",hn="devbox",p=3,seq=1,sn="deck",t=1700000003750,w=W}]],
+	[[3750 copy2 {a={agent-c={1={s="i",src="agents"}}},dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=6,sn="deck",t=1700000003750,w=W}]],
+	[[5000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=2,sn="deck",t=1700000005000,w=W}]],
+	[[5000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=7,sn="deck",t=1700000005000,w=W}]],
+	[[5400 copy3 {a={agent-c={1={c=1700000005150,s="w",src="agents"}}},dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=3,sn="deck",t=1700000005400,w=W}]],
+	[[5400 copy2 {a={agent-c={1={c=1700000005150,s="w",src="agents"}}},dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=8,sn="deck",t=1700000005400,w=W}]],
+	[[7000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=4,sn="deck",t=1700000007000,w=W}]],
+	[[7000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=9,sn="deck",t=1700000007000,w=W}]],
+	[[8000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=5,sn="deck",t=1700000008000,w=W}]],
+	[[8000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=10,sn="deck",t=1700000008000,w=W}]],
+	[[9000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=6,sn="deck",t=1700000009000,w=W}]],
+	[[9000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=11,sn="deck",t=1700000009000,w=W}]],
+	[[10000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=7,sn="deck",t=1700000010000,w=W}]],
+	[[10000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=12,sn="deck",t=1700000010000,w=W}]],
+	[[11000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=8,sn="deck",t=1700000011000,w=W}]],
+	[[11000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=13,sn="deck",t=1700000011000,w=W}]],
+	[[12000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=9,sn="deck",t=1700000012000,w=W}]],
+	[[12000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=14,sn="deck",t=1700000012000,w=W}]],
+	[[13000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=10,sn="deck",t=1700000013000,w=W}]],
+	[[13000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=15,sn="deck",t=1700000013000,w=W}]],
+	[[14000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=11,sn="deck",t=1700000014000,w=W}]],
+	[[14000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=16,sn="deck",t=1700000014000,w=W}]],
+	[[15000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=12,sn="deck",t=1700000015000,w=W}]],
+	[[15000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=17,sn="deck",t=1700000015000,w=W}]],
+	[[16000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=13,sn="deck",t=1700000016000,w=W}]],
+	[[16000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=18,sn="deck",t=1700000016000,w=W}]],
+	[[17000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=14,sn="deck",t=1700000017000,w=W}]],
+	[[17000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=19,sn="deck",t=1700000017000,w=W}]],
+	[[18000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=15,sn="deck",t=1700000018000,w=W}]],
+	[[18000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=20,sn="deck",t=1700000018000,w=W}]],
+	[[19000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=16,sn="deck",t=1700000019000,w=W}]],
+	[[19000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=21,sn="deck",t=1700000019000,w=W}]],
+	[[20000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=17,sn="deck",t=1700000020000,w=W}]],
+	[[20000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=22,sn="deck",t=1700000020000,w=W}]],
+	[[21000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=18,sn="deck",t=1700000021000,w=W}]],
+	[[21000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=23,sn="deck",t=1700000021000,w=W}]],
+	[[22000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=19,sn="deck",t=1700000022000,w=W}]],
+	[[22000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=24,sn="deck",t=1700000022000,w=W}]],
+	[[23000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=20,sn="deck",t=1700000023000,w=W}]],
+	[[23000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=25,sn="deck",t=1700000023000,w=W}]],
+	[[24000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=21,sn="deck",t=1700000024000,w=W}]],
+	[[24000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=26,sn="deck",t=1700000024000,w=W}]],
+	[[25000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=22,sn="deck",t=1700000025000,w=W}]],
+	[[25000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=27,sn="deck",t=1700000025000,w=W}]],
+	[[26000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=23,sn="deck",t=1700000026000,w=W}]],
+	[[26000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=28,sn="deck",t=1700000026000,w=W}]],
+	[[27000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=24,sn="deck",t=1700000027000,w=W}]],
+	[[27000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=29,sn="deck",t=1700000027000,w=W}]],
+	[[28000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=25,sn="deck",t=1700000028000,w=W}]],
+	[[28000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=30,sn="deck",t=1700000028000,w=W}]],
+	[[29000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=26,sn="deck",t=1700000029000,w=W}]],
+	[[29000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=31,sn="deck",t=1700000029000,w=W}]],
+	[[30000 copy3 {a={agent-b={1={c=1700000001000,s="i",src="agents"}},agent-c={1={c=1700000005150,s="w",src="agents"}}},dupb=false,em="A",full=true,h="connected",hn="devbox",p=3,seq=27,sn="deck",t=1700000030000,w=W}]],
+	[[30000 copy2 {a={agent-b={1={c=1700000001000,s="i",src="agents"}},agent-c={1={c=1700000005150,s="w",src="agents"}}},dupb=false,em="A",full=true,h="connected",hn="devbox",p=3,seq=32,sn="deck",t=1700000030000,w=W}]],
+	[[31000 copy3 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=28,sn="deck",t=1700000031000,w=W}]],
+	[[31000 copy2 {a=[],dupb=false,em="A",full=false,h="connected",hn="devbox",p=3,seq=33,sn="deck",t=1700000031000,w=W}]],
 }
 
 -- One machine with a deck session of two tabs: agent-a idle, agent-b working.
@@ -220,7 +221,10 @@ do
 		check(list[1].full == true, label(pane) .. ": the first message to a copy is a full snapshot")
 		for i, msg in list do
 			check(msg.seq == i, label(pane) .. ": seq counts up by one per message")
-			check(msg.p == 2 and msg.w == Leader.uid(), label(pane) .. ": every message carries p and the window uid")
+			check(
+				msg.p == Protocol.P and msg.w == Leader.uid(),
+				label(pane) .. ": every message carries p and the window uid"
+			)
 		end
 	end
 	local copy2 = Fake.copies_in(t2)[1]
@@ -243,6 +247,41 @@ end
 check(#transcript == #TRANSCRIPT, "the run sends as many messages as the transcript holds")
 for i, line in TRANSCRIPT do
 	check(transcript[i] == line, "message " .. tostring(i) .. " matches the transcript: " .. tostring(transcript[i]))
+end
+
+-- A settings pane has its own route metadata, never joins the copy map or receives status, but still accompanies a copy.
+do
+	local settings_tab = Fake.tab(deck)
+	local settings_pane =
+		Fake.pane(settings_tab, { kind = "plugin", block = Protocol.SETTINGS_KIND, title = "Jumpr settings" })
+	local settings_copy =
+		Fake.pane(settings_tab, { kind = "plugin", block = Protocol.BLOCK_KIND, title = "Jumpr list", left = true })
+	Pusher.rebuild(cx)
+	local host, session = Pusher.settings_info(settings_pane)
+	check(host == "devbox" and session == "deck", "scan records a settings pane's host and session")
+	check(not Pusher.is_block(settings_pane), "a settings pane is not a list block")
+	check(Pusher.is_block(settings_copy), "the accompanying list remains a list block")
+	local found_settings = false
+	for _, pane in Pusher.blocks_for("devbox") do
+		if pane == settings_pane then
+			found_settings = true
+		end
+	end
+	check(not found_settings, "blocks_for never includes a settings pane")
+	check(Pusher.accompanied(settings_tab), "a settings pane still counts as an ordinary companion for tidy")
+	local before = #Fake.world().events
+	Pusher.full(cx)
+	local settings_status, copy_status = false, false
+	for i = before + 1, #Fake.world().events do
+		local event = Fake.world().events[i]
+		if event.act == "st" and event.pane == settings_pane then
+			settings_status = true
+		elseif event.act == "st" and event.pane == settings_copy then
+			copy_status = true
+		end
+	end
+	check(not settings_status, "a settings pane receives no status push")
+	check(copy_status, "the list beside settings still receives status")
 end
 
 print("Pusher: " .. checks .. " checks passed")

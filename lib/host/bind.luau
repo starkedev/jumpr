@@ -63,8 +63,8 @@ local function remove_pane(state: State, id: string, pane: number)
 	end
 end
 
--- A deck id seen in `text` for `pane`. With the deck loaded, an id with no record is ignored (an omp session Jumpr did not start is never listed);
--- before it loads, the record check waits for `apply_queued`.
+-- A deck id seen in `text` for `pane`. With the deck loaded, an id with no record is ignored (an agent session
+-- Jumpr did not start is never listed); before it loads, the record check waits for `apply_queued`.
 local function seen(state: State, deck: store.Deck?, text: string, pane: number?)
 	if pane == nil then
 		return
@@ -102,10 +102,10 @@ local function running_pane(state: State, id: string, pane: number): number?
 end
 
 -- The `spawn` filter: string work only. Joins program and args with spaces and records `env.TERN_PANE`.
--- One omp per agent: a spawn of a deck agent this machine already runs in another pane (two windows acting on one
--- start, or a pane started by hand with the same session folder) is replaced by a line saying so, which exits 0, so
--- Tern closes the pane; it is never bound, and the next tick says so in the list. Two omp processes on one session
--- folder would both write it. Otherwise nil: the spawn is not changed.
+-- One process per agent: a spawn of a deck agent this machine already runs in another pane (two windows acting on
+-- one start, or a process started by hand with the same identity) is replaced by a line saying so, which exits 0, so
+-- Tern closes the pane; it is never bound, and the next tick says so in the list. Two processes for one agent could
+-- both write its session data. Otherwise nil: the spawn is not changed.
 function M.on_spawn(state: State, deck: store.Deck?, spec: Spec): Replace?
 	local parts: { string } = { spec.program or "" }
 	local args: { string } = spec.args or {}
@@ -197,8 +197,9 @@ local function id_of_pane(state: State, deck: store.Deck, pane: number): string?
 end
 
 -- `pane_exited`: drops the pane's queued bindings and removes it from its id's set. While another pane of a
--- duplicate stays bound the record moves to that pane; otherwise `model.apply_exit` marks it exited (or deletes it
--- after a stop), then `sweep_groups`.
+-- duplicate stays bound the record moves to that pane and the closed stamp is left alone. Otherwise
+-- `model.apply_exit` marks it exited (or deletes it after a stop), `sweep_groups` runs, and that ending stamps
+-- which agent of that kind closed last in the folder.
 function M.on_exited(state: State, deck: store.Deck, ev: Exited, now_ms: number): store.Deck
 	local keep: { Bind } = {}
 	for _, b in state.queued do
@@ -229,7 +230,8 @@ function M.on_exited(state: State, deck: store.Deck, ev: Exited, now_ms: number)
 		-- Bound elsewhere: reconcile decides once the pane list shows whether that pane still runs.
 		return deck
 	end
-	return model.sweep_groups(model.apply_exit(deck, id, ev.status, now_ms))
+	local ended = model.sweep_groups(model.apply_exit(deck, id, ev.status, now_ms))
+	return model.stamp_closed(ended, id)
 end
 
 -- The pane ids in the host's pane list (each item has a numeric `pane`; other fields are ignored).
@@ -259,7 +261,7 @@ end
 -- Runs on each render with the host's pane list: drops gone panes from every set, seeds a live record's set from
 -- its cached pane after a reload, moves a duplicate's record to its remaining pane, then applies
 -- `model.reconcile_states` (a live or stopping record whose pane is gone, as if `pane_exited` had come) and
--- `model.sweep_groups`.
+-- `model.sweep_groups`, and remembers each bound agent's usable pane title (`model.remember_titles`).
 function M.reconcile(state: State, deck: store.Deck, panes: { any }, now_ms: number): store.Deck
 	local live = M.live_set(panes)
 	for id, set in state.sets do
@@ -292,7 +294,7 @@ function M.reconcile(state: State, deck: store.Deck, panes: { any }, now_ms: num
 		end
 	end
 	out = model.reconcile_states(out, live, now_ms)
-	return model.sweep_groups(out)
+	return model.remember_titles(model.sweep_groups(out), panes, state.sets)
 end
 
 -- Pending starts with no pane `NO_PANE_MS` after `created_ms` go through `model.start_failed(…, "no_pane")`.

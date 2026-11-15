@@ -9,7 +9,8 @@
 -- * Every function runs its Tern call through `pcall` and returns `(value, err?)`; `err` is a string exactly when
 --   the call failed. For a call with no result the value is `true` on success and `false` on failure. The clock,
 --   timer, log, data-folder and JSON functions are the exception: they pass straight through, raising as the direct
---   call would, except `json_decode`, which returns `(value, err?)`.
+--   call would, except `json_decode`, which returns `(value, err?)`. `home` returns only the path, or nil when the
+--   call fails.
 -- * Window functions take the window `cx` (WindowCx) first, host block functions the block `cx` (BlockCx); calls
 --   on the `tern` global take no `cx`.
 -- * Field reads that differ between Tern versions are normalised here: optional fields that arrive as
@@ -260,6 +261,43 @@ function M.agents_stop(cx: WindowCx, pane: number): (boolean, string?)
 	end)
 end
 
+-- Window: actions and settings ------------------------------------------------------------------------------------
+
+-- Effective chord-to-action bindings (`cx.actions:keys()`).
+function M.actions_keys(cx: WindowCx): ({ [string]: { string } }?, string?)
+	return call(function(): { [string]: { string } }
+		return cx.actions:keys()
+	end)
+end
+
+-- Binds a chord to one action (`cx.settings:bind`).
+function M.settings_bind(cx: WindowCx, chord: string, action: string): (boolean, string?)
+	return act(function()
+		cx.settings:bind(chord, action)
+	end)
+end
+
+-- Leaves a chord to the focused program (`cx.settings:unbind`).
+function M.settings_unbind(cx: WindowCx, chord: string): (boolean, string?)
+	return act(function()
+		cx.settings:unbind(chord)
+	end)
+end
+
+-- The user's raw chord overrides (`cx.settings:keybinds()`), preserving string and list values.
+function M.settings_keybinds_raw(cx: WindowCx): ({ [string]: string | { string } }?, string?)
+	return call(function(): { [string]: string | { string } }
+		return cx.settings:keybinds()
+	end)
+end
+
+-- Replaces the user's chord overrides (`cx.settings:set("keybinds", keybinds)`).
+function M.settings_set_keybinds(cx: WindowCx, keybinds: { [string]: any }): (boolean, string?)
+	return act(function()
+		cx.settings:set("keybinds", keybinds)
+	end)
+end
+
 -- Window: panes, tabs, sessions, hosts ------------------------------------------------------------------------------
 
 -- Every pane in the window, parked ones and other sessions' included (`cx.session:panes()`).
@@ -491,6 +529,13 @@ function M.render(cx: BlockCx): (boolean, string?)
 	end)
 end
 
+-- Ends a host block with an exit code (`cx:exit`).
+function M.block_exit(cx: BlockCx, code: number): (boolean, string?)
+	return act(function()
+		cx:exit(code)
+	end)
+end
+
 -- Gives a view node the surface's focus (caret and native edits) with a raw TSP op (`cx:frame`); nil clears it.
 function M.focus_field(cx: BlockCx, id: string?): (boolean, string?)
 	return act(function()
@@ -576,6 +621,16 @@ function M.fs_read(path: string, max_bytes: number?): (string?, string?)
 	end)
 end
 
+-- Entry names of a directory (`tern.fs.list`); nil, with no error, when the path does not exist.
+function M.fs_list(path: string): ({ string }?, string?)
+	return call(function(): { string }?
+		if not tern.fs.exists(path) then
+			return nil
+		end
+		return tern.fs.list(path)
+	end)
+end
+
 -- Writes a file, replacing it (`tern.fs.write`), and first creates its parent directory if that is missing.
 function M.fs_write(path: string, text: string): (boolean, string?)
 	return act(function()
@@ -598,6 +653,17 @@ function M.is_dir(path: string): (boolean, string?)
 		return true
 	end)
 	return found == true, err
+end
+
+-- The user's home directory (`tern.getenv("HOME")`); nil unless that value is an absolute path.
+function M.home(): string?
+	local value = call(function(): string?
+		return str(tern.getenv("HOME"))
+	end)
+	if value == nil or string.sub(value, 1, 1) ~= "/" then
+		return nil
+	end
+	return value
 end
 
 -- Processes ---------------------------------------------------------------------------------------------------------
@@ -628,6 +694,20 @@ function M.process_run_version(cb: (string?) -> ()): (boolean, string?)
 			local first = if res.status == 0 then string.match(str(res.stdout) or "", "^[^\n]*") else nil
 			local version = if first ~= nil then trim(first) else ""
 			cb(if version ~= "" then version else nil)
+		end)
+	end)
+	if not ok then
+		cb(nil)
+	end
+	return ok, err
+end
+
+-- Runs `argv` with no shell (`tern.process.run`, `timeout_ms` 5000). `cb` gets the exit status.
+-- If the process cannot start, `cb(nil)` runs before this returns, and the result is false with the error.
+function M.run_status(argv: { string }, cb: (status: number?) -> ()): (boolean, string?)
+	local ok, err = act(function()
+		tern.process.run(argv, { timeout_ms = 5000 }, function(res: ProcessResult, _cx: WindowCx?)
+			cb(res.status)
 		end)
 	end)
 	if not ok then

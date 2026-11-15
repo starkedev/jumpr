@@ -20,7 +20,7 @@ local function agent(deck: Store.Deck, id: string, gid: string, pos: number, fie
 	local r: Store.Record = {
 		gid = gid,
 		pos = pos,
-		dir = "~/.omp/deck/" .. id,
+		cli = "omp",
 		cwd = "/home/a/" .. gid,
 		created_ms = NOW - 1000,
 		state = "live",
@@ -80,7 +80,7 @@ end
 
 local NONE: Model.View = {}
 
--- Rows: groups in array order, agents by pos; default labels from the cleaned pane title, else "omp <n>".
+-- Rows: groups in array order, agents by pos; default labels use the agent kind and cleaned pane title.
 do
 	local deck, sets, st = sample()
 	local rows = Model.rows(deck, PANES, sets, st, NONE, "ok")
@@ -91,6 +91,68 @@ do
 	check(not find(rows, "a").dim, "an idle row is not dimmed")
 	check(find(rows, "a").live and not d.live, "live needs a live record with a bound pane")
 	check(find(rows, "a").src == "agents", "an agent row carries its status source")
+
+	agent(deck, "e", "g2", 3, { cli = "claude" })
+	sets.e = { [300] = true }
+	local panes = table.clone(PANES)
+	table.insert(panes, { pane = 300, title = "Claude Code" })
+	local defaults = Model.rows(deck, panes, sets, st, NONE, "ok")
+	check(find(defaults, "e").label == "claude 3", "a default ACP title uses the CLI-aware fallback label")
+	panes[4].title = "Fix the parser"
+	local titled = Model.rows(deck, panes, sets, st, NONE, "ok")
+	check(find(titled, "e").label == "Fix the parser", "an ACP agent uses its custom pane title")
+end
+
+-- A row's label is the user's own label, else its pane's usable title, else the title its record remembers, else
+-- `<agent> <n>`: a pane whose title is not usable (empty, or a restarted chat's default name) and an exited agent
+-- show the remembered title, and search finds it as the label.
+do
+	local deck, sets, st = sample()
+	deck.agents.a.title = "auth tokens"
+	deck.agents.b.title = "old parser"
+	deck.agents.c.title = "website copy"
+	deck.agents.d.title = "notes cleanup"
+	agent(deck, "e", "g2", 3, { cli = "claude", title = "Fix the parser" })
+	sets.e = { [300] = true }
+	local panes = table.clone(PANES)
+	table.insert(panes, { pane = 300, title = "Claude Code" })
+	local rows = Model.rows(deck, panes, sets, st, NONE, "ok")
+	check(find(rows, "a").label == "Auth Fix", "the user's own label wins over a remembered title")
+	check(find(rows, "b").label == "refactor parser", "a usable pane title wins over the remembered one")
+	check(find(rows, "c").label == "website copy", "an empty pane title shows the remembered one")
+	check(find(rows, "e").label == "Fix the parser", "a restarted chat's default name shows the remembered one")
+	check(find(rows, "d").state == "exited" and find(rows, "d").label == "notes cleanup", "an exited row shows it")
+	check(
+		labels(Model.rows(deck, panes, sets, st, { search = "cleanup" }, "ok")) == "#notes,notes cleanup",
+		"search finds a remembered title as the label"
+	)
+end
+
+-- remember_titles keeps each bound agent's usable pane title on its record. A new usable title gives a new deck;
+-- the same titles again, a turned spinner frame, titles that are not usable (empty, the agent's default) and an agent
+-- with no bound pane (exited) give the same deck, so nothing is saved and the remembered title stays.
+do
+	local deck, sets, _ = sample()
+	local panes = table.clone(PANES)
+	panes[1] = { pane = 100, title = "auth tokens" }
+	local out = Model.remember_titles(deck, panes, sets)
+	check(out ~= deck, "a usable title gives a new deck")
+	check(out.agents.b.title == "refactor parser", "the title is remembered without its spinner frame")
+	check(out.agents.a.title == "auth tokens", "an agent with its own label remembers its pane title too")
+	check(out.agents.c.title == nil and out.agents.d.title == nil, "an empty title or no pane remembers nothing")
+	check(deck.agents.b.title == nil, "remember_titles leaves its input untouched")
+	check(Model.remember_titles(out, panes, sets) == out, "the same titles again give the same deck")
+	local spun = table.clone(panes)
+	spun[2] = { pane = 200, title = "⠙ refactor parser" }
+	check(Model.remember_titles(out, spun, sets) == out, "a turned spinner frame gives the same deck")
+	local unusable = table.clone(panes)
+	unusable[1] = { pane = 100, title = "omp" }
+	unusable[2] = { pane = 200, title = "" }
+	check(Model.remember_titles(out, unusable, sets) == out, "titles that are not usable give the same deck")
+	check(out.agents.a.title == "auth tokens" and out.agents.b.title == "refactor parser", "the remembered ones stay")
+	local renamed = table.clone(panes)
+	renamed[2] = { pane = 200, title = "parser tests" }
+	check(Model.remember_titles(out, renamed, sets).agents.b.title == "parser tests", "a new usable title replaces it")
 end
 
 -- A folded group hides its agents.
@@ -212,7 +274,7 @@ do
 	local pending: Store.Record = {
 		gid = "g1",
 		pos = 1,
-		dir = "~/.omp/deck/p",
+		cli = "omp",
 		cwd = "/home/a/g1",
 		created_ms = NOW,
 		state = "pending",
@@ -222,11 +284,20 @@ do
 	local bound, verdict = Model.on_bind(pending, 42)
 	check(verdict == "live" and bound.state == "live" and bound.pane == 42, "a pending record binds live")
 	check(bound.failed == nil and bound.ended_ms == nil, "binding clears failed and ended")
-	check(pending.state == "pending" and pending.failed == true, "on_bind leaves its input untouched")
+	check(bound.ran == true, "binding records that the agent has run")
+	check(
+		pending.state == "pending" and pending.failed == true and pending.ran == nil,
+		"on_bind leaves its input untouched"
+	)
+	local deck = Store.empty()
+	deck.agents.p = bound
+	local after_exit = Model.apply_exit(deck, "p", 0, NOW + 1)
+	check(after_exit.agents.p.state == "exited" and after_exit.agents.p.ran == true, "an exit preserves the ran mark")
 	local exited: Store.Record = table.clone(pending)
 	exited.state, exited.failed, exited.exit, exited.ended_ms = "exited", nil, 0, NOW - 5
 	local again, v2 = Model.on_bind(exited, 43)
 	check(v2 == "live" and again.state == "live" and again.ended_ms == nil, "an exited record binds live again")
+	check(again.ran == true, "rebinding an exited record records that it ran")
 end
 
 -- start_failed acts only on pending records.
@@ -602,6 +673,250 @@ do
 	check(total == 4, "a duplicate counts once, so the tiles still total four agents")
 	local stale = Model.tally(deck, st, "stale")
 	check(stale.waiting == nil, "stale status counts nobody as waiting")
+end
+
+-- Restart mode: a proven session wins, then never-ran, then the last closed agent, otherwise the picker.
+do
+	local deck = Store.empty()
+	local work = Store.closed_key("claude", "/work")
+	agent(deck, "proved", "g1", 1, {
+		cli = "claude",
+		cwd = "/work",
+		state = "exited",
+		ran = true,
+		session = "sess-1",
+		exit = 0,
+		ended_ms = NOW,
+	})
+	agent(deck, "fresh", "g1", 2, { cli = "claude", cwd = "/work", state = "exited", exit = 0, ended_ms = NOW })
+	agent(deck, "marked", "g1", 3, {
+		cli = "claude",
+		cwd = "/work",
+		state = "exited",
+		ran = false,
+		exit = 0,
+		ended_ms = NOW,
+	})
+	agent(deck, "last", "g1", 4, {
+		cli = "claude",
+		cwd = "/work",
+		state = "exited",
+		ran = true,
+		exit = 0,
+		ended_ms = NOW,
+	})
+	agent(deck, "other", "g1", 5, {
+		cli = "claude",
+		cwd = "/work",
+		state = "exited",
+		ran = true,
+		exit = 0,
+		ended_ms = NOW,
+	})
+	deck.closed[work] = "proved"
+	local mode, sid = Model.restart_mode(deck.agents.proved, "proved", deck)
+	check(mode == "resume" and sid == "sess-1", "a session resumes even when this agent closed last")
+	deck.closed[work] = "fresh"
+	local fresh_mode, fresh_sid = Model.restart_mode(deck.agents.fresh, "fresh", deck)
+	check(fresh_mode == "new" and fresh_sid == nil, "an agent that never ran starts new")
+	deck.agents.fresh.session = "sess-2"
+	local proved_fresh, proved_fresh_sid = Model.restart_mode(deck.agents.fresh, "fresh", deck)
+	check(proved_fresh == "resume" and proved_fresh_sid == "sess-2", "a session resumes even when the agent never ran")
+	deck.closed[work] = "marked"
+	local marked_mode, marked_sid = Model.restart_mode(deck.agents.marked, "marked", deck)
+	check(
+		marked_mode == "new" and marked_sid == nil,
+		"a record marked as never ran starts new even when it is the stamp"
+	)
+	deck.closed[work] = "last"
+	local last_mode, last_sid = Model.restart_mode(deck.agents.last, "last", deck)
+	check(last_mode == "continue" and last_sid == nil, "the last closed agent of its kind continues")
+	local other_mode, other_sid = Model.restart_mode(deck.agents.other, "other", deck)
+	check(other_mode == "pick" and other_sid == nil, "another agent in that folder opens the picker")
+end
+
+-- A non-omp close stamps its own kind and folder. A pane exit without a stop does not.
+do
+	local deck = Store.empty()
+	local work = Store.closed_key("claude", "/work")
+	local other = Store.closed_key("claude", "/other")
+	local codex = Store.closed_key("codex", "/work")
+	agent(deck, "a", "g1", 1, { cli = "claude", cwd = "/work", ran = true })
+	agent(deck, "b", "g1", 2, { cli = "claude", cwd = "/other", ran = true })
+	agent(deck, "c", "g1", 3, { cli = "codex", cwd = "/work", ran = true })
+	local stamped = Model.stamp_closed(deck, "a")
+	check(stamped ~= deck and stamped.closed[work] == "a", "a non-omp close stamps a copy")
+	check(deck.closed[work] == nil, "stamping leaves the input untouched")
+	check(Model.stamp_closed(stamped, "a") == stamped, "the same stamp changes nothing")
+	local folder = Model.stamp_closed(stamped, "b")
+	check(folder.closed[work] == "a" and folder.closed[other] == "b", "another folder gets its own stamp")
+	local kind = Model.stamp_closed(stamped, "c")
+	check(kind.closed[work] == "a" and kind.closed[codex] == "c", "another kind gets its own stamp")
+	local exited = Model.apply_exit(deck, "a", 0, NOW)
+	check(
+		exited.agents.a.state == "exited" and exited.agents.a.ran == true,
+		"a pane exit without a stop keeps the record"
+	)
+	check(next(exited.closed) == nil, "that exit does not stamp")
+	check(Model.stamp_closed(deck, "missing") == deck, "an unknown id never stamps")
+end
+
+-- omp never stamps and always starts new, even with a session and a closed stamp.
+do
+	local deck = Store.empty()
+	local key = Store.closed_key("omp", "/home/a/g1")
+	agent(deck, "o", "g1", 1, { state = "stopping", stop_ms = NOW, ran = true, session = "sess" })
+	agent(deck, "still", "g1", 2, { state = "exited", ran = true, session = "sess", exit = 0, ended_ms = NOW })
+	deck.closed[key] = "still"
+	check(Model.stamp_closed(deck, "o") == deck, "omp never stamps")
+	local out = Model.apply_exit(deck, "o", 0, NOW)
+	check(out.agents.o == nil, "a stopped omp record is still deleted")
+	check(out.closed[key] == "still", "the delete does not write an omp stamp")
+	local mode, sid = Model.restart_mode(deck.agents.still, "still", deck)
+	check(mode == "new" and sid == nil, "omp always starts new")
+end
+
+-- A stop that deletes an ACP record stamps it closed, so an earlier exit in that folder is no longer last.
+do
+	local deck = Store.empty()
+	local work = Store.closed_key("claude", "/work")
+	local other = Store.closed_key("claude", "/other")
+	local codex = Store.closed_key("codex", "/work")
+	agent(deck, "early", "g1", 1, {
+		cli = "claude",
+		cwd = "/work",
+		state = "exited",
+		ran = true,
+		exit = 0,
+		ended_ms = NOW - 5,
+	})
+	agent(deck, "late", "g1", 2, { cli = "claude", cwd = "/work", state = "stopping", stop_ms = NOW, ran = true })
+	agent(deck, "recent", "g1", 3, { cli = "claude", cwd = "/recent", ran = true, stop_ms = NOW - 1000 })
+	agent(deck, "elsewhere", "g1", 4, {
+		cli = "claude",
+		cwd = "/other",
+		state = "exited",
+		ran = true,
+		exit = 0,
+		ended_ms = NOW - 5,
+	})
+	agent(deck, "otherkind", "g1", 5, {
+		cli = "codex",
+		cwd = "/work",
+		state = "exited",
+		ran = true,
+		exit = 0,
+		ended_ms = NOW - 5,
+	})
+	deck.closed[work] = "early"
+	deck.closed[other] = "elsewhere"
+	deck.closed[codex] = "otherkind"
+	deck.queue.late = { text = "hold", at_ms = NOW }
+	local out = Model.apply_exit(deck, "late", 0, NOW)
+	check(out.agents.late == nil and out.queue.late == nil, "a stop deletes the record and its held message")
+	check(out.closed[work] == "late", "the deleted record is stamped closed before it goes")
+	check(deck.agents.late ~= nil and deck.closed[work] == "early", "the stop delete leaves its input untouched")
+	local mode, sid = Model.restart_mode(out.agents.early, "early", out)
+	check(mode == "pick" and sid == nil, "the earlier exit is no longer the last closed")
+	local kept, kept_sid = Model.restart_mode(out.agents.elsewhere, "elsewhere", out)
+	check(kept == "continue" and kept_sid == nil and out.closed[other] == "elsewhere", "another folder is left alone")
+	local kind, kind_sid = Model.restart_mode(out.agents.otherkind, "otherkind", out)
+	check(kind == "continue" and kind_sid == nil and out.closed[codex] == "otherkind", "another kind is left alone")
+	local recent = Model.apply_exit(deck, "recent", 0, NOW)
+	check(recent.agents.recent == nil, "a live record whose stop is still inside the window is deleted")
+	check(recent.closed[Store.closed_key("claude", "/recent")] == "recent", "that delete stamps closed too")
+end
+
+-- Reconcile exits and deletes in an arbitrary order, so it cannot leave a last-closed stamp.
+do
+	local deck = Store.empty()
+	local work = Store.closed_key("claude", "/work")
+	agent(deck, "a", "g1", 1, { cli = "claude", cwd = "/work", ran = true, pane = 1 })
+	agent(deck, "b", "g1", 2, { cli = "claude", cwd = "/work", ran = true, pane = 2 })
+	deck.closed[work] = "a"
+	local out = Model.reconcile_states(deck, {}, NOW)
+	check(out.agents.a.state == "exited" and out.agents.b.state == "exited", "both missing panes exit together")
+	check(out.agents.a.ran == true and out.agents.b.ran == true, "reconcile keeps the ran mark")
+	check(out.closed[work] == nil, "reconcile clears the shared closed key")
+	local mode_a, sid_a = Model.restart_mode(out.agents.a, "a", out)
+	local mode_b, sid_b = Model.restart_mode(out.agents.b, "b", out)
+	check(mode_a == "pick" and sid_a == nil, "the earlier stamp is not trusted")
+	check(mode_b == "pick" and sid_b == nil, "the other record is not trusted either")
+	check(deck.closed[work] == "a" and deck.agents.a.state == "live", "reconcile leaves its input untouched")
+
+	local mixed = Store.empty()
+	local other = Store.closed_key("claude", "/other")
+	agent(mixed, "early", "g1", 1, {
+		cli = "claude",
+		cwd = "/work",
+		state = "exited",
+		ran = true,
+		exit = 0,
+		ended_ms = NOW - 5,
+	})
+	agent(mixed, "late", "g1", 2, {
+		cli = "claude",
+		cwd = "/work",
+		state = "stopping",
+		stop_ms = NOW,
+		ran = true,
+		pane = 9,
+	})
+	agent(mixed, "live", "g1", 3, { cli = "claude", cwd = "/work", ran = true, pane = 10 })
+	agent(mixed, "away", "g1", 4, { cli = "claude", cwd = "/other", ran = true, pane = 11 })
+	mixed.closed[work] = "early"
+	mixed.closed[other] = "away"
+	local cleared = Model.reconcile_states(mixed, { [11] = true }, NOW)
+	check(cleared.agents.late == nil, "a stopping record with no listed pane is deleted")
+	check(cleared.agents.live.state == "exited", "a live record with no listed pane exits")
+	check(cleared.closed[work] == nil, "reconcile clears the stamp a stop delete just wrote")
+	local survivor, survivor_sid = Model.restart_mode(cleared.agents.early, "early", cleared)
+	check(survivor == "pick" and survivor_sid == nil, "the survivor is not treated as last closed")
+	check(cleared.agents.away.state == "live" and cleared.closed[other] == "away", "another folder's stamp stays")
+	check(Model.restart_mode(cleared.agents.away, "away", cleared) == "continue", "that folder still continues")
+
+	local both = Store.empty()
+	agent(both, "s1", "g1", 1, { cli = "claude", cwd = "/work", state = "stopping", ran = true, pane = 1 })
+	agent(both, "s2", "g1", 2, { cli = "claude", cwd = "/work", state = "stopping", ran = true, pane = 2 })
+	both.closed[work] = "s1"
+	local deleted = Model.reconcile_states(both, {}, NOW)
+	check(deleted.agents.s1 == nil and deleted.agents.s2 == nil, "both stopping records are deleted")
+	check(deleted.closed[work] == nil, "neither delete leaves a closed stamp")
+
+	local omp = Store.empty()
+	agent(omp, "o", "g1", 1, { pane = 1 })
+	omp.closed[work] = "keep"
+	local omp_out = Model.reconcile_states(omp, {}, NOW)
+	check(omp_out.agents.o.state == "exited", "a missing omp pane still exits")
+	check(omp_out.closed[work] == "keep", "reconciling omp does not clear an ACP stamp")
+end
+
+-- set_session stores a different proven id on a live non-omp record, and leaves every other record alone.
+do
+	local deck = Store.empty()
+	agent(deck, "a", "g1", 1, { cli = "claude", session = "old" })
+	local replaced = Model.set_session(deck, "a", "new")
+	check(replaced ~= deck and replaced.agents.a.session == "new", "a different id replaces the stored session")
+	check(deck.agents.a.session == "old", "set_session leaves its input untouched")
+	check(Model.set_session(replaced, "a", "new") == replaced, "an equal id leaves the deck")
+	local none = Store.empty()
+	agent(none, "b", "g1", 1, { cli = "claude" })
+	local filled = Model.set_session(none, "b", "sid")
+	check(filled.agents.b.session == "sid", "a record with no session takes the proven id")
+	check(none.agents.b.session == nil, "filling a session leaves the input untouched")
+	check(Model.set_session(deck, "missing", "x") == deck, "an unknown id is left alone")
+	local omp = Store.empty()
+	agent(omp, "o", "g1", 1)
+	check(Model.set_session(omp, "o", "sid") == omp, "omp never stores a session")
+	local exited = Store.empty()
+	agent(exited, "e", "g1", 1, { cli = "claude", state = "exited", session = "old", exit = 0, ended_ms = NOW })
+	check(Model.set_session(exited, "e", "new") == exited, "an exited record keeps its session")
+	local stopping = Store.empty()
+	agent(stopping, "s", "g1", 1, { cli = "claude", state = "stopping", session = "old" })
+	check(Model.set_session(stopping, "s", "new") == stopping, "a stopping record is left alone")
+	local pending = Store.empty()
+	agent(pending, "p", "g1", 1, { cli = "claude", state = "pending", session = "old" })
+	check(Model.set_session(pending, "p", "new") == pending, "a pending record is left alone")
 end
 
 print("Model: " .. checks .. " checks passed")

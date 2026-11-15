@@ -6,9 +6,10 @@
 -- heartbeat, and a full snapshot on the window half's start (startup.ensure), budget resumed, hello and every 30 s.
 -- A copy this window has not sent to yet (created or first seen after the start) gets its first snapshot on first
 -- contact. Every window pushes; the block merges the windows' reports by when each saw an agent's entry change.
--- The scan also finds two copies in one tab (`dupb`), records the session holding each host's copies in the
--- window file (leader only), and rebuilds the tab -> agent title map the tab-title formatter reads. `follow` sends the
--- copies one focus message (`act = "fo"`) when the last-tab chord lands on an agent, so the list highlights it.
+-- The scan also finds two copies in one tab (`dupb`), records settings panes separately for cfg routing, records the
+-- session holding each host's copies in the window file (leader only), and rebuilds the tab -> agent title map the
+-- tab-title formatter reads. `follow` sends the copies one focus message (`act = "fo"`) when the last-tab chord lands
+-- on an agent, so the list highlights it.
 
 local compat = require("../compat")
 local harness = require("../harness")
@@ -36,6 +37,7 @@ type Sent = { keys: { [string]: string }, last: { [string]: { status.Entry } }, 
 
 local blocks_by_host: { [string]: { number } } = {}
 local block_of: { [number]: Block } = {}
+local settings_of: { [number]: Block } = {}
 -- The copies in each tab (more than one is a duplicate), lowest pane first.
 local copies_by_tab: { [number]: { number } } = {}
 -- The title of the agent pane in each tab that holds a copy, for the tab-title formatter.
@@ -142,6 +144,7 @@ function M.scan(cx: WindowCx, read_hosts: { ManagedHost }?, read_panes: { compat
 	local by_pane: { [number]: Block } = {}
 	local by_tab: { [number]: { number } } = {}
 	local no_host: { [number]: boolean } = {}
+	local settings: { [number]: Block } = {}
 	for _, p in panes do
 		if p.block == BLOCK_KIND then
 			local h = host_of[p.pane]
@@ -173,6 +176,21 @@ function M.scan(cx: WindowCx, read_hosts: { ManagedHost }?, read_panes: { compat
 					end
 					table.insert(in_tab, p.pane)
 				end
+			end
+		end
+	end
+	for _, p in panes do
+		if p.block == protocol.SETTINGS_KIND then
+			local h = host_of[p.pane]
+			if h ~= nil then
+				local session: string? = nil
+				if p.tab ~= nil then
+					session = session_of_tab[p.tab]
+				end
+				if session == nil and #h.sessions == 1 then
+					session = session_name[h.sessions[1]]
+				end
+				settings[p.pane] = { pane = p.pane, host = h.name, session = session, tab = p.tab }
 			end
 		end
 	end
@@ -214,7 +232,7 @@ function M.scan(cx: WindowCx, read_hosts: { ManagedHost }?, read_panes: { compat
 		end
 	end
 	local titles_changed = not same_titles(agent_titles, titles)
-	blocks_by_host, block_of, copies_by_tab, host_state = by_host, by_pane, by_tab, new_state
+	blocks_by_host, block_of, copies_by_tab, settings_of, host_state = by_host, by_pane, by_tab, settings, new_state
 	agent_titles = titles
 	accompanied = {}
 	for tab in chosen do
@@ -501,6 +519,15 @@ end
 -- The host and session of the copy `pane` (nil when it is not a copy in the last scan).
 function M.block_info(pane: number): (string?, string?)
 	local b = block_of[pane]
+	if b == nil then
+		return nil, nil
+	end
+	return b.host, b.session
+end
+
+-- The host and session of the settings `pane` (nil when it is not a settings pane in the last scan).
+function M.settings_info(pane: number): (string?, string?)
+	local b = settings_of[pane]
 	if b == nil then
 		return nil, nil
 	end

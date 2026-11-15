@@ -31,13 +31,14 @@
 --   {kind = "check_folder", purpose, folder, gid?, id?, text?}  check that `folder` is a directory on this machine
 --     and answer with `folder_checked`. Purposes: "folder" (the g folder line), "new" (n, with the group `gid` and
 --     the first prompt `text`), "retry" (Enter on a failed pending row `id`) and "restart" (Enter on an exited row
---     `id`). Tern starts a pane whose folder is
+--     `id`); Enter in that row's `o` line asks for either too. Tern starts a pane whose folder is
 --     missing in the home directory, and omp then moves itself to a temp dir, so nothing is stored or started in a
 --     folder this machine does not have.
 --   {kind = "show", id}  arm the 120 ms timer whose firing feeds `show_due` back.
 --   {kind = "render"}  something visible changed (the block's key handler returns false without it).
 
 local identity = require("../shared/identity")
+local keymap = require("./keymap")
 local model = require("./model")
 local queue = require("./queue")
 local status = require("../shared/status")
@@ -120,11 +121,15 @@ M.FOLDER_MISSING = "folder not found on "
 M.SINGLE_LINE = "single line only"
 M.DELETING = "group is being deleted"
 M.ASKING = "agent is asking — answer it in its tab"
-M.HELD = "a queued message is already waiting — press q to edit it"
+function M.HELD(map: keymap.Map): string
+	return "a queued message is already waiting — press " .. map.key_of.queue .. " to edit it"
+end
 M.STOPPING = "already stopping"
 M.REMOVING = "being removed — wait"
 M.EMPTY_MESSAGE = "type a message"
 M.PANE_GONE = "pane gone — message queued"
+M.RESTARTING = "restarting — message queued"
+M.PICK_QUEUED = "queued — Enter picks its conversation"
 M.CHANGED = "nothing done: that row changed"
 M.GROUP_GONE = "group is gone"
 M.ORDER_FILTERED = "clear the search and filter to reorder"
@@ -300,8 +305,15 @@ local function fresh_id(rand: (number) -> number, taken: (string) -> boolean): s
 end
 
 -- State threaded through one reduce call.
-type Step =
-	{ ui: UI, deck: store.Deck, effects: { Effect }, rows: { model.Row }, now: number, rand: (number) -> number }
+type Step = {
+	ui: UI,
+	deck: store.Deck,
+	effects: { Effect },
+	rows: { model.Row },
+	now: number,
+	rand: (number) -> number,
+	map: keymap.Map,
+}
 
 local function save(s: Step)
 	table.insert(s.effects, { kind = "save_kv" })
@@ -329,14 +341,16 @@ local function move_to(s: Step, i: number)
 	s.ui.selection = model.select_row(row)
 end
 
--- Where a movement key takes a highlight at `at` among `last` items: j/k and ↓/↑ by one (from nothing highlighted,
--- to the first), G and End to the last, Home to the first. Nil for any other key; the caller clamps.
-local function moved(name: string?, ch: string?, at: number?, last: number): number?
-	if name == "down" or ch == "j" then
+-- Where a movement key takes a highlight at `at` among `last` items: the mapped down/up actions and ↓/↑ move by
+-- one (from nothing highlighted, to the first), the mapped last action and End go to the last, and Home goes to the
+-- first. Nil for any other key; the caller clamps.
+local function moved(map: keymap.Map, name: string?, ch: string?, at: number?, last: number): number?
+	local action = if ch ~= nil then map.action_of[ch] else nil
+	if name == "down" or action == "down" then
 		return if at ~= nil then at + 1 else 1
-	elseif name == "up" or ch == "k" then
+	elseif name == "up" or action == "up" then
 		return if at ~= nil then at - 1 else 1
-	elseif name == "end" or ch == "G" then
+	elseif name == "end" or action == "last" then
 		return last
 	elseif name == "home" then
 		return 1
@@ -344,18 +358,19 @@ local function moved(name: string?, ch: string?, at: number?, last: number): num
 	return nil
 end
 
--- Where J/K take the selection at `at` among `rows`: J to the next group's header row, K to the previous one, and K
--- from an agent row to its own group's header first. At the first or last group it stays put, as j/k stop at the
--- list's ends; from nothing highlighted it goes to the first row, as j/k do. Only rows in `rows` count, so a folded
--- group's agents and whatever a search or filter hides are passed over. Nil for any other key.
-local function group_moved(ch: string?, rows: { model.Row }, at: number?): number?
-	if ch ~= "J" and ch ~= "K" then
+-- Where the mapped next-group and previous-group actions take the selection at `at` among `rows`: next to the next
+-- group's header row, previous to the preceding one, and previous from an agent row to its own group's header first.
+-- At the first or last group it stays put, as down/up stop at the list's ends; from nothing highlighted it goes to
+-- the first row. Only rows in `rows` count, so folded and hidden agents are passed over. Nil for any other key.
+local function group_moved(map: keymap.Map, ch: string?, rows: { model.Row }, at: number?): number?
+	local action = if ch ~= nil then map.action_of[ch] else nil
+	if action ~= "next_group" and action ~= "prev_group" then
 		return nil
 	end
 	if at == nil then
 		return 1
 	end
-	local step = if ch == "J" then 1 else -1
+	local step = if action == "next_group" then 1 else -1
 	local i = at + step
 	while rows[i] ~= nil do
 		if rows[i].kind == "header" then
@@ -420,6 +435,30 @@ local function start_n(s: Step, gid: string?)
 	table.insert(s.effects, { kind = "check_folder", purpose = "new", folder = g.cwd, gid = g.gid })
 end
 
+-- Where Enter on `id`'s row would start the agent again: "restart" for an exited record, "retry" for a failed
+-- start that is not being removed, nil for any other record.
+local function start_purpose(r: store.Record): string?
+	if r.state == "exited" then
+		return "restart"
+	end
+	if r.state == "pending" and r.failed == true and r.cancel ~= true then
+		return "retry"
+	end
+	return nil
+end
+
+-- Starts agent `id` again where Enter on its row would (see `start_purpose`), once its folder is checked on this
+-- machine (`retry` and `restart` take the answer). Enter on a row and Enter in its `o` line both start an agent
+-- again through here.
+local function start_again(s: Step, id: string, r: store.Record): boolean
+	local purpose = start_purpose(r)
+	if purpose == nil then
+		return false
+	end
+	table.insert(s.effects, { kind = "check_folder", purpose = purpose, folder = r.cwd, id = id })
+	return true
+end
+
 local function enter_agent(s: Step, row: model.Row)
 	local id = row.id :: string
 	local r = s.deck.agents[id]
@@ -430,27 +469,27 @@ local function enter_agent(s: Step, row: model.Row)
 		s.ui.notice = M.DUPLICATE
 		return
 	end
-	if r.state == "pending" then
-		if r.cancel == true then
-			s.ui.notice = M.REMOVING
-			return
-		end
-		if r.failed ~= true then
-			s.ui.notice = M.STARTING
-			return
-		end
-		table.insert(s.effects, { kind = "check_folder", purpose = "retry", folder = r.cwd, id = id })
+	if start_again(s, id, r) then
 		return
 	end
-	if r.state == "exited" then
-		table.insert(s.effects, { kind = "check_folder", purpose = "restart", folder = r.cwd, id = id })
+	if r.state == "pending" then
+		s.ui.notice = if r.cancel == true then M.REMOVING else M.STARTING
 		return
 	end
 	request(s, "jump", { id = id })
 end
 
+-- Puts the conversation id on a resume request. Every other mode leaves it off: the window reads sid only then.
+local function attach_sid(fields: { [string]: string }, mode: string, sid: string?)
+	if mode == "resume" and sid ~= nil then
+		fields.sid = sid
+	end
+end
+
 -- The retry Enter asked for, once its folder is checked: still a failed, pending record in the
 -- checked folder (anything else changed meanwhile, and nothing is done), and the folder is still there.
+-- The start mode is read from the stored record before failed and ended_ms are cleared. A resume also
+-- carries that conversation id; other modes do not.
 local function retry(s: Step, ev: Event)
 	local id = ev.id :: string
 	local r = s.deck.agents[id]
@@ -461,6 +500,7 @@ local function retry(s: Step, ev: Event)
 		s.ui.notice = folder_missing(s)
 		return
 	end
+	local mode, sid = model.restart_mode(r, id, s.deck)
 	local out = store.clone(s.deck)
 	local nr = out.agents[id]
 	nr.created_ms = s.now
@@ -468,13 +508,15 @@ local function retry(s: Step, ev: Event)
 	nr.ended_ms = nil
 	s.deck = out
 	save(s)
-	request(s, "start", { id = id, cwd = nr.cwd, label = nr.label or "" })
+	local fields: { [string]: string } = { id = id, cwd = nr.cwd, cli = r.cli, mode = mode, label = nr.label or "" }
+	attach_sid(fields, mode, sid)
+	request(s, "start", fields)
 end
 
 -- The restart Enter asked for on an exited row, once its folder is checked: still exited in the checked folder
 -- (anything else changed meanwhile, and nothing is done), and the folder is still there. The record goes back to
--- `pending` with the same deck id, so `start` runs `omp --continue` on its own session dir and the conversation
--- resumes; `land` asks the window to focus the new pane, since Enter means "go to it".
+-- `pending` with the same deck id and the mode chosen from its stored history before any field is cleared; a
+-- resume also carries that conversation id. `land` asks the window to focus the new pane, since Enter means "go to it".
 local function restart(s: Step, ev: Event)
 	local id = ev.id :: string
 	local r = s.deck.agents[id]
@@ -485,6 +527,7 @@ local function restart(s: Step, ev: Event)
 		s.ui.notice = folder_missing(s)
 		return
 	end
+	local mode, sid = model.restart_mode(r, id, s.deck)
 	local out = store.clone(s.deck)
 	local nr = out.agents[id]
 	nr.state = "pending"
@@ -495,14 +538,20 @@ local function restart(s: Step, ev: Event)
 	nr.pane = nil
 	s.deck = out
 	save(s)
-	request(s, "start", { id = id, cwd = nr.cwd, label = nr.label or "", land = "1" })
+	local fields: { [string]: string } =
+		{ id = id, cwd = nr.cwd, cli = r.cli, mode = mode, label = nr.label or "", land = "1" }
+	attach_sid(fields, mode, sid)
+	request(s, "start", fields)
 end
 
--- `o` and `q` on the selected row: an input line for the message. Refused on a header ("select an agent") and on a
--- duplicate. `o` also refuses on an agent that is asking (typed text would answer its question) and, when the pane
--- is gone, with a message already held (`q` edits that one). `q` opens with the held text.
-local function message_key(s: Step, row: model.Row?, ch: string)
+-- The mapped send and queue actions on the selected row open a message input. Both refuse on a header ("select an
+-- agent") and on a duplicate. Send also refuses on an agent that is asking (typed text would answer its question)
+-- and, when the pane is gone, with a message already held (queue edits that one). Queue opens with the held text.
+local function message_key(s: Step, row: model.Row?, action: string)
 	local ui = s.ui
+	if action ~= "send" and action ~= "queue" then
+		return
+	end
 	if row == nil then
 		return
 	end
@@ -516,13 +565,13 @@ local function message_key(s: Step, row: model.Row?, ch: string)
 	end
 	local id = row.id :: string
 	local held = queue.held(s.deck.queue, id)
-	if ch == "o" then
+	if action == "send" then
 		if row.asking == true then
 			ui.notice = M.ASKING
 			return
 		end
 		if not row.live and held ~= nil then
-			ui.notice = M.HELD
+			ui.notice = M.HELD(s.map)
 			return
 		end
 		open_input(ui, "send", "send", "")
@@ -685,29 +734,30 @@ export type MenuItem = {
 }
 
 -- The menu's commands in order: what acts on the selected row first, then starting things, the view, and moving.
--- needs: "row" (any selected row), "agent" or "group" (a selected row of that kind); nil for none. ⏎ and d take
--- their words from the row (`menu_items`); j and k are the menu's own moves too, so only Enter picks them there.
-type MenuSpec = { key: string, label: string, short: string?, needs: string? }
+-- needs: "row" (any selected row), "agent" or "group" (a selected row of that kind); nil for none. Enter and the
+-- status rows carry fixed keys; every list command carries its action id and resolves its current key in menu_items.
+type MenuSpec = { action: string?, key: string?, label: string, short: string?, needs: string? }
 local MENU: { MenuSpec } = {
 	{ key = "⏎", label = "", needs = "row" },
-	{ key = "o", label = "send a message", short = "send", needs = "agent" },
-	{ key = "q", label = "queue a message", needs = "agent" },
-	{ key = "r", label = "rename", needs = "agent" },
-	{ key = "m", label = "move to another group", needs = "agent" },
-	{ key = "V", label = "reorder", short = "move", needs = "row" },
-	{ key = "d", label = "", needs = "row" },
-	{ key = "n", label = "new agent", short = "new" },
-	{ key = "g", label = "new group", short = "group" },
-	{ key = "/", label = "search" },
+	{ action = "send", label = "send a message", short = "send", needs = "agent" },
+	{ action = "queue", label = "queue a message", needs = "agent" },
+	{ action = "rename", label = "rename", needs = "agent" },
+	{ action = "move", label = "move to another group", needs = "agent" },
+	{ action = "reorder", label = "reorder", short = "move", needs = "row" },
+	{ action = "stop", label = "", needs = "row" },
+	{ action = "new", label = "new agent", short = "new" },
+	{ action = "group", label = "new group", short = "group" },
+	{ action = "search", label = "search" },
 	-- (per `status.ORDER` entry a "<word> only" item, then per entry an "add or drop <word>" item, go here in its order)
 	{ key = "0", label = "every status" },
-	{ key = "i", label = "show status sources" },
-	{ key = "h", label = "fold group", needs = "group" },
-	{ key = "l", label = "open group", needs = "group" },
-	{ key = "J", label = "next group" },
-	{ key = "K", label = "previous group" },
-	{ key = "j", label = "down" },
-	{ key = "k", label = "up" },
+	{ action = "sources", label = "show status sources" },
+	{ action = "settings", label = "settings" },
+	{ action = "fold", label = "fold group", needs = "group" },
+	{ action = "unfold", label = "open group", needs = "group" },
+	{ action = "next_group", label = "next group" },
+	{ action = "prev_group", label = "previous group" },
+	{ action = "down", label = "down" },
+	{ action = "up", label = "up" },
 }
 
 -- The status filters sit just before "every status": one "only" item per ranked status in the one priority order,
@@ -727,7 +777,7 @@ do
 	end
 end
 
--- What ⏎ and d do on `row`, as the menu's label and the legend's word.
+-- What Enter and stop do on `row`, as the menu's label and the legend's word.
 local function row_words(row: model.Row?): (string, string, string, string)
 	if row ~= nil and row.kind == "header" then
 		if row.folded then
@@ -742,16 +792,17 @@ local function row_words(row: model.Row?): (string, string, string, string)
 	return "go to agent", "go", "stop agent", "stop"
 end
 
--- The `?` menu's commands for the selected row `row` (nil: none), always the same keys in the same order.
-function M.menu_items(row: model.Row?): { MenuItem }
-	local enter, enter_short, d, d_short = row_words(row)
+-- The command menu's items for the selected row `row` (nil: none), always in the same action order. Each action's
+-- chip and event use the resolved key so picking it is equivalent to pressing that key in the list.
+function M.menu_items(row: model.Row?, map: keymap.Map): { MenuItem }
+	local enter, enter_short, stop, stop_short = row_words(row)
 	local out: { MenuItem } = {}
 	for _, spec in MENU do
 		local label, short = spec.label, spec.short
 		if spec.key == "⏎" then
 			label, short = enter, enter_short
-		elseif spec.key == "d" then
-			label, short = d, d_short
+		elseif spec.action == "stop" then
+			label, short = stop, stop_short
 		end
 		local refusal: string? = nil
 		if spec.needs == "row" and row == nil then
@@ -761,11 +812,12 @@ function M.menu_items(row: model.Row?): { MenuItem }
 		elseif spec.needs == "group" and (row == nil or row.kind ~= "header") then
 			refusal = M.SELECT_GROUP
 		end
+		local key = if spec.action ~= nil then map.key_of[spec.action] else spec.key :: string
 		local event: Event = if spec.key == "⏎"
 			then { kind = "key", name = "enter" }
-			else { kind = "key", name = spec.key, text = spec.key }
+			else { kind = "key", name = key, text = key }
 		table.insert(out, {
-			key = spec.key,
+			key = key,
 			label = label,
 			short = short,
 			enabled = refusal == nil,
@@ -780,10 +832,11 @@ local function list_key(s: Step, ev: Event)
 	local ui = s.ui
 	local name = ev.name
 	local ch = char_of(ev)
+	local action = if ch ~= nil then s.map.action_of[ch] else nil
 	local row = selected_row(s)
 	local before = ui.selection
 	local at = model.index_of(s.rows, before)
-	local target = moved(name, ch, at, #s.rows) or group_moved(ch, s.rows, at)
+	local target = moved(s.map, name, ch, at, #s.rows) or group_moved(s.map, ch, s.rows, at)
 	if name == "escape" then
 		if ui.em == "B" then
 			return
@@ -809,41 +862,43 @@ local function list_key(s: Step, ev: Event)
 		elseif name == "enter" then
 			enter_agent(s, row)
 		end
-	elseif ch == "h" or ch == "l" then
-		if row ~= nil and row.kind == "header" then
-			set_folded(s, row.gid, ch == "h")
-		end
-	elseif ch == "/" then
-		open_input(ui, "search", "search", ui.search or "")
-	elseif ch == "?" then
-		ui.mode = "menu"
-		ui.title = "commands"
-		ui.menu = 1
 	elseif status.by_key(ch) ~= nil then
-		-- `! @ # $` set one filter (or clear it when it is the only one on), even over a combined filter.
+		-- The status filter keys set one filter (or clear it when it is the only one on), even over a combined filter.
 		local code = (status.by_key(ch) :: status.Status).code
 		ui.filter = if ui.filter == code then nil else code
 	elseif status.by_add_key(ch) ~= nil then
-		-- `1 2 3 4` add their status to the filter or drop it, as an alt+click on its tile does.
+		-- The status add keys add their status to the filter or drop it, as an alt+click on its tile does.
 		ui.filter = status.filter_toggle(ui.filter, (status.by_add_key(ch) :: status.Status).code)
 	elseif ch == "0" then
 		ui.filter = nil
-	elseif ch == "i" then
+	elseif action == "fold" or action == "unfold" then
+		if row ~= nil and row.kind == "header" then
+			set_folded(s, row.gid, action == "fold")
+		end
+	elseif action == "search" then
+		open_input(ui, "search", "search", ui.search or "")
+	elseif action == "menu" then
+		ui.mode = "menu"
+		ui.title = "commands"
+		ui.menu = 1
+	elseif action == "sources" then
 		ui.show_src = not ui.show_src
-	elseif ch == "n" then
+	elseif action == "settings" then
+		request(s, "settings", {})
+	elseif action == "new" then
 		start_n(s, if row ~= nil then row.gid else nil)
-	elseif ch == "g" then
+	elseif action == "group" then
 		local r = if row ~= nil and row.id ~= nil then s.deck.agents[row.id] else nil
 		open_input(ui, "folder", "folder", if r ~= nil then r.cwd else (ui.block_cwd or ""))
-	elseif ch == "d" then
+	elseif action == "stop" then
 		delete_key(s, row)
-	elseif ch == "m" then
+	elseif action == "move" then
 		move_key(s, row)
-	elseif ch == "V" then
+	elseif action == "reorder" then
 		order_key(s, row)
-	elseif ch == "o" or ch == "q" then
-		message_key(s, row, ch)
-	elseif ch == "r" then
+	elseif action == "send" or action == "queue" then
+		message_key(s, row, action)
+	elseif action == "rename" then
 		if row == nil then
 			return
 		end
@@ -861,25 +916,32 @@ local function list_key(s: Step, ev: Event)
 	end
 end
 
--- A key in the `?` menu: j/k and ↑/↓ move the highlight, Home and End go to the first and last command. Enter picks
--- the highlighted command and a command's own key picks it directly (j and k move instead). A pick closes the menu
--- and sends the command's key to the list, so it runs exactly what that key runs there; a command the selected row
--- does not suit refuses with its notice and the menu stays open. Esc or ? closes the menu; anything else does nothing.
+-- A key in the command menu: the mapped down/up actions and arrows move the highlight, Home and End go to the first
+-- and last command. Enter picks the highlighted command and a command's own mapped key picks it directly (movement
+-- actions move instead). A pick closes the menu and sends its mapped key to the list, so it runs exactly what that
+-- key runs there. A command the selected row does not suit refuses with its notice and the menu stays open. Esc or
+-- the mapped menu action closes the menu; anything else does nothing.
 local function menu_key(s: Step, ev: Event)
 	local ui = s.ui
 	local name = ev.name
 	local ch = char_of(ev)
-	local items = M.menu_items(selected_row(s))
+	local action = if ch ~= nil then s.map.action_of[ch] else nil
+	local items = M.menu_items(selected_row(s), s.map)
 	local at = math.clamp(ui.menu or 1, 1, #items)
-	if name == "escape" or ch == "?" then
+	if name == "escape" or action == "menu" then
 		close_mode(ui)
 		return
 	end
 	if ev.ctrl or ev.alt or ev.meta then
 		return
 	end
-	local stepping = name == "up" or name == "down" or name == "home" or name == "end" or ch == "j" or ch == "k"
-	local to = if stepping then moved(name, ch, at, #items) else nil
+	local moving = name == "up"
+		or name == "down"
+		or name == "home"
+		or name == "end"
+		or action == "down"
+		or action == "up"
+	local to = if moving then moved(s.map, name, ch, at, #items) else nil
 	if to ~= nil then
 		ui.menu = math.clamp(to, 1, #items)
 		return
@@ -949,19 +1011,20 @@ local function new_checked(s: Step, ev: Event)
 			pos = r.pos
 		end
 	end
+	local cli = deck.settings.agent
 	local out = store.clone(deck)
 	out.agents[id] = {
 		gid = g.gid,
 		pos = pos + 1,
-		dir = identity.dir_for(id),
 		cwd = g.cwd,
 		created_ms = s.now,
 		state = "pending",
+		cli = cli,
 	}
 	s.deck = out
 	ui.selection = { kind = "agent", id = id, gid = g.gid }
 	save(s)
-	request(s, "start", { id = id, cwd = g.cwd })
+	request(s, "start", { id = id, cwd = g.cwd, cli = cli, mode = "new" })
 end
 
 -- Enter on the g folder line: a folder name `start` could never take is refused here; any other is checked on
@@ -1072,8 +1135,12 @@ local function row_of(s: Step, id: string): model.Row?
 end
 
 -- Enter in the `o` input. Asks the host to send the text now when the agent is live (the host stamps and saves the
--- send before typing); with the pane gone it holds the text as the agent's queued message, or refuses when one is
--- already held.
+-- send before typing). An agent that Enter on its row would start again (exited, or a failed start) is started again
+-- the same way, and the text is held as its queued message, which the queue sends once the agent is idle.
+-- A start that would open Tern's conversation picker is not started (a typed message could land in the picker):
+-- only the message is held, and the notice says Enter picks the conversation. Any other agent whose pane is gone
+-- (a start under way or being removed, a stop under way) only holds the text. With a message already held it
+-- refuses, and nothing is started.
 -- The row is read again here, because status may have changed while the line was open; a row a filter now hides
 -- is judged from its record alone.
 local function submit_send(s: Step)
@@ -1100,13 +1167,23 @@ local function submit_send(s: Step)
 	elseif live then
 		table.insert(s.effects, { kind = "write", id = id, text = text })
 	elseif queue.held(s.deck.queue, id) ~= nil then
-		ui.notice = M.HELD
+		ui.notice = M.HELD(s.map)
 	else
+		-- The mode the start would use, read from the stored record before anything changes, as `restart` and
+		-- `retry` read it: a picker start is not started here, so the held message cannot be typed into the picker.
+		local mode = model.restart_mode(r, id, s.deck)
 		local out = store.clone(s.deck)
 		out.queue = queue.set(s.deck.queue, id, text, s.now)
 		s.deck = out
 		save(s)
-		ui.notice = M.PANE_GONE
+		if start_purpose(r) == nil then
+			ui.notice = M.PANE_GONE
+		elseif mode == "pick" then
+			ui.notice = M.PICK_QUEUED
+		else
+			start_again(s, id, r)
+			ui.notice = M.RESTARTING
+		end
 	end
 end
 
@@ -1192,9 +1269,9 @@ local function move_agent(s: Step, id: string, target: store.Group)
 	save(s)
 end
 
--- A key in the `m` picker: j/k and ↑/↓ move the highlight (G, Home and End are the list's, not the picker's), Enter
--- moves the agent there (a group that is being deleted refuses, one that was swept meanwhile is gone), Esc and
--- anything else leaves it unchanged.
+-- A key in the move picker: the mapped down/up actions and arrows move the highlight (the mapped last action, Home
+-- and End are the list's, not the picker's), Enter moves the agent there, and Esc or anything else leaves it
+-- unchanged. A group that is being deleted refuses, and one swept meanwhile is gone.
 local function pick_key(s: Step, ev: Event)
 	local ui = s.ui
 	local name = ev.name
@@ -1209,8 +1286,9 @@ local function pick_key(s: Step, ev: Event)
 			ui.pick = g.gid
 		end
 	end
-	local stepping = name == "up" or name == "down" or ch == "j" or ch == "k"
-	local to = if stepping then moved(name, ch, at, last) else nil
+	local action = if ch ~= nil then s.map.action_of[ch] else nil
+	local stepping = name == "up" or name == "down" or action == "down" or action == "up"
+	local to = if stepping then moved(s.map, name, ch, at, last) else nil
 	if to ~= nil then
 		highlight(to)
 	elseif name == "enter" then
@@ -1283,9 +1361,10 @@ local function place_group(s: Step, gid: string, to: number)
 	save(s)
 end
 
--- A key in `order` mode: j/k and ↑/↓ step the held row one place (an agent within its group, a group among the
--- groups), G/End and Home send it to the end and start, Enter or V drops it where it is, Esc puts it back where V
--- picked it up. Every step saves, as `m` does. A row that went away meanwhile ends the mode.
+-- A key in reorder mode: the mapped down/up actions and arrows step the held row one place (an agent within its
+-- group, a group among the groups); the mapped last action, End and Home send it to an end. Enter or the mapped
+-- reorder action drops it where it is; Esc puts it back where the action picked it up. Every step saves, as a move
+-- does. A row that went away meanwhile ends the mode.
 local function order_mode_key(s: Step, ev: Event)
 	local ui = s.ui
 	local at: number?, count: number
@@ -1315,10 +1394,11 @@ local function order_mode_key(s: Step, ev: Event)
 	end
 	local name = ev.name
 	local ch = char_of(ev)
-	local to = moved(name, ch, at, count)
+	local action = if ch ~= nil then s.map.action_of[ch] else nil
+	local to = moved(s.map, name, ch, at, count)
 	if to ~= nil then
 		place(to)
-	elseif name == "enter" or ch == "V" then
+	elseif name == "enter" or action == "reorder" then
 		close_mode(ui)
 	elseif name == "escape" then
 		place(ui.order_at or count)
@@ -1457,7 +1537,8 @@ function M.reduce(
 	now: number,
 	rand: (number) -> number
 ): (UI, store.Deck, { Effect })
-	local s: Step = { ui = table.clone(ui), deck = deck, effects = {}, rows = rows, now = now, rand = rand }
+	local map = keymap.resolve(deck.settings.keys)
+	local s: Step = { ui = table.clone(ui), deck = deck, effects = {}, rows = rows, now = now, rand = rand, map = map }
 	if event.kind == "key" then
 		s.ui.notice = nil
 		s.ui.show_pending = nil

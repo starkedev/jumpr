@@ -5,7 +5,7 @@
 
 local M = {}
 
-M.P = 2
+M.P = 3
 
 -- The request verbs a window knows.
 M.VERBS = table.freeze({
@@ -17,7 +17,38 @@ M.VERBS = table.freeze({
 	diag = true,
 	show = true,
 	name = true,
+	settings = true,
+	cfg = true,
 }) :: { [string]: boolean }
+
+-- The global chord actions, in settings-page order.
+M.CHORD_ACTIONS = table.freeze({
+	table.freeze({ id = "toggle_focus", label = "Show or hide the list" }),
+	table.freeze({ id = "hide_list", label = "Hide the list" }),
+	table.freeze({ id = "last_tab", label = "Go to the last tab" }),
+}) :: { { id: string, label: string } }
+
+-- The modifiers Tern's keybinds grammar gives two names (`alt` or `opt`, `cmd` or `super`), and the name each is
+-- compared under.
+local MODIFIER_ALIASES: { [string]: string } = { opt = "alt", super = "cmd" }
+
+-- Canonical spelling for comparing chords after Tern reorders or renames their modifiers: lowercased, `opt` read as
+-- `alt` and `super` as `cmd`, and in each chord of a `>` sequence the modifiers sorted with the key kept last.
+function M.normalise_chord(chord: string): string
+	local steps = string.split(string.lower(chord), ">")
+	for i, step in steps do
+		local parts = string.split(step, "+")
+		local out: { string } = {}
+		for j = 1, #parts - 1 do
+			table.insert(out, MODIFIER_ALIASES[parts[j]] or parts[j])
+		end
+		table.sort(out)
+		local key = parts[#parts]
+		table.insert(out, MODIFIER_ALIASES[key] or key)
+		steps[i] = table.concat(out, "+")
+	end
+	return table.concat(steps, ">")
+end
 
 -- Query keys the URL itself owns; a verb field may not reuse them, and `dir` never travels (each half derives it from the deck id).
 local RESERVED: { [string]: boolean } = { p = true, b = true, r = true, host = true, sn = true, dir = true }
@@ -52,6 +83,24 @@ export type Request = {
 
 -- A reply (`act = "res"`) to the block that sent request `r`.
 export type Reply = { p: number, b: string, r: number, ok: boolean, err: string? }
+
+-- A window-settings reply (`act = "cfg"`).
+export type WindowCfg = {
+	p: number,
+	machine: string,
+	em: string,
+	chords: { [string]: { string } },
+	defaults: { [string]: string },
+	err: string?,
+}
+
+export type WindowCfgFields = {
+	machine: string,
+	em: string,
+	chords: { [string]: { string } },
+	defaults: { [string]: string },
+	err: string?,
+}
 
 function M.status_msg(
 	window_uid: string,
@@ -100,6 +149,23 @@ local function check_version(p: any): string
 		return "bad_p_newer"
 	end
 	return "ok"
+end
+
+-- Adds this protocol version to one window-settings reply.
+function M.cfg_msg(cfg: WindowCfgFields): WindowCfg
+	return {
+		p = M.P,
+		machine = cfg.machine,
+		em = cfg.em,
+		chords = cfg.chords,
+		defaults = cfg.defaults,
+		err = cfg.err,
+	}
+end
+
+-- The version verdict for a window-settings reply.
+function M.check_cfg(msg: { [string]: any }): string
+	return check_version(msg.p)
 end
 
 -- A focus message's version verdict ("ok" | "bad_p_newer" | "bad_p_older") and, on "ok", the deck id it names (nil
@@ -161,7 +227,7 @@ local function decode(s: string): string
 	)
 end
 
--- `jumpr://<verb>?p=1&b=..&r=..&host=..&sn=..&<fields>`, every key and value percent-encoded, fields in key order.
+-- `jumpr://<verb>?p=3&b=..&r=..&host=..&sn=..&<fields>`, every key and value percent-encoded, fields in key order.
 -- `sn` is the deck session of the list sending it, left out when `session` is nil or empty; a window that predates
 -- it reads it as a field no verb uses, so it needs no new protocol version.
 -- An unknown verb or a field named like a URL key (`p`, `b`, `r`, `host`, `sn`) or `dir` is a programming error.
@@ -335,6 +401,9 @@ end
 
 -- The jumpr block's kind as the window names it: plugin `jumpr`, block `list` (host.luau defines it).
 M.BLOCK_KIND = "jumpr.list"
+
+-- The settings block's kind as the window names it: plugin `jumpr`, block `settings`.
+M.SETTINGS_KIND = "jumpr.settings"
 
 -- The deck block's launch arguments: the deck session's name and this host's name as the window's
 -- `cx.hosts:list()` reports it.

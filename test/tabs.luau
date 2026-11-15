@@ -1,6 +1,8 @@
 --!strict
 
 local Tabs = require("../lib/window/tabs")
+local Fake = require("./support/fake_window")
+local Protocol = require("../lib/shared/protocol")
 local checks = 0
 
 local function check(condition: boolean, message: string)
@@ -106,5 +108,110 @@ check(Tabs.tab_agent(100, { 101, 100 }, is_agent) == 100, "landing on the agent 
 check(Tabs.tab_agent(301, { 303, 302, 301, 300 }, is_agent) == 300, "landing on a shell names the tab's lowest agent")
 check(Tabs.tab_agent(201, { 200, 201 }, is_agent) == nil, "a tab with no agent names none")
 check(Tabs.tab_agent(201, {}, is_agent) == nil, "an unread tab layout names none")
+
+-- A settings page's return: focus reaching the page from another tab makes the pane it came from the return, a move
+-- inside the page's own tab keeps it, coming back from another tab replaces it, and focus arriving from another session
+-- makes none. Taking a return hands it over once and leaves the state it was taken from alone.
+do
+	local SETTINGS = true
+	local st = Tabs.on_focus(Tabs.on_focus(Tabs.new_state(), 1, 10, 101, LIST), 1, 90, 900, AGENT, SETTINGS)
+	local _, back = Tabs.take_return(st, 900)
+	check(back == 101, "focus reaching settings from another tab makes the pane it came from its return")
+	check(st.here == 90 and st.entered[1] == 90, "the settings page's tab is entered like any other")
+	st = Tabs.on_focus(Tabs.on_focus(st, 1, 90, 901, LIST), 1, 90, 900, AGENT, SETTINGS)
+	_, back = Tabs.take_return(st, 900)
+	check(back == 101, "a move inside the settings page's own tab keeps its return")
+	st = Tabs.on_focus(Tabs.on_focus(st, 1, 30, 300, AGENT), 1, 90, 900, AGENT, SETTINGS)
+	local taken, again = Tabs.take_return(st, 900)
+	check(again == 300, "coming back from another tab makes that pane the return")
+	_, back = Tabs.take_return(taken, 900)
+	check(back == nil, "a return is handed over once")
+	_, back = Tabs.take_return(st, 900)
+	check(back == 300, "taking it leaves the state it was taken from alone")
+	local switched = Tabs.on_focus(st, 2, 70, 700, AGENT, SETTINGS)
+	_, back = Tabs.take_return(switched, 700)
+	check(back == nil, "focus arriving from another session makes no return")
+	_, back = Tabs.take_return(switched, 900)
+	check(back == 300, "and a session switch keeps the returns already made")
+end
+
+-- Against the fake window: a settings page that closes while it has focus sends focus back to the pane it was opened
+-- from through Tern's own move of focus, whether that move is seen before the page's pane_closed or after it; Tern's
+-- choice of tab never counts as a tab worked in. With that pane gone, or the page closed from another tab, focus stays
+-- where Tern put it.
+do
+	local cx = Fake.cx
+	Fake.host("laptop", "local")
+	local deck = Fake.session(Fake.host("devbox"), "deck")
+	local tb, ta, tn = Fake.tab(deck), Fake.tab(deck), Fake.tab(deck)
+	local agent_b, agent_a, agent_n = Fake.agent(tb, "agent-b"), Fake.agent(ta, "agent-a"), Fake.agent(tn, "agent-n")
+	Fake.view(deck)
+
+	-- Focus moves to `pane`, and the history sees the event as window.luau hands it on; true when it sent focus back.
+	local function moved(pane: number): boolean
+		Fake.focus(pane)
+		return Tabs.focus_seen(cx, { pane = pane, tab = Fake.world().panes[pane].tab :: number })
+	end
+	-- Tern's own move of focus, already made, seen as an event.
+	local function seen(pane: number): boolean
+		return Tabs.focus_seen(cx, { pane = pane, tab = Fake.world().panes[pane].tab :: number })
+	end
+	-- The settings page in a new last tab of the deck session, focused as the router opens it.
+	local function open_settings(): number
+		local page = Fake.pane(Fake.tab(deck), { kind = "plugin", block = Protocol.SETTINGS_KIND })
+		moved(page)
+		return page
+	end
+
+	-- Esc, and the page's pane_closed comes before Tern's focus event. Tern shows tab tn, the tab before the page's.
+	moved(agent_b)
+	moved(agent_a)
+	local page = open_settings()
+	Fake.close(page)
+	check(Fake.world().focused == agent_n, "Tern shows the neighbouring tab when the settings page closes")
+	Tabs.pane_closed(cx, page)
+	check(Fake.world().focused == agent_n, "the page's pane_closed moves no focus by itself")
+	check(seen(agent_n), "Tern's move of focus off the closed page is dropped")
+	check(Fake.world().focused == agent_a, "and focus goes back to the pane settings was opened from")
+	seen(agent_a)
+
+	-- Esc, and Tern's focus event comes first: it is not folded, so the toggle still goes to the tab worked in before.
+	page = open_settings()
+	Fake.close(page)
+	check(seen(agent_n), "Tern's move of focus off the closed page is dropped")
+	check(Fake.world().focused == agent_a, "and focus goes back to the pane settings was opened from")
+	Tabs.pane_closed(cx, page)
+	check(Fake.world().focused == agent_a, "the page's pane_closed after it changes nothing")
+	seen(agent_a)
+	Tabs.last_tab(cx)
+	check(Fake.world().focused == agent_b, "the toggle goes to the tab worked in before settings, not Tern's choice")
+
+	-- The pane settings was opened from closes while the page is open: Tern's choice stands.
+	moved(agent_a)
+	page = open_settings()
+	Fake.close(agent_a)
+	Fake.close(page)
+	local choice = Fake.world().focused
+	Tabs.pane_closed(cx, page)
+	check(choice ~= nil and Fake.world().focused == choice, "with the pane it came from gone, focus stays put")
+	check(not seen(choice :: number), "and Tern's move of focus is taken as it is")
+
+	-- The page closed from another tab: focus stays where the user is.
+	moved(agent_b)
+	page = open_settings()
+	moved(agent_n)
+	Fake.close(page)
+	Tabs.pane_closed(cx, page)
+	check(Fake.world().focused == agent_n, "a settings page closed from another tab moves no focus")
+
+	-- Tern's own move after the close lands on the pane settings was opened from: it is kept as it is.
+	moved(agent_n)
+	page = open_settings()
+	Fake.close(page)
+	check(Fake.world().focused == agent_n, "Tern can land on the pane settings was opened from by itself")
+	check(not seen(agent_n), "then its move is kept and folded as it is")
+	Tabs.pane_closed(cx, page)
+	check(Fake.world().focused == agent_n, "and the page's pane_closed changes nothing")
+end
 
 print("Tabs: " .. checks .. " checks passed")

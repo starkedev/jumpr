@@ -5,6 +5,8 @@
 -- for a braille frame, so it never matched; it now reads the last character's first byte (marked below).
 -- Pure: no `tern`.
 
+local agent = require("./shared/agent")
+
 local M = {}
 
 -- Begin copied from agent-nav window.luau lines 1879-1901.
@@ -38,7 +40,8 @@ local function trim(s: string): string
 	return string.match(s, "^%s*(.-)%s*$") or ""
 end
 
--- The pane title with a leading or trailing braille spinner frame removed; nil when what is left is empty or "omp".
+-- The pane title with a leading or trailing braille spinner frame removed; nil when what is left is empty or a
+-- default agent title.
 -- A title that is not valid UTF-8 is only trimmed.
 function M.clean_title(title: string?): string?
 	if title == nil then
@@ -52,7 +55,7 @@ function M.clean_title(title: string?): string?
 			text = trim(string.sub(text, 1, (utf8.offset(text, -1) :: number) - 1))
 		end
 	end
-	if text == "" or text == "omp" then
+	if text == "" or agent.is_default_title(text) then
 		return nil
 	end
 	return text

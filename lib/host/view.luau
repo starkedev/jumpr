@@ -5,6 +5,7 @@
 -- the block's main region scrolls itself, and the host keeps the selection in view with a reveal (`M.reveal`).
 
 local keys = require("./keys")
+local keymap = require("./keymap")
 local input = require("./input")
 local model = require("./model")
 local store = require("./store")
@@ -13,6 +14,7 @@ local status = require("../shared/status")
 local M = {}
 
 export type Frame = {
+	map: keymap.Map,
 	ui: keys.UI,
 	rows: { model.Row },
 	-- the groups in order, for the `M` picker
@@ -364,12 +366,17 @@ local function tiles(f: Frame): Node
 	return div("deck.tiles", out, TILES_KEY)
 end
 
+-- What a stuck group deletion says, with the current stop binding that retries it.
+function M.delete_retry_text(map: keymap.Map): string
+	return "delete stuck — " .. map.key_of.stop .. " retries"
+end
+
 -- A group card's head: fold arrow and name, then one dot and count per status its agents are in.
 local function card_head(f: Frame, row: model.Row, selected: boolean): Node
 	local name = (if row.folded then "▸ " else "▾ ") .. row.label
 	local children: { Node } = { text_node(name, "deck.card-name") }
 	if row.stuck then
-		table.insert(children, text_node("delete stuck — d retries", "deck.card-note deck.err"))
+		table.insert(children, text_node(M.delete_retry_text(f.map), "deck.card-note deck.err"))
 	elseif row.deleting then
 		table.insert(children, text_node("deleting", "deck.card-note"))
 	end
@@ -496,12 +503,14 @@ function M.clicked_tile(node: string?): string?
 end
 
 -- What the list says when it has no row to draw: "nothing matches" under a filter (one status or several) or a
--- search, else how to add a group; nil when there are rows.
+-- search, else how to add a group with its current binding; nil when there are rows.
 function M.empty_text(f: Frame): string?
 	if #f.rows > 0 then
 		return nil
 	end
-	return if f.ui.filter ~= nil or f.ui.search ~= nil then "nothing matches" else "no groups: g adds one"
+	return if f.ui.filter ~= nil or f.ui.search ~= nil
+		then "nothing matches"
+		else "no groups: " .. f.map.key_of.group .. " adds one"
 end
 
 -- Whether a view should bring the selection into view. `last` is the key the previous call returned for this copy;
@@ -520,9 +529,27 @@ function M.reveal(rows: { model.Row }, selection: model.Selection?, last: string
 	return nil, key
 end
 
--- The keys the legend shows, by the selected row's kind; `?` and the menu cover the rest.
-local LEGEND_HEADER: { string } = { "⏎", "n", "g", "d" }
-local LEGEND_AGENT: { string } = { "⏎", "n", "o", "d" }
+-- The actions the legend shows by the selected row's kind; Enter stays structural, and the menu covers the rest.
+local LEGEND_HEADER: { string } = { "new", "group", "stop" }
+local LEGEND_AGENT: { string } = { "new", "send", "stop" }
+
+export type LegendItem = { key: string, word: string }
+
+-- The key chips and words for the selected row. Words come from the command menu, so both surfaces stay aligned.
+function M.legend_items(row: model.Row?, map: keymap.Map): { LegendItem }
+	local shown: { string } = if row ~= nil and row.kind == "header" then LEGEND_HEADER else LEGEND_AGENT
+	local word: { [string]: string } = {}
+	for _, item in keys.menu_items(row, map) do
+		word[item.key] = item.short or item.label
+	end
+	local out: { LegendItem } = { { key = "⏎", word = word["⏎"] } }
+	for _, action in shown do
+		local key = map.key_of[action]
+		table.insert(out, { key = key, word = word[key] })
+	end
+	table.insert(out, { key = map.key_of.menu, word = "menu" })
+	return out
+end
 
 -- A key chip and its word.
 local function chip(out: { Node }, key: string, word: string)
@@ -530,23 +557,16 @@ local function chip(out: { Node }, key: string, word: string)
 	table.insert(out, text_node(word, "deck.key-label"))
 end
 
--- The key legend under the list: what the main keys do on the selected row, then `?` for every other command. The
--- words are the `?` menu's own (keys.menu_items), so the two never disagree.
+-- The key legend under the list: what the main keys do on the selected row, then the bound menu key for every other
+-- command.
 local function legend(f: Frame): Node
-	local rows = f.rows
-	local sel = model.index_of(rows, f.ui.selection)
-	local row = if sel ~= nil then rows[sel] else nil
-	local shown: { string } = if row ~= nil and row.kind == "header" then LEGEND_HEADER else LEGEND_AGENT
-	local word: { [string]: string } = {}
-	for _, item in keys.menu_items(row) do
-		word[item.key] = item.short or item.label
-	end
+	local sel = model.index_of(f.rows, f.ui.selection)
+	local row = if sel ~= nil then f.rows[sel] else nil
 	-- Our own chips, not the `key` span style: that one uppercases, and case matters (the menu's V is shift+v).
 	local out: { Node } = {}
-	for _, key in shown do
-		chip(out, key, word[key])
+	for _, item in M.legend_items(row, f.map) do
+		chip(out, item.key, item.word)
 	end
-	chip(out, "?", "menu")
 	return div("deck.legend", out)
 end
 
@@ -576,24 +596,42 @@ local function pick_window(f: Frame): (number, number, number)
 	return window(#f.groups, at, PICK_ROWS)
 end
 
+-- A picker's title and its current movement bindings.
+function M.pick_title(title: string?, map: keymap.Map): string
+	return string.format("%s (%s/%s, Enter, Esc)", title or "pick", map.key_of.down, map.key_of.up)
+end
+
+-- An order-mode title and its current movement and drop bindings.
+function M.order_title(title: string?, map: keymap.Map): string
+	return string.format(
+		"%s (%s/%s, Enter or %s drops, Esc puts back)",
+		title or "moving",
+		map.key_of.down,
+		map.key_of.up,
+		map.key_of.reorder
+	)
+end
+
 -- The `?` menu's title: its name and where the highlight is, kept short so a narrow pane never cuts it.
 function M.menu_title(title: string?, at: number, total: number): string
 	return string.format("%s %d/%d", title or "commands", at, total)
 end
 
--- The `?` menu's keys, drawn dim under its title and wrapped, never cut; one line from 29 columns.
-M.MENU_HINT = "j/k · Enter or key runs · Esc"
+-- The `?` menu's keys, drawn dim under its title and wrapped, never cut; defaults use one line from 29 columns.
+function M.menu_hint(map: keymap.Map): string
+	return string.format("%s/%s · Enter or key runs · Esc", map.key_of.down, map.key_of.up)
+end
 
 -- The `?` menu: a title, its keys, then a window of commands, each a key chip and what it does on the selected
 -- row; the highlighted one marked, one the row does not suit dimmed.
 local function menu(f: Frame): { Node }
 	local sel = model.index_of(f.rows, f.ui.selection)
 	local row: model.Row? = if sel ~= nil then f.rows[sel] else nil
-	local items = keys.menu_items(row)
+	local items = keys.menu_items(row, f.map)
 	local first, last, at = window(#items, f.ui.menu or 1, MENU_ROWS)
 	local out: { Node } = {
 		line(M.menu_title(f.ui.title, at, #items), "deck.pick-title", f.cols),
-		para(M.MENU_HINT, "deck.menu-hint"),
+		para(M.menu_hint(f.map), "deck.menu-hint"),
 	}
 	local list: { Node } = {}
 	for i = first, last do
@@ -633,7 +671,7 @@ local function dock(f: Frame): Node?
 	end
 	if ui.mode == "pick" then
 		local first, last, sel = pick_window(f)
-		table.insert(children, line((ui.title or "pick") .. " (j/k, Enter, Esc)", "deck.pick-title", f.cols))
+		table.insert(children, line(M.pick_title(ui.title, f.map), "deck.pick-title", f.cols))
 		for i = first, last do
 			local g = f.groups[i]
 			local text = (if i == sel then "› " else "  ")
@@ -648,10 +686,7 @@ local function dock(f: Frame): Node?
 		end
 	end
 	if ui.mode == "order" then
-		table.insert(
-			children,
-			line((ui.title or "moving") .. " (j/k, Enter or V drops, Esc puts back)", "deck.pick-title", f.cols)
-		)
+		table.insert(children, line(M.order_title(ui.title, f.map), "deck.pick-title", f.cols))
 	end
 	if ui.mode == "list" and (ui.notice == nil or ui.notice == "") then
 		table.insert(children, legend(f))

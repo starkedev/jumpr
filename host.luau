@@ -1,11 +1,12 @@
 --!strict
--- Host entry, run by every machine's daemon. Wiring only: it registers the list block and the host hooks, and hands
--- each of their inputs to the machine's list (lib/host/runtime.luau), which holds all the state and logic and reaches
--- the machine through compat. The block's nodes are built here from the list's frame (`view.view`).
+-- Host entry, run by every machine's daemon. Wiring only: it registers the list and settings blocks and the host
+-- hooks, then forwards their inputs to lib/host modules that own the state and logic and reach the machine through
+-- compat.
 
 local compat = require("./lib/compat")
 local runtime = require("./lib/host/runtime")
 local view = require("./lib/host/view")
+local settings_block = require("./lib/host/settings_block")
 
 local TICK_MS = 1000
 
@@ -14,6 +15,8 @@ math.randomseed(os.time() + math.floor(tern.now()))
 local list = runtime.new(compat, function(n: number): number
 	return math.random(n)
 end)
+
+local settings_page = settings_block.new(compat, list)
 
 local def: BlockDef<runtime.Copy> = {
 	features = { "edit" :: "edit" },
@@ -49,7 +52,31 @@ local def: BlockDef<runtime.Copy> = {
 
 tern.block.define("list", def)
 
--- One omp per agent: a second start of an agent this machine already runs spawns a line saying so instead.
+local settings_def: BlockDef<settings_block.Block> = {
+	init = function(cx: BlockCx, args: { string }, _saved: any): settings_block.Block
+		return settings_page.open(cx, args)
+	end,
+
+	view = function(blk: settings_block.Block, cx: BlockCx): BlockView
+		return settings_page.view(blk, cx)
+	end,
+
+	title = function(_blk: settings_block.Block): string?
+		return "Jumpr settings"
+	end,
+
+	key = function(blk: settings_block.Block, key: Key, cx: BlockCx): boolean?
+		return settings_page.key(blk, key, cx)
+	end,
+
+	event = function(blk: settings_block.Block, ev: UiEvent, cx: BlockCx)
+		settings_page.event(blk, ev, cx)
+	end,
+}
+
+tern.block.define("settings", settings_def)
+
+-- One process per agent: a second start of an agent this machine already runs spawns a line saying so instead.
 tern.on("spawn", function(spec: SpawnSpec): SpawnSpec?
 	local instead = list.spawn(spec)
 	if instead == nil then

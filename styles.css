@@ -338,3 +338,26 @@
 	background: color-mix(in srgb, var(--accent) 24%, transparent);
 	box-shadow: inset 0 0 0 1px var(--accent);
 }
+
+/* The settings page. Tern sizes a prefs page to its pane only when it first draws and on a resize; any later prop
+   change (every key press sends one) lets it fall back to its content height, so a short page leaves the pane's
+   lower part empty and a long one scrolls its nav away. Holding it as the region's one flex item keeps it the
+   pane's height; the margin mirrors the main region's 6px bottom padding, as Tern's own first draw does. */
+.sf-main[data-surface='plugin.jumpr.settings'] > .sf-prefs {
+	flex: 1 1 0;
+	margin-bottom: -6px;
+}
+
+/* Tern's global `svg { display: block }` puts a row's warning icon on a line of its own; it belongs beside the label. */
+[data-surface='plugin.jumpr.settings'] .pf-warn-ic {
+	display: inline-block;
+}
+
+/* The changed dot gets a gutter of its own instead of sitting against the label. */
+[data-surface='plugin.jumpr.settings'] .pf-row {
+	padding-left: 24px;
+}
+
+[data-surface='plugin.jumpr.settings'] .pf-dot {
+	left: 9px;
+}

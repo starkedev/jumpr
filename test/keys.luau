@@ -1,6 +1,7 @@
 --!strict
 
 local Keys = require("../lib/host/keys")
+local Keymap = require("../lib/host/keymap")
 local Model = require("../lib/host/model")
 local Status = require("../lib/shared/status")
 local Store = require("../lib/host/store")
@@ -12,6 +13,7 @@ local function check(condition: boolean, message: string)
 end
 
 local NOW = 1800000000000
+local DEFAULT_MAP = Keymap.resolve({})
 
 -- A rand that walks a fixed list of draws (each in [1, 32]); new_id takes 8 draws.
 local function rand_from(draws: { number }): (number) -> number
@@ -31,11 +33,11 @@ local function agent(deck: Store.Deck, id: string, gid: string, pos: number, fie
 	local r: Store.Record = {
 		gid = gid,
 		pos = pos,
-		dir = "~/.omp/deck/" .. id,
 		cwd = "/home/a/wt/" .. id,
 		created_ms = NOW - 1000,
 		state = "live",
 		pane = pos,
+		cli = "omp",
 	}
 	for k, v in (fields or {}) :: { [string]: any } do
 		(r :: any)[k] = v
@@ -373,6 +375,7 @@ do
 		ended_ms = NOW - 50,
 		created_ms = NOW - 60000,
 		label = "flaky-fixer",
+		cli = "claude",
 		cwd = "/home/a/webapp",
 	})
 	local b = block(deck)
@@ -386,6 +389,10 @@ do
 	check(start ~= nil and start.id == "p", "Enter on a failed pending row requests start again")
 	check(start ~= nil and start.cwd == "/home/a/webapp", "the retry keeps the cwd")
 	check(start ~= nil and start.prompt == nil and start.label == "flaky-fixer", "no prompt; the label names the tab")
+	check(
+		start ~= nil and start.cli == "claude" and start.mode == "new" and start.sid == nil,
+		"a failed first Claude start retries new, with no session id"
+	)
 	local r = b.deck.agents.p
 	check(r.created_ms == NOW and r.failed == nil and r.ended_ms == nil, "the retry resets created_ms, clears failed")
 	check(r.state == "pending", "the record stays pending")
@@ -431,6 +438,7 @@ do
 		ended_ms = NOW - 50,
 		stop_ms = NOW - 600000,
 		created_ms = NOW - 600000,
+		ran = true,
 		label = "fixer",
 		cwd = "/home/a/webapp",
 	})
@@ -444,6 +452,10 @@ do
 	local start = request_of(b.effects, "start")
 	check(start ~= nil and start.id == "x" and start.cwd == "/home/a/webapp", "it starts the same agent in its folder")
 	check(start ~= nil and start.label == "fixer" and start.land == "1", "with its label, landing on the agent")
+	check(
+		start ~= nil and start.cli == "omp" and start.mode == "new" and start.sid == nil,
+		"an exited omp agent restarts in new mode, with no session id"
+	)
 	local r = b.deck.agents.x
 	check(r.state == "pending" and r.created_ms == NOW, "the record is pending again from now")
 	check(r.exit == nil and r.ended_ms == nil and r.stop_ms == nil, "the old exit is forgotten")
@@ -464,6 +476,149 @@ do
 	d.deck.agents.x.state = "live" -- it came back on its own meanwhile
 	answer(d, true)
 	check(request_of(d.effects, "start") == nil and #d.effects == 0, "a stale restart answer starts nothing")
+end
+
+-- An ACP agent that ran, with no session and not the last of its kind to close, restarts through the picker, and a
+-- failed restart keeps that mode on retry. The request carries no session id.
+do
+	local deck = sample()
+	agent(deck, "x", "g1", 3, {
+		state = "exited",
+		exit = 1,
+		ended_ms = NOW - 50,
+		created_ms = NOW - 600000,
+		cwd = "/home/a/webapp",
+		cli = "claude",
+		ran = true,
+	})
+	local b = block(deck)
+	select(b, { kind = "agent", id = "x" })
+	key(b, "enter")
+	answer(b, true)
+	local start = request_of(b.effects, "start")
+	check(
+		start ~= nil and start.cli == "claude" and start.mode == "pick" and start.sid == nil,
+		"an exited Claude agent that ran, and was not last closed, picks"
+	)
+	check(b.deck.agents.x.ran == true, "restart keeps the proof that the agent ran")
+
+	b.deck = Store.clone(b.deck)
+	b.deck.agents.x.failed = true
+	b.deck.agents.x.ended_ms = NOW - 10
+	key(b, "enter")
+	answer(b, true)
+	start = request_of(b.effects, "start")
+	check(
+		start ~= nil and start.cli == "claude" and start.mode == "pick" and start.sid == nil,
+		"a failed Claude restart retries pick, still with no session id"
+	)
+end
+
+-- Restart follows the stored history. A proven session resumes with that id even when this agent also closed last.
+-- The last closed agent of its kind continues. Another agent that has run opens the picker. A restart whose start
+-- then fails retries with that same mode, and only a resume carries a session id.
+do
+	local function exited(deck: Store.Deck, id: string, pos: number, extra: { [string]: any }?)
+		agent(deck, id, "g1", pos, {
+			state = "exited",
+			exit = 0,
+			ended_ms = NOW - 50,
+			created_ms = NOW - 600000,
+			cwd = "/home/a/webapp",
+			cli = "claude",
+			ran = true,
+		})
+		for k, v in (extra or {}) :: { [string]: any } do
+			(deck.agents[id] :: any)[k] = v
+		end
+	end
+
+	local function failed_retry(b: Block, id: string): { [string]: string }?
+		b.deck = Store.clone(b.deck)
+		b.deck.agents[id].failed = true
+		b.deck.agents[id].ended_ms = NOW - 10
+		key(b, "enter")
+		answer(b, true)
+		return request_of(b.effects, "start")
+	end
+
+	local resumed = sample()
+	exited(resumed, "x", 3, { session = "sess-1", label = "fixer" })
+	resumed.closed[Store.closed_key("claude", "/home/a/webapp")] = "x"
+	local b = block(resumed)
+	select(b, { kind = "agent", id = "x" })
+	key(b, "enter")
+	answer(b, true)
+	local start = request_of(b.effects, "start")
+	check(
+		start ~= nil
+			and start.id == "x"
+			and start.cwd == "/home/a/webapp"
+			and start.cli == "claude"
+			and start.mode == "resume"
+			and start.sid == "sess-1"
+			and start.label == "fixer"
+			and start.land == "1",
+		"a proven session restarts with resume, its session id and a landing"
+	)
+	check(
+		b.deck.agents.x.session == "sess-1" and b.deck.agents.x.ran == true,
+		"restart keeps the session and the proof that the agent ran"
+	)
+	local again = failed_retry(b, "x")
+	check(
+		again ~= nil and again.mode == "resume" and again.sid == "sess-1" and again.land == nil and again.id == "x",
+		"a failed resume restart retries resume with the same session id"
+	)
+
+	local continued = sample()
+	exited(continued, "x", 3)
+	continued.closed[Store.closed_key("claude", "/home/a/webapp")] = "x"
+	continued.closed[Store.closed_key("claude", "/home/a/other")] = "someone"
+	local c = block(continued)
+	select(c, { kind = "agent", id = "x" })
+	key(c, "enter")
+	answer(c, true)
+	start = request_of(c.effects, "start")
+	check(
+		start ~= nil and start.mode == "continue" and start.sid == nil and start.cli == "claude" and start.land == "1",
+		"the last closed agent of its kind restarts with continue and no session id"
+	)
+	check(
+		c.deck.closed[Store.closed_key("claude", "/home/a/webapp")] == "x",
+		"restart leaves the closed stamp in place"
+	)
+	again = failed_retry(c, "x")
+	check(again ~= nil and again.mode == "continue" and again.sid == nil, "a failed continue restart retries continue")
+
+	local picked = sample()
+	exited(picked, "x", 3)
+	exited(picked, "y", 4)
+	picked.closed[Store.closed_key("claude", "/home/a/webapp")] = "y"
+	local d = block(picked)
+	select(d, { kind = "agent", id = "x" })
+	key(d, "enter")
+	answer(d, true)
+	start = request_of(d.effects, "start")
+	check(
+		start ~= nil and start.mode == "pick" and start.sid == nil and start.id == "x",
+		"another agent that closed last in that folder restarts through the picker"
+	)
+	again = failed_retry(d, "x")
+	check(again ~= nil and again.mode == "pick" and again.sid == nil, "a failed picker restart retries pick")
+
+	local omp = sample()
+	exited(omp, "x", 3, { cli = "omp", session = "sess-omp" })
+	omp.closed[Store.closed_key("omp", "/home/a/webapp")] = "x"
+	local o = block(omp)
+	select(o, { kind = "agent", id = "x" })
+	key(o, "enter")
+	answer(o, true)
+	start = request_of(o.effects, "start")
+	check(
+		start ~= nil and start.cli == "omp" and start.mode == "new" and start.sid == nil,
+		"an omp agent with a stored session id still restarts new and carries no sid"
+	)
 end
 
 -- V picks an agent up and j/k reorder it within its group, saving every step; Enter or V drops it, Esc puts it
@@ -861,7 +1016,8 @@ do
 	check(effect_of(b.effects, "write") == nil and b.ui.mode == "list", "still nothing typed")
 end
 
--- o on a missing pane queues the text when nothing is held, and refuses when something is.
+-- o on an agent whose pane is gone but that Enter would not restart (here a live record with no bound pane) holds the
+-- text when nothing is held, and refuses when something is.
 do
 	local b = block(sample())
 	b.sets.a = {}
@@ -891,6 +1047,222 @@ do
 	key(late, "enter")
 	check(late.ui.notice == "a queued message is already waiting — press q to edit it", "also at Enter")
 	check(late.deck.queue.a ~= nil and late.deck.queue.a.text == "first", "the held message is kept, never replaced")
+end
+
+-- Nor does o start again what Enter would not (a start still under way, a failed start being removed, a stop under
+-- way): the text is only held, and no folder is checked.
+do
+	local cases: { { [string]: any } } = {
+		{ state = "pending" },
+		{ state = "pending", failed = true, cancel = true, ended_ms = NOW - 50 },
+		{ state = "stopping", stop_ms = NOW - 50 },
+	}
+	for _, fields in cases do
+		local deck = sample()
+		agent(deck, "x", "g1", 3, fields)
+		local b = block(deck)
+		select(b, { kind = "agent", id = "x" })
+		char(b, "o")
+		type_text(b, "hi")
+		key(b, "enter")
+		local what = fields.state .. (if fields.cancel then ", being removed" else "")
+		check(b.deck.queue.x ~= nil and b.deck.queue.x.text == "hi", what .. ": the text is held")
+		check(b.ui.notice == "pane gone — message queued", what .. ": the list says so: " .. tostring(b.ui.notice))
+		check(kinds(b.effects) == "save_kv,render", what .. ": nothing is checked or started: " .. kinds(b.effects))
+	end
+end
+
+-- o on an exited row restarts the agent as Enter on it does, after the same folder check, and holds the text as its
+-- queued message, which the queue sends once the restarted agent is idle. A gone folder starts nothing and the text
+-- stays held. With a message already held, o refuses at the key and again at Enter, and nothing restarts.
+do
+	local function exited_deck(): Store.Deck
+		local deck = sample()
+		deck.session.host = "devbox"
+		agent(deck, "x", "g1", 3, {
+			state = "exited",
+			exit = 0,
+			ended_ms = NOW - 50,
+			ran = true,
+			label = "fixer",
+			cwd = "/home/a/webapp",
+		})
+		return deck
+	end
+
+	local b = block(exited_deck())
+	select(b, { kind = "agent", id = "x" })
+	char(b, "o")
+	check(b.ui.mode == "input" and b.ui.purpose == "send", "o on an exited row opens the send line")
+	type_text(b, " carry on ")
+	key(b, "enter")
+	check(kinds(b.effects) == "save_kv,check_folder,render", "the held message is saved first: " .. kinds(b.effects))
+	local held = b.deck.queue.x
+	check(held ~= nil and held.text == "carry on" and held.at_ms == NOW, "the trimmed text is held for the agent")
+	local asked = effect_of(b.effects, "check_folder")
+	check(
+		asked ~= nil and asked.purpose == "restart" and asked.id == "x" and asked.folder == "/home/a/webapp",
+		"its folder is checked for a restart, as Enter does"
+	)
+	check(
+		b.deck.agents.x.state == "exited" and effect_of(b.effects, "write") == nil,
+		"nothing restarts or is typed yet"
+	)
+	check(b.ui.mode == "list" and b.ui.notice == "restarting — message queued", "the list says so")
+	answer(b, true)
+	local start = request_of(b.effects, "start")
+	check(
+		start ~= nil and start.id == "x" and start.mode == "new" and start.label == "fixer" and start.land == "1",
+		"the agent restarts as Enter restarts it, landing on it"
+	)
+	check(b.deck.agents.x.state == "pending", "the record is pending again")
+	check(b.deck.queue.x ~= nil and b.deck.queue.x.text == "carry on", "the restart keeps the held message")
+	check(b.ui.notice == "restarting — message queued", "the notice stays through the restart")
+
+	local gone = block(exited_deck())
+	select(gone, { kind = "agent", id = "x" })
+	char(gone, "o")
+	type_text(gone, "hi")
+	key(gone, "enter")
+	answer(gone, false)
+	check(gone.ui.notice == "folder not found on devbox", "a gone folder refuses: " .. tostring(gone.ui.notice))
+	check(request_of(gone.effects, "start") == nil and gone.deck.agents.x.state == "exited", "no start; still exited")
+	check(gone.deck.queue.x ~= nil and gone.deck.queue.x.text == "hi", "the text stays held")
+
+	local waiting = exited_deck()
+	waiting.queue.x = { text = "first", at_ms = NOW - 9 }
+	local c = block(waiting)
+	select(c, { kind = "agent", id = "x" })
+	char(c, "o")
+	check(
+		c.ui.mode == "list" and c.ui.notice == "a queued message is already waiting — press q to edit it",
+		"with a message held, o refuses"
+	)
+	check(kinds(c.effects) == "render", "and checks no folder: " .. kinds(c.effects))
+
+	local late = block(exited_deck())
+	select(late, { kind = "agent", id = "x" })
+	char(late, "o")
+	late.deck.queue.x = { text = "first", at_ms = NOW - 9 }
+	type_text(late, "second")
+	key(late, "enter")
+	check(late.ui.notice == "a queued message is already waiting — press q to edit it", "also at Enter")
+	check(effect_of(late.effects, "check_folder") == nil and late.deck.agents.x.state == "exited", "nothing restarts")
+	check(late.deck.queue.x ~= nil and late.deck.queue.x.text == "first", "the held message is kept, never replaced")
+end
+
+-- o on a failed start retries it as Enter on its row does, after the same folder check, and holds the text as its
+-- queued message, with the same notice as a restart. With a message already held, o refuses and nothing is retried.
+do
+	local function failed_deck(): Store.Deck
+		local deck = sample()
+		agent(deck, "p", "g1", 3, {
+			state = "pending",
+			failed = true,
+			ended_ms = NOW - 50,
+			created_ms = NOW - 60000,
+			label = "flaky-fixer",
+			cwd = "/home/a/webapp",
+		})
+		return deck
+	end
+
+	local b = block(failed_deck())
+	select(b, { kind = "agent", id = "p" })
+	char(b, "o")
+	type_text(b, "carry on")
+	key(b, "enter")
+	check(kinds(b.effects) == "save_kv,check_folder,render", "the held message is saved first: " .. kinds(b.effects))
+	check(b.deck.queue.p ~= nil and b.deck.queue.p.text == "carry on", "the text is held for the agent")
+	local asked = effect_of(b.effects, "check_folder")
+	check(
+		asked ~= nil and asked.purpose == "retry" and asked.id == "p" and asked.folder == "/home/a/webapp",
+		"its folder is checked for a retry, as Enter does"
+	)
+	check(b.ui.notice == "restarting — message queued", "the list says so: " .. tostring(b.ui.notice))
+	answer(b, true)
+	local start = request_of(b.effects, "start")
+	check(start ~= nil and start.id == "p" and start.label == "flaky-fixer", "the start is retried as Enter retries it")
+	local r = b.deck.agents.p
+	check(r.state == "pending" and r.failed == nil and r.created_ms == NOW, "the record is starting again")
+	check(b.deck.queue.p ~= nil and b.deck.queue.p.text == "carry on", "the retry keeps the held message")
+
+	local waiting = failed_deck()
+	waiting.queue.p = { text = "first", at_ms = NOW - 9 }
+	local c = block(waiting)
+	select(c, { kind = "agent", id = "p" })
+	char(c, "o")
+	check(c.ui.notice == "a queued message is already waiting — press q to edit it", "with a message held, o refuses")
+	check(kinds(c.effects) == "render", "and retries nothing: " .. kinds(c.effects))
+end
+
+-- o on an exited ACP agent whose restart would open Tern's conversation picker holds the message and starts
+-- nothing: the notice says Enter picks the conversation, and the queue sends the message once the picked chat is
+-- idle. A restart that is exact (a proven session) or continues the last-closed conversation still starts, with
+-- the message held.
+do
+	local function exited(deck: Store.Deck, id: string, extra: { [string]: any }?)
+		agent(deck, id, "g1", 3, {
+			state = "exited",
+			exit = 0,
+			ended_ms = NOW - 50,
+			created_ms = NOW - 600000,
+			ran = true,
+			cli = "claude",
+			cwd = "/home/a/webapp",
+		})
+		for k, v in (extra or {}) :: { [string]: any } do
+			(deck.agents[id] :: any)[k] = v
+		end
+	end
+
+	local picked = sample()
+	exited(picked, "x")
+	picked.closed[Store.closed_key("claude", "/home/a/webapp")] = "someone"
+	local b = block(picked)
+	select(b, { kind = "agent", id = "x" })
+	char(b, "o")
+	type_text(b, "hi")
+	key(b, "enter")
+	check(kinds(b.effects) == "save_kv,render", "the message is held and saved, nothing started: " .. kinds(b.effects))
+	check(b.deck.queue.x ~= nil and b.deck.queue.x.text == "hi", "the text is held for the agent")
+	check(b.ui.notice == "queued — Enter picks its conversation", "the list says so: " .. tostring(b.ui.notice))
+	key(b, "enter")
+	check(kinds(b.effects) == "check_folder,render", "Enter on the row still restarts into the picker")
+	answer(b, true)
+	local start = request_of(b.effects, "start")
+	check(start ~= nil and start.mode == "pick" and start.sid == nil, "the restart opens the picker")
+	check(b.deck.queue.x ~= nil and b.deck.queue.x.text == "hi", "the held message survives the picker restart")
+
+	local resumed = sample()
+	exited(resumed, "x", { session = "sess-1" })
+	local c = block(resumed)
+	select(c, { kind = "agent", id = "x" })
+	char(c, "o")
+	type_text(c, "hi")
+	key(c, "enter")
+	check(c.ui.notice == "restarting — message queued", "a proven session still restarts: " .. tostring(c.ui.notice))
+	answer(c, true)
+	local exact = request_of(c.effects, "start")
+	check(exact ~= nil and exact.mode == "resume" and exact.sid == "sess-1", "exactly, with its session id")
+	check(c.deck.queue.x ~= nil and c.deck.queue.x.text == "hi", "and the message is held for the idle chat")
+
+	local continued = sample()
+	exited(continued, "x")
+	continued.closed[Store.closed_key("claude", "/home/a/webapp")] = "x"
+	local d = block(continued)
+	select(d, { kind = "agent", id = "x" })
+	char(d, "o")
+	type_text(d, "hi")
+	key(d, "enter")
+	check(
+		d.ui.notice == "restarting — message queued",
+		"the last-closed conversation continues: " .. tostring(d.ui.notice)
+	)
+	answer(d, true)
+	local con = request_of(d.effects, "start")
+	check(con ~= nil and con.mode == "continue" and con.sid == nil, "with no session id")
+	check(d.deck.queue.x ~= nil and d.deck.queue.x.text == "hi", "and the message is held")
 end
 
 -- q: nothing held opens empty; Enter stores one message; a held one prefills, Esc keeps it, Enter replaces it,
@@ -1080,9 +1452,19 @@ do
 	check(b.ui.show_src == false, "i turns it off")
 end
 
+-- Comma opens the settings page without changing the list.
+do
+	local b = block(sample())
+	char(b, ",")
+	local settings = request_of(b.effects, "settings")
+	check(settings ~= nil and next(settings) == nil, "comma requests settings with no fields")
+	check(kinds(b.effects) == "request:settings", "opening settings changes no deck or visible list state")
+end
+
 -- n starts an agent at once: the group's folder is checked, then a pending record, save_kv, then start.
 do
 	local b = block(sample())
+	b.deck.settings.agent = "claude"
 	select(b, { kind = "agent", id = "a" })
 	char(b, "n")
 	check(b.ui.mode == "list" and b.ui.notice == nil, "n asks for nothing")
@@ -1093,11 +1475,13 @@ do
 	local r = b.deck.agents.abcdefgh
 	check(r ~= nil, "the new record is keyed by identity.new_id(rand)")
 	check(r.state == "pending" and r.gid == "g1" and r.pos == 3, "pending, in the selected group, at its end")
-	check(r.dir == "~/.omp/deck/abcdefgh" and r.cwd == "/home/a/webapp", "dir from the id, cwd from the group")
+	check(r.cwd == "/home/a/webapp" and r.cli == "claude", "cwd comes from the group and cli from settings")
+	check((r :: any).dir == nil, "the new record has no legacy dir")
 	check(r.created_ms == NOW, "created now")
 	check(kinds(b.effects) == "save_kv,request:start,render", "save_kv comes before the start request")
 	local start = request_of(b.effects, "start")
 	check(start ~= nil and start.id == "abcdefgh" and start.cwd == "/home/a/webapp", "start names id and cwd")
+	check(start ~= nil and start.cli == "claude" and start.mode == "new", "start names the configured cli and new mode")
 	check(start ~= nil and start.prompt == nil and start.dir == nil, "start carries no prompt, never dir")
 	check(b.ui.mode == "list", "focus stays in the list")
 
@@ -1132,6 +1516,7 @@ do
 	answer(b, true, rand_from({ 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8 }))
 	local start = request_of(b.effects, "start")
 	check(start ~= nil and start.cwd == "/home/a/block", "the agent starts in the new group's folder")
+	check(start ~= nil and start.cli == "omp" and start.mode == "new", "the default omp agent starts in new mode")
 	check(b.deck.agents.abcdefgh ~= nil, "the record is stored")
 end
 
@@ -1539,7 +1924,7 @@ local function question(b: Block)
 end
 
 local function menu_index(k: string): number
-	for i, item in Keys.menu_items(nil) do
+	for i, item in Keys.menu_items(nil, DEFAULT_MAP) do
 		if item.key == k then
 			return i
 		end
@@ -1575,7 +1960,7 @@ end
 do
 	local b = block(sample())
 	select(b, { kind = "agent", id = "a" })
-	local last = #Keys.menu_items(nil)
+	local last = #Keys.menu_items(nil, DEFAULT_MAP)
 	question(b)
 	char(b, "k")
 	check(b.ui.menu == 1, "k at the first command stays")
@@ -1654,7 +2039,7 @@ do
 	end
 	local agent_a: Model.Selection = { kind = "agent", id = "a" }
 	local header_g1: Model.Selection = { kind = "header", gid = "g1" }
-	for _, k in { "o", "q", "r", "m", "V", "d", "n", "g", "/", "!", "@", "#", "$", "0", "i", "J", "K" } do
+	for _, k in { "o", "q", "r", "m", "V", "d", "n", "g", "/", "!", "@", "#", "$", "0", "i", ",", "J", "K" } do
 		local want = plain(k, agent_a)
 		check(by_key(k, agent_a) == want, "menu key " .. k .. " runs what " .. k .. " runs: " .. want)
 		check(by_enter(k, agent_a) == want, "Enter on " .. k .. " runs what " .. k .. " runs: " .. want)
@@ -1679,7 +2064,7 @@ do
 	local b = block(sample())
 	select(b, { kind = "header", gid = "g1" })
 	local header_row = rows(b)[1]
-	for _, item in Keys.menu_items(header_row) do
+	for _, item in Keys.menu_items(header_row, DEFAULT_MAP) do
 		local agent_only = item.key == "o" or item.key == "q" or item.key == "r" or item.key == "m"
 		check(item.enabled == not agent_only, "on a header " .. item.key .. " enabled is " .. tostring(not agent_only))
 	end
@@ -1717,7 +2102,7 @@ end
 -- The menu's words follow the selected row, and each filter key says what it keeps.
 do
 	local function item(row: Model.Row?, k: string): Keys.MenuItem
-		for _, it in Keys.menu_items(row) do
+		for _, it in Keys.menu_items(row, DEFAULT_MAP) do
 			if it.key == k then
 				return it
 			end
@@ -1737,11 +2122,12 @@ do
 	check(item(nil, "@").label == "waiting only", "@ keeps waiting agents")
 	check(item(nil, "#").label == "running only", "# keeps running agents")
 	check(item(nil, "$").label == "idle only", "$ keeps idle agents")
+	check(item(nil, ",").label == "settings", "comma opens settings")
 	check(item(nil, "1").label == "add or drop error", "1 adds error to the filter or drops it")
 	check(item(nil, "4").label == "add or drop idle", "4 adds idle to the filter or drops it")
 	-- The filter items stand together just before 0: the single filters in the one order, then the combine keys.
 	local order: { string } = {}
-	for _, it in Keys.menu_items(nil) do
+	for _, it in Keys.menu_items(nil, DEFAULT_MAP) do
 		if Status.by_key(it.key) ~= nil or Status.by_add_key(it.key) ~= nil or it.key == "0" then
 			table.insert(order, it.key)
 		end
@@ -1756,12 +2142,102 @@ do
 			and menu_index("@") == menu_index("!") + 1,
 		"the filters are adjacent"
 	)
+	check(menu_index(",") == menu_index("i") + 1, "settings follows status sources in the menu")
 	local seen: { [string]: boolean } = {}
-	for _, it in Keys.menu_items(nil) do
+	for _, it in Keys.menu_items(nil, DEFAULT_MAP) do
 		check(not seen[it.key], "menu key " .. it.key .. " appears once")
 		seen[it.key] = true
 	end
 	check(not seen["?"] and not seen["M"], "the menu offers neither ? nor the unbound M")
+end
+
+-- A swapped new/down pair changes list dispatch, every modal movement path and the command menu together.
+do
+	local function overridden(): Block
+		local deck = sample()
+		deck.settings.keys = { new = "a", down = "n" }
+		return block(deck)
+	end
+	local map = Keymap.resolve({ new = "a", down = "n" })
+
+	local started = overridden()
+	select(started, { kind = "agent", id = "a" })
+	char(started, "a")
+	check(
+		started.effects[1] ~= nil
+			and started.effects[1].kind == "check_folder"
+			and started.effects[1].purpose == "new"
+			and started.effects[1].gid == "g1",
+		"the overridden a starts a new agent in the selected group"
+	)
+	answer(started, true)
+	local start = request_of(started.effects, "start")
+	check(start ~= nil and start.id ~= nil and start.mode == "new", "the overridden new action starts the agent")
+
+	local list = overridden()
+	select(list, { kind = "header", gid = "g1" })
+	char(list, "n")
+	check(list.ui.selection ~= nil and list.ui.selection.id == "a", "the overridden n moves down in the list")
+	char(list, "j")
+	check(
+		list.ui.selection ~= nil and list.ui.selection.id == "a" and #list.effects == 0,
+		"the old down key j does nothing after the override"
+	)
+
+	local menu = overridden()
+	select(menu, { kind = "agent", id = "a" })
+	question(menu)
+	char(menu, "n")
+	check(menu.ui.mode == "menu" and menu.ui.menu == 2, "the overridden n moves down in the menu")
+	local new_item: Keys.MenuItem? = nil
+	for _, item in Keys.menu_items(rows(menu)[2], map) do
+		if item.label == "new agent" then
+			new_item = item
+		end
+	end
+	check(new_item ~= nil and new_item.key == "a", "the menu shows a for new agent")
+
+	local picked = overridden()
+	select(picked, { kind = "agent", id = "a" })
+	question(picked)
+	char(picked, "a")
+	check(
+		picked.ui.mode == "list"
+			and picked.effects[1] ~= nil
+			and picked.effects[1].kind == "check_folder"
+			and picked.effects[1].purpose == "new",
+		"picking overridden a from the menu runs the new-agent action"
+	)
+
+	local picker = overridden()
+	select(picker, { kind = "agent", id = "a" })
+	char(picker, "m")
+	char(picker, "n")
+	check(picker.ui.mode == "pick" and picker.ui.pick == "g2", "the overridden n moves down in the group picker")
+
+	local ordered = overridden()
+	select(ordered, { kind = "agent", id = "a" })
+	char(ordered, "V")
+	char(ordered, "n")
+	check(
+		ordered.ui.mode == "order" and table.concat(Model.group_ids(ordered.deck, "g1"), ",") == "b,a",
+		"the overridden n moves down in reorder mode"
+	)
+end
+
+-- A notice that tells the user how to edit a held message names the current queue binding.
+do
+	local deck = sample()
+	deck.settings.keys = { queue = "x" }
+	deck.queue.a = { text = "first", at_ms = NOW }
+	local b = block(deck)
+	b.sets.a = {}
+	select(b, { kind = "agent", id = "a" })
+	char(b, "o")
+	check(
+		b.ui.notice == "a queued message is already waiting — press x to edit it",
+		"the held-message notice uses the mapped queue key"
+	)
 end
 
 print("Keys: " .. checks .. " checks passed")

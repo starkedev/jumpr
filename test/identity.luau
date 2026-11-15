@@ -1,4 +1,5 @@
 --!strict
+-- Identity carrier and validation tests. Pure: no `tern`.
 
 local Identity = require("../lib/shared/identity")
 local checks = 0
@@ -9,13 +10,8 @@ local function check(condition: boolean, message: string)
 end
 
 local function matches(text: string, want: string?)
-	local id, dir = Identity.match(text)
+	local id = Identity.match(text)
 	check(id == want, string.format("match(%q) gave %s, want %s", text, tostring(id), tostring(want)))
-	if want ~= nil then
-		check(dir == "~/.omp/deck/" .. want, string.format("match(%q) dir was %s", text, tostring(dir)))
-	else
-		check(dir == nil, string.format("match(%q) gave a dir with no id", text))
-	end
 end
 
 -- A deck path inside a full omp command line.
@@ -34,6 +30,34 @@ matches("~/.omp/deck/ab;rm", nil)
 matches("~/.omp/deck/ab&&rm -rf x", nil)
 matches("omp --session-dir ~/.omp/sessions/ab", nil)
 matches("", nil)
+
+-- ACP commands carry the id in an environment assignment on both halves.
+matches("env JUMPR_ID=abc tern acp claude", "abc")
+matches("/bin/fish -c env JUMPR_ID=abc tern acp claude", "abc")
+matches("JUMPR_ID=abc", "abc")
+matches("env JUMPR_ID=abc\ttern acp claude", "abc")
+matches('"JUMPR_ID=abc"', "abc")
+matches("'JUMPR_ID=abc'", "abc")
+-- The environment name and value must have exact token boundaries.
+matches("XJUMPR_ID=abc", nil)
+matches("NOT_JUMPR_ID=abc", nil)
+matches("JUMPR_ID=abc/def", nil)
+matches("JUMPR_ID=abc;rm", nil)
+matches("JUMPR_ID=abc&&rm", nil)
+matches("XJUMPR_ID=bad env JUMPR_ID=good tern acp claude", "good")
+matches("JUMPR_ID=bad/def env JUMPR_ID=good tern acp claude", "good")
+-- A command that starts with the ACP carrier keeps that id when a deck path appears later.
+matches("env JUMPR_ID=abc tern acp claude --add-dir /work/.omp/deck/other", "abc")
+matches("JUMPR_ID=abc tern acp claude --add-dir /work/.omp/deck/other", "abc")
+matches("/bin/fish -c env JUMPR_ID=abc tern acp claude --add-dir /work/.omp/deck/other", "abc")
+matches("/bin/fish -c 'env JUMPR_ID=abc tern acp claude --add-dir /work/.omp/deck/other'", "abc")
+matches("/bin/fish -l -c 'env JUMPR_ID=abc tern acp claude --add-dir /work/.omp/deck/other'", "abc")
+-- A deck path still wins when that command does not start with the ACP carrier.
+matches("omp --continue --session-dir ~/.omp/deck/deckid env JUMPR_ID=acpid", "deckid")
+matches("/bin/fish -l -c 'omp --continue --session-dir ~/.omp/deck/deckid env JUMPR_ID=acpid'", "deckid")
+matches("echo JUMPR_ID=acpid /.omp/deck/deckid", "deckid")
+matches("env JUMPR_ID=abc/def /.omp/deck/deckid", "deckid")
+check(select("#", Identity.match("JUMPR_ID=abc")) == 1, "match returns exactly one value")
 
 -- valid_id is anchored: `[%w_%-]+`, 1 to 64 characters.
 check(Identity.valid_id("k2x7abcd"), "a new-style id is valid")
@@ -70,17 +94,6 @@ for _ = 1, 200 do
 	check(Identity.valid_id(random_id), "a random new_id is a valid id")
 end
 check(#ALPHABET == 32, "the test alphabet has 32 characters")
-
--- dir_for and command_for round-trip through match.
-check(Identity.dir_for("ab12") == "~/.omp/deck/ab12", "dir_for builds the deck session dir")
-local command = Identity.command_for(Identity.dir_for("ab12"))
-check(command == "omp --continue --session-dir ~/.omp/deck/ab12", "command_for builds the omp command")
-local round_id, round_dir = Identity.match(command :: string)
-check(round_id == "ab12" and round_dir == "~/.omp/deck/ab12", "command_for round-trips through match")
-check(Identity.command_for("~/.omp/deck/ab/../x") == nil, "command_for refuses a dir match rejects")
-check(Identity.command_for("~/.omp/deck/ab;rm") == nil, "command_for refuses shell syntax after the id")
-check(Identity.command_for("~/.omp/deck/ab rm -rf x") == nil, "command_for refuses text after the id")
-check(Identity.command_for("~/notes") == nil, "command_for refuses a dir outside the deck")
 
 -- valid_cwd: absolute, `[%w_%-./ ]`, no `..` segment.
 check(Identity.valid_cwd("/home/me/src/webapp"), "an absolute folder is valid")

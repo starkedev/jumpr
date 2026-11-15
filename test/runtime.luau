@@ -21,7 +21,7 @@ local ARGS = { "session=deck", "host=devbox" }
 
 local function record(pos: number, fields: { [string]: any }?): Store.Record
 	local r: Store.Record =
-		{ gid = "g1", pos = pos, dir = "", cwd = "/work", created_ms = Fake.wall(0) - 1000, state = "live" }
+		{ gid = "g1", pos = pos, cwd = "/work", created_ms = Fake.wall(0) - 1000, state = "live", cli = "omp" }
 	for k, v in (fields or {}) :: { [string]: any } do
 		(r :: any)[k] = v
 	end
@@ -33,14 +33,15 @@ local function deck(): Store.Deck
 	local d = Store.empty()
 	d.session = { name = "deck", host = "devbox" }
 	table.insert(d.groups, { gid = "g1", name = "work", cwd = "/work", folded = false })
-	d.agents["agent-a"] = record(1, { dir = "~/.omp/deck/agent-a", pane = 11 })
-	d.agents["agent-b"] = record(2, { dir = "~/.omp/deck/agent-b", pane = 12 })
+	d.agents["agent-a"] = record(1, { pane = 11 })
+	d.agents["agent-b"] = record(2, { pane = 12 })
 	return d
 end
 
 -- A list on a machine holding `d`, with its panes listed; random draws are always 1, so a new id is "aaaaaaaa".
+-- A nil deck is an empty one: `open` collects stale records before the test installs anything else.
 local function list_on(d: Store.Deck?): (Runtime.Runtime, Fake.Machine)
-	local m = Fake.machine(d)
+	local m = Fake.machine(d or Store.empty())
 	m.panes = { [11] = true, [12] = true, [101] = true, [102] = true }
 	local list = Runtime.new(m.compat, function(_n: number): number
 		return 1
@@ -80,6 +81,55 @@ end
 
 local function stored(m: Fake.Machine): Store.Deck
 	return m.kv[Store.KEY]
+end
+
+local HOME = "/home/dev"
+
+-- Plants one Claude session file and, when `yes`, a grep that proves it.
+local function plant(m: Fake.Machine, pid: string, sid: string, cwd: string, yes: boolean)
+	m.home = HOME
+	m.files[HOME .. "/.claude/sessions/" .. pid .. ".json"] = m.json({ sessionId = sid, cwd = cwd })
+	if yes then
+		m.grep[pid] = 0
+	end
+end
+
+local function spawn_claude(list: Runtime.Runtime, m: Fake.Machine, pane: number, id: string)
+	m.panes[pane] = true
+	list.spawn({
+		program = "/bin/fish",
+		args = { "-c", "env JUMPR_ID=" .. id .. " tern acp claude" },
+		env = { TERN_PANE = tostring(pane) },
+	})
+end
+
+-- One group and one claude record. Fields override the pending start.
+local function claude_deck(id: string, fields: { [string]: any }?): Store.Deck
+	local d = Store.empty()
+	d.session = { name = "deck", host = "devbox" }
+	table.insert(d.groups, { gid = "g1", name = "work", cwd = "/work", folded = false })
+	local extra: { [string]: any } = { cli = "claude", state = "pending" }
+	for k, v in (fields or {}) :: { [string]: any } do
+		extra[k] = v
+	end
+	d.agents[id] = record(1, extra)
+	return d
+end
+
+-- Enter on the last row, after its folder is known to exist. Nil when no start was sent.
+local function restart_fields(
+	list: Runtime.Runtime,
+	copy: Runtime.Copy,
+	cx: BlockCx,
+	b: Fake.Block,
+	m: Fake.Machine
+): { [string]: string }?
+	m.dirs["/work"] = true
+	press(list, copy, cx, "G")
+	press(list, copy, cx, "enter")
+	local starts = requests(b, "start")
+	local start = starts[#starts]
+	return if start ~= nil then start.fields else nil
 end
 
 -- A status message from window `w` as the window sends it.
@@ -297,7 +347,7 @@ do
 	local list, m = list_on(deck())
 	local c, cx = open(list, 101)
 	local saved = stored(m)
-	list.event(c, status_action(m, "win1", 1, { ["agent-a"] = { { s = "q", src = "agents" } } }, 3), cx)
+	list.event(c, status_action(m, "win1", 1, { ["agent-a"] = { { s = "q", src = "agents" } } }, Protocol.P + 1), cx)
 	local f = list.frame(c, cx)
 	check(f.version == "bad_p_newer", "the banner names a newer version")
 	check(stored(m) == saved, "nothing is saved")
@@ -306,6 +356,175 @@ do
 			check(row.code == "unknown", "the other version's status is not shown")
 		end
 	end
+end
+
+-- Runtime settings are loaded on first use. A valid default is saved and every list copy is rendered; the next new
+-- agent uses it. An invalid default is refused without a save or render, and the returned settings cannot mutate the deck.
+do
+	local list, m = list_on(deck())
+	local c1, cx1, b1 = open(list, 101)
+	local _c2, _cx2, b2 = open(list, 102)
+	local before1, before2 = b1.renders, b2.renders
+	check(list.host_name() == "devbox", "the runtime reports the list machine's name")
+	check(not list.readonly(), "an ordinary deck is writable")
+	check(list.set_agent("claude") == nil, "a valid default agent is accepted")
+	check(b1.renders == before1 + 1 and b2.renders == before2 + 1, "changing the default agent renders every list copy")
+	check(stored(m).settings.agent == "claude", "the default agent is saved")
+	local detached = list.settings()
+	detached.agent = "codex"
+	check(list.settings().agent == "claude", "settings are returned as a detached value")
+	local saved, writes = stored(m), m.kv_writes
+	before1, before2 = b1.renders, b2.renders
+	local invalid = list.set_agent("a b")
+	check(invalid ~= nil and string.find(invalid, "\n", 1, true) == nil, "an invalid default returns a one-line reason")
+	check(stored(m) == saved and stored(m).settings.agent == "claude", "an invalid default changes nothing")
+	check(
+		m.kv_writes == writes and b1.renders == before1 and b2.renders == before2,
+		"an invalid default is neither saved nor rendered"
+	)
+	m.dirs["/work"] = true
+	press(list, c1, cx1, "n")
+	local starts = requests(b1, "start")
+	check(#starts == 1 and starts[1].fields.cli == "claude", "the default agent kind is sent for a new agent")
+	check(stored(m).agents.aaaaaaaa.cli == "claude", "the new record keeps the default agent kind")
+end
+
+-- A key override is saved and reaches every copy at once: the old key stops dispatching and the new key starts an
+-- agent. A nil key restores the default.
+do
+	local list, m = list_on(deck())
+	local c1, cx1, b1 = open(list, 101)
+	local c2, cx2, b2 = open(list, 102)
+	local before1, before2 = b1.renders, b2.renders
+	check(list.set_key("new", "a") == nil, "a free list key is accepted")
+	check(b1.renders == before1 + 1 and b2.renders == before2 + 1, "changing a key renders every list copy")
+	check(stored(m).settings.keys.new == "a", "the key override is saved")
+	local f1, f2 = list.frame(c1, cx1), list.frame(c2, cx2)
+	check(
+		f1.map.key_of.new == "a" and f2.map.key_of.new == "a" and f1.map.action_of.n == nil,
+		"every frame carries the resolved override"
+	)
+	m.dirs["/work"] = true
+	press(list, c1, cx1, "n")
+	check(#requests(b1, "start") == 0 and #requests(b2, "start") == 0, "the old key no longer starts an agent")
+	press(list, c2, cx2, "a")
+	check(#requests(b2, "start") == 1, "the new key starts an agent in another copy")
+	check(
+		list.set_key("new", nil) == nil and list.settings().keys.new == nil and stored(m).settings.keys.new == nil,
+		"a nil key restores and saves its default"
+	)
+end
+
+-- A reset whose default key another action now holds is refused, so no action is left without a working key.
+do
+	local list, m = list_on(deck())
+	local _c, _cx, b = open(list, 101)
+	check(list.set_key("down", "x") == nil, "moving an action off its default is accepted")
+	check(list.set_key("up", "j") == nil, "another action can take the freed default")
+	local saved, writes, renders = stored(m), m.kv_writes, b.renders
+	check(list.set_key("down", nil) == "taken by previous row", "a reset names the holder of the default")
+	check(list.settings().keys.down == "x", "the refused reset keeps the override")
+	check(stored(m) == saved and m.kv_writes == writes and b.renders == renders, "a refused reset changes nothing")
+	check(list.set_key("up", nil) == nil, "resetting the holder frees the default")
+	check(list.set_key("down", nil) == nil, "and the first reset then restores its default")
+end
+
+-- Reset clears every override, saves the defaults and renders every copy; dispatch follows the restored map.
+do
+	local list, m = list_on(deck())
+	local c, cx, b1 = open(list, 101)
+	local _c2, _cx2, b2 = open(list, 102)
+	check(list.set_key("new", "a") == nil and list.set_key("group", "b") == nil, "two key overrides are accepted")
+	local before1, before2 = b1.renders, b2.renders
+	check(list.reset_keys() == nil, "all list keys can be reset")
+	check(b1.renders == before1 + 1 and b2.renders == before2 + 1, "resetting keys renders every list copy")
+	check(next(stored(m).settings.keys) == nil, "reset saves an empty override table")
+	local f = list.frame(c, cx)
+	check(f.map.key_of.new == "n" and f.map.key_of.group == "g", "reset restores the default map")
+	m.dirs["/work"] = true
+	press(list, c, cx, "a")
+	check(#requests(b1, "start") == 0, "an old override does nothing after reset")
+	press(list, c, cx, "n")
+	check(#requests(b1, "start") == 1, "the default key starts an agent after reset")
+end
+
+-- A key held by another action is refused without changing, saving or rendering the deck.
+do
+	local list, m = list_on(deck())
+	local _c, _cx, b = open(list, 101)
+	local saved, writes, renders = stored(m), m.kv_writes, b.renders
+	check(list.set_key("new", "j") == "taken by next row", "a colliding key names its holder")
+	check(stored(m) == saved and next(list.settings().keys) == nil, "a colliding key changes nothing")
+	check(m.kv_writes == writes and b.renders == renders, "a colliding key is neither saved nor rendered")
+end
+
+-- A settings block has its own sender but shares the list's saved request counter. It may send only cfg, so it cannot
+-- turn its route into an agent launch.
+do
+	local m = Fake.machine(deck())
+	m.panes = { [11] = true, [12] = true, [101] = true }
+	local draws = 0
+	local list = Runtime.new(m.compat, function(_n: number): number
+		draws += 1
+		return if draws <= 8 then 1 else 2
+	end)
+	local c, cx, b = open(list, 101)
+	local sender = list.new_sender()
+	check(sender.b ~= c.sender.b, "the settings block has a sender isolated from the list copy")
+	local ok, reason = list.send_from(cx, sender, "cfg", { op = "read" })
+	local cfgs = requests(b, "cfg")
+	local cfg = cfgs[1]
+	check(ok and reason == nil and #cfgs == 1, "a cfg request is opened")
+	check(
+		string.sub(b.opened[1], 1, 12) == "jumpr://cfg?"
+			and cfg.p == 3
+			and cfg.fields.op == "read"
+			and cfg.b == sender.b,
+		"the cfg URL carries the protocol, operation and settings sender"
+	)
+	check(cfg.r == 1 and stored(m).next_req == 2, "cfg advances the shared saved request counter")
+	press(list, c, cx, "j")
+	m.advance(120)
+	local shows = requests(b, "show")
+	check(
+		#shows == 1 and shows[1].b == c.sender.b and shows[1].b ~= cfg.b and shows[1].r == 2,
+		"the next list request keeps the list sender and follows the shared counter"
+	)
+	local opened, saved, writes = #b.opened, stored(m), m.kv_writes
+	local started, refused = list.send_from(cx, sender, "start", { id = "agent-new", cwd = "/work" })
+	check(
+		not started and refused ~= nil and string.find(refused, "\n", 1, true) == nil,
+		"a settings sender refuses start with a one-line reason"
+	)
+	check(
+		#b.opened == opened and stored(m) == saved and m.kv_writes == writes,
+		"a refused start opens nothing and does not advance or save the deck"
+	)
+end
+
+-- A deck from a newer Jumpr version is read-only: changing its settings is refused without replacing, saving or
+-- rendering it.
+do
+	local d = deck()
+	d.schema = Store.SCHEMA + 1
+	local list, m = list_on(d)
+	local _c, _cx, b = open(list, 101)
+	check(list.readonly(), "a newer deck is read-only")
+	local saved, writes, renders = m.kv[Store.KEY], m.kv_writes, b.renders
+	local agent_reason = list.set_agent("claude")
+	local key_reason = list.set_key("new", "a")
+	local reset_reason = list.reset_keys()
+	check(
+		agent_reason == "settings are read-only"
+			and key_reason == "settings are read-only"
+			and reset_reason == "settings are read-only",
+		"a read-only deck refuses every settings change with a one-line reason"
+	)
+	check(m.kv[Store.KEY] == saved and m.kv_writes == writes, "a read-only deck is unchanged")
+	check(
+		b.renders == renders and list.settings().agent == "omp" and next(list.settings().keys) == nil,
+		"read-only settings are neither rendered nor applied"
+	)
 end
 
 -- A copy whose pane stays missing from the pane list for three ticks drops out: it is no longer rendered.
@@ -327,7 +546,7 @@ end
 -- one; the last exit marks the record exited; and a pane exiting within a minute of its stop deletes the record.
 do
 	local d = deck()
-	d.agents["agent-c"] = record(3, { dir = "~/.omp/deck/agent-c", state = "pending" })
+	d.agents["agent-c"] = record(3, { state = "pending" })
 	d.agents["agent-b"].state = "stopping"
 	d.agents["agent-b"].stop_ms = Fake.wall(0) - 1000
 	local list, m = list_on(d)
@@ -423,11 +642,61 @@ do
 	check(row_a().dup == true, "two running panes for one deck id are still a duplicate")
 end
 
+-- o on an agent whose pane exited restarts it as Enter does and holds the message for it: nothing is typed while the
+-- new pane starts or works, and once the restarted pane reports idle, beside the exited pane left open, the message
+-- is typed into it and is no longer held.
+do
+	local list, m = list_on(deck())
+	m.dirs["/work"] = true
+	local c, cx, b = open(list, 101)
+	local dead = { s = "x", e = "exit status 1", src = "agents" }
+	local seq = 0
+	local function report(entries: { any })
+		seq += 1
+		list.event(c, status_action(m, "win1", seq, { ["agent-a"] = entries }), cx)
+	end
+	report({ { s = "i", src = "agents" } })
+	list.pane_exited({ pane = 11, status = 1 })
+	report({ dead })
+	press(list, c, cx, "j")
+	press(list, c, cx, "o")
+	typed(list, c, cx, "go-on")
+	press(list, c, cx, "enter")
+	local starts = requests(b, "start")
+	check(
+		#starts == 1 and starts[1].fields.id == "agent-a" and starts[1].fields.land == "1",
+		"o on the exited row restarts it as Enter does"
+	)
+	local held = stored(m).queue["agent-a"]
+	check(held ~= nil and held.text == "go-on", "the message is held and saved")
+	check(list.frame(c, cx).ui.notice == "restarting — message queued", "the list says so")
+	list.tick()
+	check(#m.typed == 0, "nothing is typed while the agent starts")
+	m.panes[13] = true
+	list.spawn({
+		program = "omp",
+		args = { "--continue", "--session-dir", "~/.omp/deck/agent-a" },
+		env = { TERN_PANE = "13" },
+	})
+	list.tick()
+	check(stored(m).agents["agent-a"].state == "live", "the new pane binds the record")
+	check(stored(m).queue["agent-a"] ~= nil, "the message is still held")
+	report({ dead, { s = "w", src = "agents" } })
+	list.tick()
+	check(#m.typed == 0, "nothing is typed while the restarted agent works")
+	report({ dead, { s = "i", src = "agents" } })
+	check(
+		#m.typed == 1 and m.typed[1].pane == 13 and m.typed[1].text == "go-on\r",
+		"once it is idle the message is typed into the restarted pane"
+	)
+	check(stored(m).queue["agent-a"] == nil, "and is no longer held")
+end
+
 -- An agent restarted twice whose second pane exited too: both exited panes stay open, and the row is an exited
 -- agent, not a duplicate, so Enter restarts it again.
 do
 	local d = deck()
-	d.agents["agent-a"] = record(1, { dir = "~/.omp/deck/agent-a", state = "exited", exit = 1 })
+	d.agents["agent-a"] = record(1, { state = "exited", exit = 1 })
 	local list, m = list_on(d)
 	m.dirs["/work"] = true
 	local c, cx, b = open(list, 101)
@@ -558,7 +827,7 @@ end
 -- the row is no duplicate and the list says a second start was stopped.
 do
 	local d = deck()
-	d.agents["agent-c"] = record(3, { dir = "~/.omp/deck/agent-c", state = "pending" })
+	d.agents["agent-c"] = record(3, { state = "pending" })
 	local list, m = list_on(d)
 	local c, cx = open(list, 101)
 	local function spawn(pane: number): any
@@ -600,10 +869,41 @@ do
 	)
 end
 
+-- The same duplicate guard covers ACP identities carried by JUMPR_ID: the first process binds and the second is
+-- replaced, so only one pane runs the agent.
+do
+	local d = deck()
+	d.agents.abcdefgh = record(3, { state = "pending", cli = "claude" })
+	local list, m = list_on(d)
+	open(list, 101)
+	local function spawn(pane: number): any
+		m.panes[pane] = true
+		return list.spawn({
+			program = "/bin/fish",
+			args = { "-c", "env JUMPR_ID=abcdefgh tern acp claude" },
+			env = { TERN_PANE = tostring(pane) },
+		})
+	end
+	check(spawn(21) == nil, "the first ACP start runs as it is")
+	local instead = spawn(22)
+	check(instead ~= nil, "the second ACP start of the same agent is replaced")
+	local said = if instead ~= nil then table.concat(instead.args, " ") else ""
+	check(
+		string.find(said, "agent abcdefgh already runs in pane 21", 1, true) ~= nil
+			and string.find(said, "tern acp", 1, true) == nil,
+		"the replacement names the running pane and starts no ACP process: " .. said
+	)
+	m.panes[22] = nil
+	list.pane_exited({ pane = 22, status = 0 })
+	list.tick()
+	local r = stored(m).agents.abcdefgh
+	check(r.state == "live" and r.pane == 21, "only the first ACP pane binds")
+end
+
 -- An agent whose pane exited is not running: restarting it spawns omp as it is.
 do
 	local d = deck()
-	d.agents["agent-c"] = record(3, { dir = "~/.omp/deck/agent-c", state = "pending" })
+	d.agents["agent-c"] = record(3, { state = "pending" })
 	local list, m = list_on(d)
 	open(list, 101)
 	local spec = function(pane: number): any
@@ -770,6 +1070,248 @@ do
 	press(list, c, cx, "3")
 	local f = list.frame(c, cx)
 	check(f.ui.mode == "input" and f.ui.filter == "waiting", "in the search line a digit is typed, not a filter")
+end
+
+-- A claude agent binds, the session file and a grep yes are reported, and within two ticks the record holds
+-- that conversation. Enter after the pane exits asks to resume it.
+do
+	local id = "abcdefgh"
+	local list, m = list_on(claude_deck(id))
+	plant(m, "42", "sessA", "/work", true)
+	local c, cx, b = open(list, 101)
+	spawn_claude(list, m, 21, id)
+	list.tick()
+	list.tick()
+	check(stored(m).agents[id].session == "sessA", "within two ticks the record holds the proven session")
+	m.panes[21] = nil
+	list.pane_exited({ pane = 21, status = 0 })
+	local fields = restart_fields(list, c, cx, b, m)
+	check(fields ~= nil and fields.mode == "resume" and fields.sid == "sessA", "Enter after exit requests mode=resume")
+end
+
+-- The same lookup runs while no list copy is open, and Enter after that still asks to resume.
+do
+	local id = "abcdefgh"
+	local list, m = list_on(claude_deck(id))
+	plant(m, "42", "sessA", "/work", true)
+	spawn_claude(list, m, 21, id)
+	list.tick()
+	list.tick()
+	check(stored(m).agents[id].session == "sessA", "a hidden list still stores the proven session")
+	local c, cx, b = open(list, 101)
+	m.panes[21] = nil
+	list.pane_exited({ pane = 21, status = 0 })
+	local fields = restart_fields(list, c, cx, b, m)
+	check(
+		fields ~= nil and fields.mode == "resume" and fields.sid == "sessA",
+		"Enter after a hidden lookup still requests mode=resume"
+	)
+end
+
+-- A proven session stops the lookup. Binding again while the fake proves a different id replaces the stored one.
+do
+	local id = "abcdefgh"
+	local list, m = list_on(claude_deck(id))
+	plant(m, "42", "sessA", "/work", true)
+	spawn_claude(list, m, 21, id)
+	list.tick()
+	check(stored(m).agents[id].session == "sessA", "the first proof is stored")
+	local probes = #m.probes
+	m.advance(3000)
+	list.tick()
+	check(#m.probes == probes and stored(m).agents[id].session == "sessA", "a proven session is not looked up again")
+	m.files[HOME .. "/.claude/sessions/42.json"] = nil
+	plant(m, "99", "sessB", "/work", true)
+	list.command_started({ pane = 21, line = "env JUMPR_ID=" .. id .. " tern acp claude" })
+	list.tick()
+	check(stored(m).agents[id].session == "sessB", "a later bind replaces a different proof")
+end
+
+-- The record's own session is not treated as taken, so a re-proof of it still greps.
+do
+	local d = claude_deck("abcdefgh", { state = "live", pane = 21, session = "sessA", ran = true })
+	d.agents.bbbbbbbb = record(2, { cli = "claude", state = "live", pane = 22, session = "sessB", ran = true })
+	local list, m = list_on(d)
+	m.panes[21] = true
+	m.panes[22] = true
+	plant(m, "42", "sessA", "/work", true)
+	list.tick()
+	check(#m.probes == 1, "the record's own session is still probed")
+	check(m.probes[1][6] == "/proc/42/environ", "the probe is the file that holds its own session")
+	check(stored(m).agents.abcdefgh.session == "sessA", "a matching proof leaves the stored session")
+end
+
+-- Two live claude agents: one lookup per tick, then the other on the next tick.
+do
+	local d = claude_deck("abcdefgh")
+	d.agents.bbbbbbbb = record(2, { cli = "claude", state = "pending" })
+	local list, m = list_on(d)
+	plant(m, "11", "sessA", "/work", true)
+	plant(m, "22", "sessB", "/work", true)
+	spawn_claude(list, m, 21, "abcdefgh")
+	spawn_claude(list, m, 22, "bbbbbbbb")
+	list.tick()
+	local first = 0
+	if stored(m).agents.abcdefgh.session ~= nil then
+		first += 1
+	end
+	if stored(m).agents.bbbbbbbb.session ~= nil then
+		first += 1
+	end
+	check(#m.probes == 1 and first == 1, "one lookup runs per tick")
+	list.tick()
+	check(
+		#m.probes == 2 and stored(m).agents.abcdefgh.session ~= nil and stored(m).agents.bbbbbbbb.session ~= nil,
+		"the other agent is looked up on the next tick"
+	)
+end
+
+-- No session file: tries wait 3 s, stop after ten, and Enter then asks to continue because the real exit stamped it.
+do
+	local id = "abcdefgh"
+	local list, m = list_on(claude_deck(id))
+	m.home = HOME
+	local c, cx, b = open(list, 101)
+	spawn_claude(list, m, 21, id)
+	list.tick()
+	m.advance(2999)
+	list.tick()
+	check(#m.lists == 1, "a lookup waits 3 s")
+	m.advance(1)
+	list.tick()
+	check(#m.lists == 2, "a lookup runs again at 3 s")
+	for _ = 3, 10 do
+		m.advance(3000)
+		list.tick()
+	end
+	check(#m.lists == 10, "ten misses are tried")
+	m.advance(3000)
+	list.tick()
+	check(#m.lists == 10, "it stops after ten misses")
+	m.panes[21] = nil
+	list.pane_exited({ pane = 21, status = 0 })
+	local fields = restart_fields(list, c, cx, b, m)
+	check(
+		fields ~= nil and fields.mode == "continue" and fields.sid == nil,
+		"Enter after a missed lookup requests continue"
+	)
+	check(stored(m).closed[Store.closed_key("claude", "/work")] == id, "a real pane exit stamps closed")
+end
+
+-- A reconcile marks the record exited without a stamp, so Enter asks for the picker.
+do
+	local id = "abcdefgh"
+	local list, m = list_on(claude_deck(id))
+	m.home = HOME
+	local c, cx, b = open(list, 101)
+	spawn_claude(list, m, 21, id)
+	list.tick()
+	m.panes[21] = nil
+	list.tick()
+	check(stored(m).agents[id].state == "exited", "a missing pane is marked exited")
+	check(stored(m).closed[Store.closed_key("claude", "/work")] == nil, "a reconcile does not stamp closed")
+	local fields = restart_fields(list, c, cx, b, m)
+	check(fields ~= nil and fields.mode == "pick" and fields.sid == nil, "Enter after a reconcile requests pick")
+end
+
+-- Leaving a duplicate's other pane does not stamp. The last pane does.
+do
+	local id = "abcdefgh"
+	local list, m = list_on(claude_deck(id))
+	spawn_claude(list, m, 21, id)
+	list.tick()
+	m.panes[22] = true
+	list.command_started({ pane = 22, line = "env JUMPR_ID=" .. id .. " tern acp claude" })
+	list.tick()
+	m.panes[22] = nil
+	list.pane_exited({ pane = 22, status = 0 })
+	check(stored(m).agents[id].state == "live", "one pane left keeps the record live")
+	check(stored(m).closed[Store.closed_key("claude", "/work")] == nil, "moving a duplicate does not stamp closed")
+	m.panes[21] = nil
+	list.pane_exited({ pane = 21, status = 0 })
+	check(stored(m).closed[Store.closed_key("claude", "/work")] == id, "the last pane exiting stamps closed")
+end
+
+-- An omp pane exit marks the record exited and does not stamp closed.
+do
+	local list, m = list_on(deck())
+	m.panes[11] = nil
+	list.pane_exited({ pane = 11, status = 0 })
+	check(stored(m).agents["agent-a"].state == "exited", "an omp pane exit marks the record exited")
+	check(stored(m).closed[Store.closed_key("omp", "/work")] == nil, "an omp exit does not stamp closed")
+end
+
+-- An omp agent never starts a session lookup, even when a session file is planted.
+do
+	local list, m = list_on(deck())
+	plant(m, "42", "sessA", "/work", true)
+	open(list, 101)
+	list.tick()
+	m.advance(3000)
+	list.tick()
+	check(#m.probes == 0 and #m.lists == 0 and m.home_reads == 0, "an omp agent never triggers a lookup")
+end
+
+-- An agent's last usable pane title is remembered on its record and saved once: a turned spinner frame or a title that
+-- is not usable (a chat's default name) saves nothing and leaves it. The row keeps showing it after the pane exits
+-- and after a restart whose chat shows only its default name, until the chat names itself again, and the restart
+-- does not name the tab with it.
+do
+	local id = "abcdefgh"
+	local list, m = list_on(claude_deck(id))
+	local titles: { [number]: string } = {}
+	local listed = m.compat.pane_list
+	m.compat.pane_list = function(): ({ Compat.PaneItem }?, string?)
+		local panes, err = listed()
+		if panes ~= nil then
+			for _, p in panes do
+				p.title = titles[p.pane] or p.title
+			end
+		end
+		return panes, err
+	end
+	local c, cx, b = open(list, 101)
+	local function record_of(): Store.Record
+		return stored(m).agents[id]
+	end
+	local function label(): string?
+		for _, row in list.frame(c, cx).rows do
+			if row.id == id then
+				return row.label
+			end
+		end
+		return nil
+	end
+	titles[21] = "Claude Code"
+	spawn_claude(list, m, 21, id)
+	list.tick()
+	check(record_of().state == "live" and record_of().title == nil, "a chat's default name is not remembered")
+	check(label() == "claude 1", "the row shows the default label")
+	local writes = m.kv_writes
+	titles[21] = "⠋ Fix the parser"
+	list.tick()
+	check(record_of().title == "Fix the parser", "a usable title is remembered without its spinner frame")
+	check(m.kv_writes == writes + 1, "and saved once: " .. tostring(m.kv_writes - writes))
+	titles[21] = "⠙ Fix the parser"
+	list.tick()
+	check(m.kv_writes == writes + 1, "a turned spinner frame saves nothing")
+	titles[21] = "Claude Code"
+	list.tick()
+	check(m.kv_writes == writes + 1 and record_of().title == "Fix the parser", "a default name saves nothing")
+	check(label() == "Fix the parser", "the row shows the remembered title while its pane shows none")
+	m.panes[21] = nil
+	list.pane_exited({ pane = 21, status = 0 })
+	check(record_of().state == "exited" and label() == "Fix the parser", "an exited row shows it")
+	local fields = restart_fields(list, c, cx, b, m)
+	check(fields ~= nil and fields.label == "", "the restart does not name the tab with it")
+	titles[22] = "Claude Code"
+	spawn_claude(list, m, 22, id)
+	list.tick()
+	check(record_of().state == "live", "the restarted chat binds")
+	check(label() == "Fix the parser", "its row keeps the remembered title while the chat shows its default name")
+	titles[22] = "Parser tests"
+	list.tick()
+	check(record_of().title == "Parser tests" and label() == "Parser tests", "until the chat names itself again")
 end
 
 print("Runtime: " .. checks .. " checks passed")

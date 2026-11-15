@@ -1,10 +1,11 @@
 --!strict
 -- Pure module that turns the deck, the host's panes and the latest status into rows, plus the pure record
--- transitions (bind, failed start, exit, reconcile, group sweep). No `tern` here: everything comes in as
--- arguments. Functions that return a deck return the same table when nothing changed, so a caller can save only
--- when `new ~= old`.
+-- transitions (bind, failed start, exit, reconcile, group sweep, remembered pane titles) and the choice of how an
+-- exited agent starts again. No `tern` here: everything comes in as arguments. Functions that return a deck return
+-- the same table when nothing changed, so a caller can save only when `new ~= old`.
 
 local harness = require("../harness")
+local agent = require("../shared/agent")
 local status = require("../shared/status")
 local store = require("./store")
 
@@ -153,8 +154,8 @@ function M.group_ids(deck: store.Deck, gid: string): { string }
 	return ids
 end
 
--- The pane the row's default label reads its title from: the record's cached pane when it is in the set,
--- else the lowest pane in the set.
+-- The pane a row reads its title from: the record's cached pane when it is in the set, else the lowest pane in the
+-- set.
 local function bound_pane(record: store.Record, set: { [number]: true }?): number?
 	if set == nil then
 		return nil
@@ -169,6 +170,61 @@ local function bound_pane(record: store.Record, set: { [number]: true }?): numbe
 		end
 	end
 	return best
+end
+
+-- The host's pane titles by pane id.
+local function titles_of(panes: { Pane }): { [number]: string }
+	local titles: { [number]: string } = {}
+	for _, p in panes do
+		if p.title ~= nil then
+			titles[p.pane] = p.title
+		end
+	end
+	return titles
+end
+
+-- The usable title of the pane a record's row reads (`bound_pane`), as `harness.clean_title` leaves it: nil when no
+-- pane is bound, or when its title is empty or only its agent's default name (a restarted chat shows that until its
+-- next turn).
+local function live_title(r: store.Record, set: { [number]: true }?, titles: { [number]: string }): string?
+	local pane = bound_pane(r, set)
+	return harness.clean_title(if pane ~= nil then titles[pane] else nil)
+end
+
+-- A row's label: the user's own label (`r`), else the usable title of the pane it reads now, else the title its
+-- record remembers from an earlier pane (`remember_titles`), else `<agent> <n>`, n its place in its group.
+local function row_label(r: store.Record, set: { [number]: true }?, titles: { [number]: string }, n: number): string
+	if r.label ~= nil and r.label ~= "" then
+		return r.label
+	end
+	local live = live_title(r, set, titles)
+	if live ~= nil then
+		return live
+	end
+	if r.title ~= nil and r.title ~= "" then
+		return r.title
+	end
+	return agent.name(r.cli) .. " " .. n
+end
+
+-- Remembers on each record, as `title`, the usable title of the pane its row reads (`live_title`), so the row keeps
+-- that name while no pane shows one: a restarted chat shows only its agent's default name until its next turn, and
+-- an exited agent has no pane. A title that is not usable never replaces the remembered one. The same deck comes
+-- back when no remembered title changes, so a title whose spinner frame turns (`clean_title` strips it) saves
+-- nothing.
+function M.remember_titles(deck: store.Deck, panes: { Pane }, pane_sets: PaneSets): store.Deck
+	local titles = titles_of(panes)
+	local out = deck
+	for id, r in deck.agents do
+		local title = live_title(r, pane_sets[id], titles)
+		if title ~= nil and title ~= r.title then
+			if out == deck then
+				out = store.clone(deck)
+			end
+			out.agents[id].title = title
+		end
+	end
+	return out
 end
 
 -- One agent's status code: its entry's, or the worst of several (a duplicate).
@@ -214,12 +270,7 @@ function M.rows(
 	health: string
 ): { Row }
 	local fresh = health == "ok"
-	local titles: { [number]: string } = {}
-	for _, p in panes do
-		if p.title ~= nil then
-			titles[p.pane] = p.title
-		end
-	end
+	local titles = titles_of(panes)
 	local search = if ui.search ~= nil and ui.search ~= "" then string.lower(ui.search) else nil
 	local filter = ui.filter
 	local active = filter ~= nil or search ~= nil
@@ -240,13 +291,7 @@ function M.rows(
 					table.insert(srcs, e.src)
 				end
 			end
-			local label: string
-			if r.label ~= nil and r.label ~= "" then
-				label = r.label
-			else
-				local pane = bound_pane(r, set)
-				label = harness.clean_title(if pane ~= nil then titles[pane] else nil) or ("omp " .. n)
-			end
+			local label = row_label(r, set, titles, n)
 			local live = M.is_live(r, set)
 			local dup = M.is_dup(set, entries)
 			local asking = false
@@ -369,10 +414,11 @@ end
 -- A pane bound to the record (spawn or command_started matched its deck id). Pure: returns a new record and the
 -- verdict. "stop": the record was pending with `cancel` (its group is being deleted); it is now `stopping` and the
 -- caller must send `stop`. "live": nothing to send; the record is `live` (a `stopping` record stays `stopping`).
--- Binding caches `pane` and clears `failed`, `ended_ms` and `exit`; the caller also clears the
--- record's pending `start` request, whatever the reply route did.
+-- Binding records `ran`, caches `pane` and clears `failed`, `ended_ms` and `exit`.
+-- The caller also clears the record's pending `start` request, whatever the reply route did.
 function M.on_bind(record: store.Record, pane: number): (store.Record, string)
 	local r = table.clone(record)
+	r.ran = true
 	r.pane = pane
 	r.failed = nil
 	r.ended_ms = nil
@@ -421,40 +467,116 @@ function M.on_exit(record: store.Record, now_ms: number): string
 	return "exited"
 end
 
+-- Records that this non-omp agent's pane closed last among its kind in its folder. An omp record, an unknown id,
+-- or a stamp that already names this agent leaves the deck unchanged.
+function M.stamp_closed(deck: store.Deck, id: string): store.Deck
+	local r = deck.agents[id]
+	if r == nil or r.cli == agent.OMP then
+		return deck
+	end
+	local key = store.closed_key(r.cli, r.cwd)
+	if deck.closed[key] == id then
+		return deck
+	end
+	local out = store.clone(deck)
+	out.closed[key] = id
+	return out
+end
+
 -- Applies `on_exit` to one `live` or `stopping` record: deletes it (and its held message) or marks it `exited`
--- with `exit`, `ended_ms = now_ms` and no cached pane. Any other state is left alone.
+-- with `exit`, `ended_ms = now_ms` and no cached pane. A delete after a stop stamps the closed key before the
+-- record goes, so a later restart can still tell that this agent closed after one that exited earlier. Any other
+-- state is left alone.
 function M.apply_exit(deck: store.Deck, id: string, exit: number?, now_ms: number): store.Deck
 	local r = deck.agents[id]
 	if r == nil or (r.state ~= "live" and r.state ~= "stopping") then
 		return deck
 	end
-	local out = store.clone(deck)
 	if M.on_exit(r, now_ms) == "delete" then
+		local out = M.stamp_closed(deck, id)
+		if out == deck then
+			out = store.clone(deck)
+		end
 		out.agents[id] = nil
 		out.queue[id] = nil
-	else
-		local nr = out.agents[id]
-		nr.state = "exited"
-		nr.exit = exit
-		nr.ended_ms = now_ms
-		nr.pane = nil
+		return out
 	end
+	local out = store.clone(deck)
+	local nr = out.agents[id]
+	nr.state = "exited"
+	nr.exit = exit
+	nr.ended_ms = now_ms
+	nr.pane = nil
 	return out
 end
 
 -- A `live` or `stopping` record whose cached pane is not in `live_panes` (the host's listed panes) is
 -- handled as `on_exit` would: deleted, or `exited` with `ended_ms = now_ms` and no exit status.
+-- Those records are handled in an arbitrary order, so every ACP closed key they touch is cleared afterwards,
+-- including a stamp a stop delete in that pass just wrote.
 function M.reconcile_states(deck: store.Deck, live_panes: { [number]: boolean }, now_ms: number): store.Deck
 	local gone: { string } = {}
+	local clear: { [string]: boolean } = {}
 	for id, r in deck.agents do
 		if (r.state == "live" or r.state == "stopping") and (r.pane == nil or not live_panes[r.pane]) then
 			table.insert(gone, id)
+			if r.cli ~= agent.OMP then
+				clear[store.closed_key(r.cli, r.cwd)] = true
+			end
 		end
+	end
+	if #gone == 0 then
+		return deck
 	end
 	local out = deck
 	for _, id in gone do
 		out = M.apply_exit(out, id, nil, now_ms)
 	end
+	local dirty = false
+	for key in clear do
+		if out.closed[key] ~= nil then
+			dirty = true
+			break
+		end
+	end
+	if not dirty then
+		return out
+	end
+	local cleared = store.clone(out)
+	for key in clear do
+		cleared.closed[key] = nil
+	end
+	return cleared
+end
+
+-- How an exited agent should start again. Omp always starts new. A proven session resumes, even when this agent
+-- also closed last. An agent that never bound starts new. The last of its kind to close in its folder continues.
+-- Anything else opens the picker.
+function M.restart_mode(r: store.Record, id: string, deck: store.Deck): (agent.Mode, string?)
+	if r.cli == agent.OMP then
+		return "new", nil
+	end
+	if r.session ~= nil then
+		return "resume", r.session
+	end
+	if r.ran ~= true then
+		return "new", nil
+	end
+	if deck.closed[store.closed_key(r.cli, r.cwd)] == id then
+		return "continue", nil
+	end
+	return "pick", nil
+end
+
+-- Stores a proven conversation id on a live non-omp record that has none, or that holds a different one.
+-- Any other record, and a record that already holds this id, comes back as the same deck.
+function M.set_session(deck: store.Deck, id: string, sid: string): store.Deck
+	local r = deck.agents[id]
+	if r == nil or r.state ~= "live" or r.cli == agent.OMP or r.session == sid then
+		return deck
+	end
+	local out = store.clone(deck)
+	out.agents[id].session = sid
 	return out
 end
 

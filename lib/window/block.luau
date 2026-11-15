@@ -33,15 +33,15 @@ local function view(cx: WindowCx): (ManagedHost?, ManagedSession?)
 	return host, session
 end
 
--- `focus`: record a non-deck pane of the deck session, which `back` returns to. Focus landing in a copy never
--- changes it.
+-- `focus`: record a non-deck pane of the deck session, which `back` returns to. Focus landing in a copy or in the
+-- settings page never changes it: the page closes behind the user, and `back` would find it gone.
 function M.on_focus(cx: WindowCx, ev: FocusEvent)
 	local host, session = view(cx)
 	if host == nil or session == nil then
 		return
 	end
 	local p = compat.session_pane(cx, ev.pane)
-	if p == nil or p.block == BLOCK_KIND then
+	if p == nil or p.block == BLOCK_KIND or p.block == protocol.SETTINGS_KIND then
 		return
 	end
 	local deck_session = pusher.session_of(host.name)

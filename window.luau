@@ -1,7 +1,8 @@
 --!strict
 -- Jumpr, window half: runs in each Tern window. Wiring only; the logic lives in lib/window/.
--- Events feed the binding (agents), the status pusher and the copies of the list (one per tab of
--- the deck session); jumpr:// links go to the router; the palette commands, the chords (the jumpr key toggles), and
+-- Events feed the binding (agents), the status pusher, the copies of the list (one per tab of
+-- the deck session) and the last-tab history, which also puts focus back where it was when a settings page closes;
+-- jumpr:// links go to the router; the palette commands, the chords (the jumpr key toggles), and
 -- the tab-title formatter that names a tab after its agent while focus is in the list. `startup.ensure` opens every
 -- handler: `window_start` does not fire on a plugin reload into an open window, so the heartbeats start on load or
 -- on the first event instead.
@@ -9,6 +10,7 @@
 local agents = require("./lib/window/agents")
 local block = require("./lib/window/block")
 local compat = require("./lib/compat")
+local chords = require("./lib/window/chords")
 local copies = require("./lib/window/copies")
 local diag = require("./lib/window/diag")
 local leader = require("./lib/window/leader")
@@ -25,11 +27,15 @@ end
 -- Three default chords, chosen by the window's OS so none clashes with Tern's own defaults (a plugin bind on a chord
 -- Tern already binds is left out). On macOS: ⌘J, ⌘⇧J, ⌘\. On a PC keyboard Tern gives Win/Super+J to the editor's
 -- join lines and tiling window managers take Super chords, so Linux and Windows get Ctrl+Alt chords Tern leaves free.
-local MAC = tern.runtime.os == "macos" or tern.runtime.os == "ios"
-local CHORD = if MAC then "cmd+j" else "ctrl+alt+j"
-local HIDE_CHORD = if MAC then "cmd+shift+j" else "ctrl+alt+shift+j"
-local LAST_TAB_CHORD = if MAC then "cmd+\\" else "ctrl+alt+;"
+local DEFAULT_CHORDS = chords.defaults(tern.runtime.os)
+-- Tern drops the plugin binding layer after a settings write, so the router reuses this registration function.
+local function bind_default_chords()
+	tern.bind(DEFAULT_CHORDS.toggle_focus, "plugin.jumpr.toggle_focus")
+	tern.bind(DEFAULT_CHORDS.hide_list, "plugin.jumpr.hide_list")
+	tern.bind(DEFAULT_CHORDS.last_tab, "plugin.jumpr.last_tab")
+end
 local JUMPR_SCHEME = "jumpr://"
+router.set_defaults(DEFAULT_CHORDS, bind_default_chords)
 
 tern.on("window_start", function(cx: WindowCx)
 	startup.ensure(cx)
@@ -39,10 +45,13 @@ startup.arm()
 tern.on("focus", function(ev: FocusEvent, cx: WindowCx)
 	startup.ensure(cx)
 	leader.take()
+	-- Focus Tern moved off a settings page that closed goes back where the user was; only that move counts.
+	if tabs.focus_seen(cx, ev) then
+		return
+	end
 	agents.on_focus(ev.pane)
 	block.on_focus(cx, ev)
 	copies.on_focus(cx, ev)
-	tabs.focus_seen(cx, ev)
 	pusher.mark_dirty()
 end)
 
@@ -53,8 +62,10 @@ tern.on("pane_created", function(_ev: PaneEvent, cx: WindowCx)
 	pusher.mark_dirty()
 end)
 
-tern.on("pane_closed", function(_ev: PaneEvent, cx: WindowCx)
+-- A settings page closed with focus puts focus back first, so the tidy finds it already where the user was.
+tern.on("pane_closed", function(ev: PaneEvent, cx: WindowCx)
 	startup.ensure(cx)
+	tabs.pane_closed(cx, ev.pane)
 	if pusher.rebuild(cx) then
 		copies.tidy(cx)
 	end
@@ -118,6 +129,15 @@ tern.command({
 })
 
 tern.command({
+	id = "settings",
+	title = "Jumpr: settings",
+	run = function(cx: WindowCx)
+		startup.ensure(cx)
+		router.open_settings(cx)
+	end,
+})
+
+tern.command({
 	id = "toggle",
 	title = "Jumpr: hide or show list",
 	run = function(cx: WindowCx)
@@ -149,9 +169,7 @@ tern.command({
 	end,
 })
 -- The jumpr key toggles the list; the hide chord hides it from anywhere; the last-tab chord toggles the last tab.
-tern.bind(CHORD, "plugin.jumpr.toggle_focus")
-tern.bind(HIDE_CHORD, "plugin.jumpr.hide_list")
-tern.bind(LAST_TAB_CHORD, "plugin.jumpr.last_tab")
+bind_default_chords()
 
 tern.route.link(function(link: LinkRequest, cx: WindowCx): RouteDecision?
 	startup.ensure(cx)

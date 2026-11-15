@@ -6,6 +6,7 @@
 local Fake = require("./support/fake_window")
 local Copies = require("../lib/window/copies")
 local Leader = require("../lib/window/leader")
+local Protocol = require("../lib/shared/protocol")
 local Pusher = require("../lib/window/pusher")
 local checks = 0
 
@@ -179,6 +180,34 @@ do
 	Fake.advance(TRANSITION_MS)
 	check(#Fake.world().opened == 0, "a session of another machine never gets copies")
 	Copies.hide(cx)
+end
+
+-- A settings pane is an ordinary companion rather than a list copy: its tab gets a copy, which tidy removes after
+-- the settings pane closes.
+do
+	Fake.reset_world()
+	local h = Fake.host("devbox8")
+	local s = Fake.session(h, "deck")
+	local agent_tab = Fake.tab(s)
+	Fake.agent(agent_tab, "deck-a")
+	local settings_tab = Fake.tab(s)
+	local settings = Fake.pane(settings_tab, { kind = "plugin", block = Protocol.SETTINGS_KIND })
+	Fake.view(s)
+	Fake.focus(settings)
+	Leader.take()
+	Leader.set_hidden(false)
+	Leader.set_deck_session("devbox8", "deck")
+	Pusher.rebuild(cx)
+	check(Copies.ensure(cx) == "ready", "a deck session with settings is ready")
+	local list_copy = Fake.copies_in(settings_tab)[1]
+	check(list_copy ~= nil, "a settings tab gets one copy of the list")
+	check(list_copy ~= settings, "the settings pane is not itself a list copy")
+	Fake.close(settings)
+	Pusher.rebuild(cx)
+	Copies.tidy(cx)
+	check(Fake.world().panes[list_copy] == nil, "tidy closes the copy left alone by settings")
+	check(table.find(Fake.world().sessions[s].tabs, settings_tab) == nil, "tidy closes the empty settings tab")
+	settle()
 end
 
 print("Copies: " .. checks .. " checks passed")

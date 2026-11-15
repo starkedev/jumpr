@@ -1,4 +1,5 @@
 --!strict
+-- Protocol messages and version-skew refusals shared by the host and window halves. Pure: no `tern`.
 
 local Protocol = require("../lib/shared/protocol")
 local checks = 0
@@ -9,7 +10,7 @@ local function check(condition: boolean, message: string)
 end
 
 local P = Protocol.P
-check(P == 2, "the protocol version is 2")
+check(P == 3, "the protocol version is 3")
 
 local function msg(w: string, seq: number, full: boolean): Protocol.StatusMsg
 	return Protocol.status_msg(w, seq, full, 1000, "connected", "deck", "devbox", false, "A", {})
@@ -63,6 +64,46 @@ do
 	check(verdict == "ok" and id == nil, "a non-string id names no agent")
 end
 
+-- Window configuration declares its three actions in page order and carries a checked protocol version.
+do
+	check(#Protocol.CHORD_ACTIONS == 3, "three global chord actions are declared")
+	check(
+		Protocol.CHORD_ACTIONS[1].id == "toggle_focus"
+			and Protocol.CHORD_ACTIONS[1].label == "Show or hide the list"
+			and Protocol.CHORD_ACTIONS[2].id == "hide_list"
+			and Protocol.CHORD_ACTIONS[2].label == "Hide the list"
+			and Protocol.CHORD_ACTIONS[3].id == "last_tab"
+			and Protocol.CHORD_ACTIONS[3].label == "Go to the last tab",
+		"the global chord actions keep their page order and labels"
+	)
+	local cfg = Protocol.cfg_msg({
+		machine = "laptop",
+		em = "B",
+		chords = { toggle_focus = { "ctrl+alt+k" }, hide_list = {}, last_tab = { "ctrl+alt+;" } },
+		defaults = {
+			toggle_focus = "ctrl+alt+j",
+			hide_list = "ctrl+alt+shift+j",
+			last_tab = "ctrl+alt+;",
+		},
+		err = "taken by editor.copy",
+	})
+	check(cfg.p == P, "cfg_msg emits this protocol version")
+	check(
+		cfg.machine == "laptop"
+			and cfg.em == "B"
+			and cfg.chords.toggle_focus[1] == "ctrl+alt+k"
+			and cfg.defaults.toggle_focus == "ctrl+alt+j"
+			and cfg.err == "taken by editor.copy",
+		"cfg_msg keeps the window settings and refusal"
+	)
+	check(Protocol.check_cfg(cfg) == "ok", "a cfg message of this version is accepted")
+	cfg.p = P + 1
+	check(Protocol.check_cfg(cfg) == "bad_p_newer", "a newer cfg message is refused")
+	cfg.p = P - 1
+	check(Protocol.check_cfg(cfg) == "bad_p_older", "an older cfg message is refused")
+	check(Protocol.check_cfg({}) == "bad_p_older", "an unversioned cfg message reads as older")
+end
+
 -- URLs round-trip with encoded labels.
 local LABELS = {
 	"fix the tests",
@@ -95,12 +136,12 @@ end
 local percent = Protocol.request_url("name", "b", 1, "h", { label = "%41 %zz" })
 local percent_req = Protocol.parse_url(percent)
 check(percent_req ~= nil and percent_req.fields.label == "%41 %zz", "an encoded % is not decoded twice")
-check(Protocol.request_url("hello", "b", 2, "h", {}) == "jumpr://hello?p=2&b=b&r=2&host=h", "a verb with no fields")
+check(Protocol.request_url("hello", "b", 2, "h", {}) == "jumpr://hello?p=3&b=b&r=2&host=h", "a verb with no fields")
 
 -- Unknown verbs are rejected, by the parser and the builder.
-check(Protocol.parse_url("jumpr://launch?p=1&b=b&r=1&host=h") == nil, "an unknown verb is rejected")
-check(Protocol.parse_url("jumpr://Start?p=1&b=b&r=1&host=h") == nil, "verbs are case-sensitive")
-check(Protocol.parse_url("https://start?p=1&b=b&r=1&host=h") == nil, "a non-jumpr URL is rejected")
+check(Protocol.parse_url("jumpr://launch?p=3&b=b&r=1&host=h") == nil, "an unknown verb is rejected")
+check(Protocol.parse_url("jumpr://Start?p=3&b=b&r=1&host=h") == nil, "verbs are case-sensitive")
+check(Protocol.parse_url("https://start?p=3&b=b&r=1&host=h") == nil, "a non-jumpr URL is rejected")
 check(not pcall(Protocol.request_url, "launch", "b", 1, "h", {}), "request_url refuses an unknown verb")
 for verb in Protocol.VERBS do
 	check(Protocol.parse_url(Protocol.request_url(verb, "b", 1, "h", {})) ~= nil, "known verb parses: " .. verb)
@@ -109,7 +150,7 @@ local verb_count = 0
 for _ in Protocol.VERBS do
 	verb_count += 1
 end
-check(verb_count == 8, "eight verbs are known (name joins for the rename)")
+check(verb_count == 10, "ten verbs are known")
 do
 	local shown = Protocol.parse_url(Protocol.request_url("show", "b", 4, "devbox", { id = "k2x7abcd" }))
 	assert(shown ~= nil, "show parses")
@@ -122,8 +163,20 @@ do
 	check(not Protocol.expects_reply("name"), "name expects no reply")
 end
 
+-- Settings and window-configuration requests are versioned URLs and do not wait for start/stop replies.
+do
+	local settings = Protocol.parse_url(Protocol.request_url("settings", "b", 6, "devbox", {}))
+	assert(settings ~= nil, "settings parses")
+	check(settings.verb == "settings" and settings.p == P, "settings round-trips at this protocol version")
+	check(not Protocol.expects_reply("settings"), "settings expects no reply")
+	local cfg = Protocol.parse_url(Protocol.request_url("cfg", "b", 7, "devbox", { op = "read" }))
+	assert(cfg ~= nil, "cfg parses")
+	check(cfg.verb == "cfg" and cfg.fields.op == "read" and cfg.p == P, "cfg round-trips at this protocol version")
+	check(not Protocol.expects_reply("cfg"), "cfg expects no reply")
+end
+
 -- A start URL carrying a dir field parses without dir; request_url never writes one.
-local with_dir = Protocol.parse_url("jumpr://start?p=1&b=b&r=1&host=h&id=ab&dir=%2Ftmp%2Fevil&cwd=%2Fx")
+local with_dir = Protocol.parse_url("jumpr://start?p=3&b=b&r=1&host=h&id=ab&dir=%2Ftmp%2Fevil&cwd=%2Fx")
 assert(with_dir ~= nil, "a start URL with dir still parses")
 check(with_dir.fields.dir == nil, "the dir field is dropped")
 check(with_dir.fields.id == "ab" and with_dir.fields.cwd == "/x", "the other fields stay")
@@ -131,11 +184,11 @@ check(not pcall(Protocol.request_url, "start", "b", 1, "h", { dir = "/tmp" }), "
 check(not pcall(Protocol.request_url, "start", "b", 1, "h", { host = "x" }), "request_url refuses a URL key as field")
 
 -- Missing b, r or host are rejected.
-check(Protocol.parse_url("jumpr://jump?p=1&b=b&r=1&id=ab") == nil, "a URL without host is rejected")
-check(Protocol.parse_url("jumpr://jump?p=1&b=b&r=1&host=&id=ab") == nil, "a URL with an empty host is rejected")
-check(Protocol.parse_url("jumpr://jump?p=1&r=1&host=h&id=ab") == nil, "a URL without b is rejected")
-check(Protocol.parse_url("jumpr://jump?p=1&b=b&host=h&id=ab") == nil, "a URL without r is rejected")
-check(Protocol.parse_url("jumpr://jump?p=1&b=b&r=x&host=h") == nil, "a URL with a non-number r is rejected")
+check(Protocol.parse_url("jumpr://jump?p=3&b=b&r=1&id=ab") == nil, "a URL without host is rejected")
+check(Protocol.parse_url("jumpr://jump?p=3&b=b&r=1&host=&id=ab") == nil, "a URL with an empty host is rejected")
+check(Protocol.parse_url("jumpr://jump?p=3&r=1&host=h&id=ab") == nil, "a URL without b is rejected")
+check(Protocol.parse_url("jumpr://jump?p=3&b=b&host=h&id=ab") == nil, "a URL without r is rejected")
+check(Protocol.parse_url("jumpr://jump?p=3&b=b&r=x&host=h") == nil, "a URL with a non-number r is rejected")
 check(Protocol.parse_url("jumpr://jump?b=b&r=1&host=h") == nil, "a URL without p is rejected")
 check(Protocol.parse_url("jumpr://jump") == nil, "a URL with no query is rejected")
 
@@ -151,17 +204,20 @@ check(Protocol.check_request(req_newer) == "bad_p_newer", "a newer p gives bad_p
 check(Protocol.check_request(req_older) == "bad_p_older", "an older p gives bad_p_older")
 check(Protocol.check_request(req_same) == "ok", "the same p is ok")
 check(Protocol.check_request({}) == "bad_p_older", "no p reads as older")
+local old_start = Protocol.parse_url("jumpr://start?p=2&b=b&r=9&host=h&id=ab&cwd=%2Fx&cli=claude&mode=new")
+assert(old_start ~= nil, "a protocol-2 start URL still parses for an explicit version verdict")
+check(Protocol.check_request(old_start) == "bad_p_older", "a protocol-2 start is refused before it can be handled")
 
 -- check_url: the version of any jumpr:// URL, read before the verb is checked, and its host.
 local v_same, h_same = Protocol.check_url(url_with_p(P))
 check(v_same == "ok" and h_same == "h", "check_url on a same-version URL is ok and gives its host")
 check(Protocol.check_url(url_with_p(P + 1)) == "bad_p_newer", "check_url on a newer p gives bad_p_newer")
 check(Protocol.check_url(url_with_p(P - 1)) == "bad_p_older", "check_url on an older p gives bad_p_older")
-local v_verb, h_verb = Protocol.check_url("jumpr://launch?p=3&b=x&r=1&host=my%20box")
+local v_verb, h_verb = Protocol.check_url("jumpr://launch?p=4&b=x&r=1&host=my%20box")
 check(v_verb == "bad_p_newer" and h_verb == "my box", "check_url names a newer p on a verb this side does not know")
 local v_none, h_none = Protocol.check_url("jumpr://jump?b=b&r=1")
 check(v_none == "bad_p_older" and h_none == nil, "check_url reads a URL without p as older, with no host")
-check(Protocol.check_url("jumpr://jump?p=2&p=1&b=b&r=1&host=h") == "ok", "check_url: the first p wins")
+check(Protocol.check_url("jumpr://jump?p=3&p=2&b=b&r=1&host=h") == "ok", "check_url: the first p wins")
 check(Protocol.check_url("https://example.com/?p=1") == nil, "check_url: not a jumpr:// URL gives nil")
 check(Protocol.check_url("jumpr://jump") == nil, "check_url: a jumpr:// URL with no query gives nil")
 
@@ -178,6 +234,9 @@ check(
 local newer_res = Protocol.reply("blk-a", 1, true, nil)
 newer_res.p = P + 1
 check(Protocol.check_request(newer_res) == "bad_p_newer", "a newer reply gives bad_p_newer")
+local older_res = Protocol.reply("blk-a", 2, true, nil)
+older_res.p = 2
+check(Protocol.check_request(older_res) == "bad_p_older", "a protocol-2 reply gives bad_p_older")
 
 -- expects_reply: only start and stop.
 for verb in Protocol.VERBS do
@@ -215,6 +274,21 @@ local function no_pane_key(t: { [string]: any }, what: string)
 	end
 end
 
+local cfg = Protocol.cfg_msg({
+	machine = "laptop",
+	em = "A",
+	chords = { toggle_focus = { "ctrl+alt+j" }, hide_list = {}, last_tab = {} },
+	defaults = {
+		toggle_focus = "ctrl+alt+j",
+		hide_list = "ctrl+alt+shift+j",
+		last_tab = "ctrl+alt+;",
+	},
+	err = nil,
+})
+check(cfg.p == P, "cfg_msg emits p = P")
+same_keys(keys_of(cfg), { "p", "machine", "em", "chords", "defaults" }, "cfg message")
+no_pane_key(cfg, "cfg message")
+
 local full = Protocol.status_msg("w1", 3, true, 1234, "connected", "deck", "devbox", true, "B", {
 	k2x7abcd = { { s = "w", u = false, f = false, src = "agents" } },
 	ab = { { s = "q" }, { s = "i", u = true, e = "exit 1" } },
@@ -243,6 +317,9 @@ same_keys(keys_of(ok_res), { "p", "b", "r", "ok" }, "reply with no error")
 same_keys(keys_of(res), { "p", "b", "r", "ok", "err" }, "reply with an error")
 no_pane_key(res, "reply")
 
+check(Protocol.BLOCK_KIND == "jumpr.list", "the list block kind is stable")
+check(Protocol.SETTINGS_KIND == "jumpr.settings", "the settings block kind is exposed")
+
 -- Launch args: the window builds them, the block reads them back.
 do
 	local args = Protocol.launch_args("main", "devbox")
@@ -262,7 +339,7 @@ end
 -- request URLs carry the sending list's deck session as `sn`, when the host has one.
 do
 	local with_sn = Protocol.request_url("jump", "b", 3, "devbox", { id = "ab" }, "main deck")
-	check(with_sn == "jumpr://jump?p=2&b=b&r=3&host=devbox&sn=main%20deck&id=ab", "sn follows host, encoded")
+	check(with_sn == "jumpr://jump?p=3&b=b&r=3&host=devbox&sn=main%20deck&id=ab", "sn follows host, encoded")
 	local req = Protocol.parse_url(with_sn)
 	assert(req ~= nil, "a URL with sn parses")
 	check(req.sn == "main deck" and req.fields.sn == nil and req.fields.id == "ab", "sn is read apart from the fields")
@@ -362,6 +439,19 @@ do
 	w1 = route({ no_sn = true, pane = 7, focused = 7 })
 	w2 = route({ no_sn = true, known = false, pane = 41, pane_host = "me@devbox", focused = 41 })
 	check(w1 == "devbox" and w2 == nil, "no sn: the exact-name window alone acts")
+end
+
+-- normalise_chord: one spelling per chord however Tern orders or names its modifiers (its keybinds grammar gives
+-- `alt` the name `opt` too, and `cmd` the name `super`), each chord of a `>` sequence on its own.
+do
+	local n = Protocol.normalise_chord
+	check(n("shift+cmd+j") == n("cmd+shift+j"), "the order of modifiers does not matter")
+	check(n("CMD+SHIFT+J") == n("cmd+shift+j"), "neither does case")
+	check(n("super+j") == n("cmd+j") and n("shift+super+j") == n("cmd+shift+j"), "super is cmd")
+	check(n("ctrl+opt+k") == n("alt+ctrl+k"), "opt is alt")
+	check(n("cmd+j") ~= n("cmd+k") and n("cmd+j") ~= n("ctrl+j"), "another key or modifier is another chord")
+	check(n("ctrl+a>shift+ctrl+c") == n("ctrl+a>ctrl+shift+c"), "each chord of a sequence is put in order")
+	check(n("alt+x>ctrl+c") ~= n("x>ctrl+alt+c"), "a modifier never moves to another chord of a sequence")
 end
 
 print("Protocol: " .. checks .. " checks passed")

@@ -1,6 +1,5 @@
 --!strict
--- The host's requests to the window (lib/host/requests.luau): building a request, the ledger of requests waiting
--- for a reply, what a reply settles, and what happens when none comes.
+-- Host request construction, reply ledger and expiry behavior. Pure test harness: no `tern`.
 
 local Protocol = require("../lib/shared/protocol")
 local Requests = require("../lib/host/requests")
@@ -23,14 +22,14 @@ local function deck(): Store.Deck
 	d.agents.a = {
 		gid = "g1",
 		pos = 1,
-		dir = "~/.omp/deck/a",
 		cwd = "/work",
 		created_ms = WALL - 1000,
 		state = "live",
 		pane = 11,
 		label = "fixer",
+		cli = "omp",
 	}
-	d.agents.p = { gid = "g1", pos = 2, dir = "~/.omp/deck/p", cwd = "/work", created_ms = WALL, state = "pending" }
+	d.agents.p = { gid = "g1", pos = 2, cwd = "/work", created_ms = WALL, state = "pending", cli = "omp" }
 	d.next_req = 5
 	return d
 end

@@ -1,14 +1,16 @@
 --!strict
 -- The window half started in a window that is already open (a plugin reload: no `window_start`), run against the
 -- fake window: its heartbeats, the leader lock shared with other windows through the window file, closing a copy
--- left alone in its tab, hiding and showing the list, and the diagnostics dump.
+-- left alone in its tab, hiding and showing the list, the diagnostics dump, and closing the settings page.
 
 local Fake = require("./support/fake_window")
 local Copies = require("../lib/window/copies")
 local Diag = require("../lib/window/diag")
 local Leader = require("../lib/window/leader")
 local Pusher = require("../lib/window/pusher")
+local Router = require("../lib/window/router")
 local Startup = require("../lib/window/startup")
+local Tabs = require("../lib/window/tabs")
 local checks = 0
 
 local function check(condition: boolean, message: string)
@@ -122,6 +124,23 @@ do
 	check(focused ~= nil and Fake.world().panes[focused].block ~= nil, "showing focuses the list")
 end
 
+-- Both Esc modes persist; an unknown mode is refused without rewriting the file or changing the active mode.
+do
+	check(Leader.set_esc_mode("B"), "Esc mode B is accepted")
+	local mode_b_file = Fake.files()[WINDOW_FILE]
+	check(mode_b_file.esc_mode == "B" and Leader.esc_mode() == "B", "Esc mode B persists in the window file")
+	check(not Leader.set_esc_mode("C"), "an unknown Esc mode is refused")
+	check(
+		Fake.files()[WINDOW_FILE] == mode_b_file and Leader.esc_mode() == "B",
+		"an unknown Esc mode changes neither the window file nor the active mode"
+	)
+	check(Leader.set_esc_mode("A"), "Esc mode A is accepted")
+	check(
+		Fake.files()[WINDOW_FILE].esc_mode == "A" and Leader.esc_mode() == "A",
+		"Esc mode A persists in the window file"
+	)
+end
+
 -- The diagnostics dump: the window's file is written at once with what each module holds, the host in view is asked
 -- for its own, and with no answer in 10 s the window's path alone is copied and the toast says the host's is missing.
 do
@@ -145,6 +164,36 @@ do
 	check(copied[#copied] == "laptop:" .. (path :: string), "the window's path alone is copied, named by machine")
 	local toasts = Fake.world().toasts
 	check(toasts[#toasts].text == "host dump unavailable", "the toast says the host's dump is missing")
+end
+
+-- Settings opened from the list and closed with Esc, as window.luau's handlers run it: focus goes back to the list in
+-- the tab settings was opened from, and the copy the settings tab got closes with that tab without taking focus.
+do
+	local function focus_seen(pane: number): boolean
+		return Tabs.focus_seen(cx, { pane = pane, tab = Fake.world().panes[pane].tab :: number })
+	end
+	local copy = Fake.copies_in(t4)[1]
+	Fake.focus(copy)
+	focus_seen(copy)
+	check(Router.open_settings(cx), "settings opens from the list")
+	local opened = Fake.world().new_blocks
+	local page = opened[#opened].pane
+	local tab = Fake.world().panes[page].tab :: number
+	Copies.ensure(cx)
+	focus_seen(page)
+	check(
+		#Fake.copies_in(tab) == 1 and Fake.world().focused == page,
+		"the settings tab gets its copy, with focus on the page"
+	)
+	Fake.close(page)
+	local choice = Fake.world().focused :: number
+	Tabs.focus_seen(cx, { pane = choice, tab = Fake.world().panes[choice].tab :: number })
+	Tabs.pane_closed(cx, page)
+	if Pusher.rebuild(cx) then
+		Copies.tidy(cx)
+	end
+	check(Fake.world().focused == copy, "closing settings goes back to the list it was opened from")
+	check(table.find(Fake.world().sessions[deck].tabs, tab) == nil, "and the settings tab closes with its copy")
 end
 
 print("Window: " .. checks .. " checks passed")

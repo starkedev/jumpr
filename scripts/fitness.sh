@@ -83,7 +83,7 @@ resolve() {
 
 is_pure() {
 	case "$1" in
-	lib/shared/* | lib/harness.luau | lib/host/model.luau | lib/host/keys.luau | lib/host/queue.luau) return 0 ;;
+	lib/shared/* | lib/harness.luau | lib/host/model.luau | lib/host/keys.luau | lib/host/keymap.luau | lib/host/queue.luau | lib/host/settings.luau | lib/window/chords.luau) return 0 ;;
 	esac
 	return 1
 }
@@ -125,7 +125,7 @@ report_lines "P3 (one seam to Tern: only lib/compat.luau calls cx or tern.pane/k
 pure=()
 while IFS= read -r p; do
 	pure+=("$p")
-done < <(present lib/shared lib/harness.luau lib/host/model.luau lib/host/keys.luau lib/host/queue.luau)
+done < <(present lib/shared lib/harness.luau lib/host/model.luau lib/host/keys.luau lib/host/keymap.luau lib/host/queue.luau lib/host/settings.luau lib/window/chords.luau)
 if [ "${#pure[@]}" -gt 0 ]; then
 	rc=0
 	out=$(luau-lsp analyze --platform=standard "${pure[@]}" 2>&1) || rc=$?
@@ -246,7 +246,9 @@ if [ "${#hygiene_files[@]}" -gt 0 ]; then
 			while IFS= read -r name; do
 				[ -n "$name" ] || continue
 				own=$(rg --no-filename --only-matching --no-require-git "M\.$name\b" "$f" | wc -l) || true
-				if [ "$own" -lt 2 ] && ! printf '%s' "$used" | grep -qFx -- "$base $name"; then
+				# A here-string, not a pipe: `grep -q` leaves at its first match, and under pipefail a writer killed
+				# by the closed pipe would read as "no caller", failing a used export at random once the list is long.
+				if [ "$own" -lt 2 ] && ! grep -qFx -- "$base $name" <<<"$used"; then
 					report "Hygiene (every lib export has a caller; the review found compat.save and diag.waiting with none)" \
 						"$f: M.$name is exported but nothing calls it"
 				fi

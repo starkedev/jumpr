@@ -6,6 +6,38 @@ Update with `tern plugin install github.com/starkedev/jumpr --force` on each mac
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-16
+
+The list is no longer tied to omp: `n` starts the machine's default agent, which can be omp or any agent Tern's ACP chat runs, such as `claude`, `codex` or `copilot`.
+A settings page, opened with `,` from the list or "Jumpr: settings" from the palette, sets the default agent, the Esc behaviour, the global chords and the list's own keys.
+Enter on an exited agent resumes its own conversation where the CLI's session can be looked up, and continues or opens Tern's picker otherwise.
+Requires Tern 0.9.18 or newer, and every machine updated together: a machine left on an older Jumpr shows the update banner over an empty, read-only list until it is updated.
+Tested with a Tern 0.9.18 window, on hosts running Tern 0.9.18.
+
+### Added
+
+- Agents of any kind: the default agent can be omp, as before, or any agent Tern's ACP chat knows (`claude`, `codex`, `copilot`, or one you added in Tern).
+  An ACP agent is listed, shows running, waiting, idle, error and exited, takes `o` and `q`, stops with `d` and restarts with Enter, like an omp agent.
+  `d` also removes an agent whose chat failed to start.
+  Claude Code is the one tried so far; other agents take the same path.
+- A settings page in its own tab, opened with `,` from the list or "Jumpr: settings" from the palette, with three pages, each naming the machine its values belong to: the default agent (a value of the machine whose list you are looking at), the Esc behaviour and the three global chords (values of the window you pressed the key in), and every list key (a value of the list's machine).
+  A global chord is pressed in its box, or typed as text such as `ctrl+alt+k`, takes effect without a restart, is refused when another action holds it, and Reset restores the default.
+  A list key is captured by Enter on its row and shown as typed; a taken or reserved key is refused with a reason, Reset on its row or Backspace restores the default, and "Reset all keys" restores every key; the `?` menu, the legend and the hints follow at once.
+  A text box opens with its text selected, so typing replaces it.
+  The page's own navigation keys are fixed, so no binding can lock you out of it, and closing the page returns to the pane you were in.
+- Exact restart for Claude Code where the CLI's session can be looked up (on Linux): Jumpr learns the agent's conversation id from Claude's own session files, matched by the `JUMPR_ID` it started the agent with, and Enter on the exited agent resumes its own conversation.
+  Where no session can be looked up (macOS, other agents), Enter continues the conversation when the agent was the last of its kind to close in its folder, and opens Tern's conversation picker otherwise.
+- `o` on an exited agent, or one whose start failed, starts it again and sends the message once it is idle, instead of only holding the message.
+  When the restart would open Tern's conversation picker, the message is held and Enter opens the picker: the picker pane reports working, not idle, so the message waits until a conversation is picked and the chat goes idle.
+- An agent's row keeps its conversation's title after the agent exits or restarts, until the chat names itself again, instead of falling back to `claude 1`.
+
+### Changed
+
+- Tern 0.9.18 or newer is required.
+- Stored data is upgraded in place when this version first loads it, with nothing lost; agents started by 0.1.4 are still recognised and restartable.
+- A machine still on an older Jumpr that reads the upgraded data shows the "newer version" banner over an empty, read-only list until it is updated, and writes nothing, so its data is untouched.
+- Every machine must be updated together, the window machines and the machines running the agents: with mixed versions the version banner or toast names the machine left behind, and nothing is started.
+
 ## [0.1.4] - 2026-11-12
 
 On Linux and Windows the jumpr key now works out of the box: it is Ctrl+Alt+J there, since Tern's own Super+J joins lines in its editor.
@@ -129,7 +161,8 @@ Tested on Tern 0.9.10 and 0.9.11.
 - Every message between the halves carries a protocol version, and a mismatch shows a banner naming the machine to update.
 - `scripts/check.sh` runs stylua, the unit suites, a strict `luau-lsp` type check and design-rule checks.
 
-[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/starkedev/jumpr/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/starkedev/jumpr/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/starkedev/jumpr/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/starkedev/jumpr/releases/tag/v0.1.2

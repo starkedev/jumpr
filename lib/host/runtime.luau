@@ -10,14 +10,17 @@
 -- stamps what is stored in jumpr.v1 (created_ms, ended_ms, set_ms), which must survive a daemon restart.
 
 local bind = require("./bind")
+local Agent = require("../shared/agent")
 local Compat = require("../compat")
 local identity = require("../shared/identity")
 local input = require("./input")
+local keymap = require("./keymap")
 local keys = require("./keys")
 local model = require("./model")
 local protocol = require("../shared/protocol")
 local queue = require("./queue")
 local requests = require("./requests")
+local sessions = require("./sessions")
 local store = require("./store")
 local transport = require("./transport")
 local view = require("./view")
@@ -33,7 +36,9 @@ local LABEL_DEBOUNCE_MS = 150
 local SHOW_PAUSE_MS = 120
 -- The pane list and rows built for one burst of views are reused for at most this long.
 local SNAPSHOT_TTL_MS = 200
-
+-- A conversation lookup waits this long between tries, and gives up after this many tries since the record last bound.
+local LOOKUP_GAP_MS = 3000
+local LOOKUP_MAX = 10
 -- What the list needs of the machine and of its copies' blocks: compat in production.
 export type Io = {
 	pane_list: () -> ({ Compat.PaneItem }?, string?),
@@ -48,6 +53,10 @@ export type Io = {
 	is_dir: (path: string) -> (boolean, string?),
 	git_common_dir: (folder: string, cb: (string?) -> ()) -> (boolean, string?),
 	fs_write: (path: string, text: string) -> (boolean, string?),
+	fs_list: (path: string) -> ({ string }?, string?),
+	fs_read: (path: string, max_bytes: number?) -> (string?, string?),
+	run_status: (argv: { string }, cb: (status: number?) -> ()) -> (boolean, string?),
+	home: () -> string?,
 	kv_get: (key: string) -> (any, string?),
 	kv_set: (key: string, value: any) -> (boolean, string?),
 	now: () -> number,
@@ -81,8 +90,21 @@ type Shared = { ui: keys.UI, caret: input.Caret }
 -- The list's interface: the block, hook and timer inputs the host entry registers.
 export type Runtime = {
 	open: (cx: BlockCx, args: { string }, saved: any) -> Copy,
+	new_sender: () -> requests.Sender,
+	send_from: (
+		cx: BlockCx,
+		sender: requests.Sender,
+		verb: string,
+		fields: { [string]: string }
+	) -> (boolean, string?),
 	frame: (blk: Copy, cx: BlockCx) -> view.Frame,
 	title: () -> string?,
+	settings: () -> store.Settings,
+	readonly: () -> boolean,
+	set_agent: (kind: string) -> string?,
+	set_key: (action: string, key: string?) -> string?,
+	reset_keys: () -> string?,
+	host_name: () -> string?,
 	key: (blk: Copy, key: Key, cx: BlockCx) -> boolean,
 	event: (blk: Copy, ev: UiEvent, cx: BlockCx) -> (),
 	saved: (blk: Copy) -> any,
@@ -451,6 +473,7 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 		local health = transport.health(link, now)
 		return {
 			ui = sh.ui,
+			map = keymap.resolve(d.settings.keys),
 			rows = rows,
 			cursor = sh.caret.cursor,
 			host = d.session.host,
@@ -499,6 +522,98 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 		end
 		return true
 	end
+	-- Tries since the record last bound. A proven answer stops further tries until the next bind.
+	type Hunt = {
+		attempts: number,
+		last_ms: number,
+		running: boolean,
+		settled: boolean,
+		gen: number,
+	}
+	local hunts: { [string]: Hunt } = {}
+
+	local function hunt_of(id: string): Hunt
+		local h = hunts[id]
+		if h == nil then
+			h = { attempts = 0, last_ms = 0, running = false, settled = false, gen = 0 }
+			hunts[id] = h
+		end
+		return h
+	end
+
+	-- A bind starts the lookup again, including one that already holds a conversation id.
+	local function note_bound(id: string)
+		local h = hunt_of(id)
+		h.gen += 1
+		h.attempts = 0
+		h.settled = false
+		h.last_ms = 0
+	end
+
+	-- Every other record's conversation id. This record's own id is left out, so a re-proof of it still counts.
+	local function taken_except(d: store.Deck, id: string): { [string]: boolean }
+		local taken: { [string]: boolean } = {}
+		for other, rec in d.agents do
+			local sid = rec.session
+			if other ~= id and sid ~= nil then
+				taken[sid] = true
+			end
+		end
+		return taken
+	end
+
+	-- One live agent per tick, and only a kind whose conversation can be looked up. The answer arrives later.
+	-- A proven id is stored and further tries wait for the next bind; a miss retries after the gap, ten times.
+	local function lookup_sessions(d: store.Deck, now: number)
+		local ids: { string } = {}
+		for id, rec in d.agents do
+			if rec.state == "live" and sessions.has(rec.cli) then
+				local h = hunts[id]
+				local attempts = if h ~= nil then h.attempts else 0
+				local running = h ~= nil and h.running
+				local settled = h ~= nil and h.settled
+				local last_ms = if h ~= nil then h.last_ms else 0
+				local due = attempts == 0 or now - last_ms >= LOOKUP_GAP_MS
+				if not running and not settled and attempts < LOOKUP_MAX and due then
+					table.insert(ids, id)
+				end
+			end
+		end
+		table.sort(ids)
+		local id = ids[1]
+		if id == nil then
+			return
+		end
+		local home = compat.home()
+		if home == nil then
+			return
+		end
+		local rec = d.agents[id]
+		local h = hunt_of(id)
+		h.attempts += 1
+		h.last_ms = now
+		h.running = true
+		local gen = h.gen
+		local cwd = rec.cwd
+		local kind = rec.cli
+		sessions.find(compat :: sessions.Compat, home, kind, id, cwd, taken_except(d, id), function(sid: string?)
+			local current = hunts[id]
+			if current == nil or current.gen ~= gen then
+				if current ~= nil and current.running then
+					current.running = false
+				end
+				return
+			end
+			current.running = false
+			if sid == nil then
+				return
+			end
+			current.settled = true
+			if commit(model.set_session(ensure(), id, sid)) then
+				render_all()
+			end
+		end)
+	end
 
 	local function step()
 		touch()
@@ -506,6 +621,7 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 		local d, bound = bind.apply_queued(binding, ensure())
 		for _, id in bound do
 			requests.clear_start(ledger, id)
+			note_bound(id)
 		end
 		local expired, notices, errors = requests.expire(ledger, d, now, w)
 		for _, line in errors do
@@ -535,6 +651,8 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 			changed = true
 		end
 
+		-- An agent can start or exit while the list is hidden, so the lookup runs before that return.
+		lookup_sessions(ensure(), now)
 		if next(blocks) == nil then
 			return
 		end
@@ -626,6 +744,111 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 	-- The copies' title: the host the list is for.
 	function rt.title(): string?
 		return view.title(if deck ~= nil then deck.session.host else nil)
+	end
+
+	-- A detached copy of this machine's settings, so the runtime remains the deck's only owner.
+	function rt.settings(): store.Settings
+		local current = ensure().settings
+		return { agent = current.agent, keys = table.clone(current.keys) }
+	end
+
+	-- Whether settings changes are refused because the stored deck cannot be written safely.
+	function rt.readonly(): boolean
+		ensure()
+		return readonly
+	end
+
+	-- A settings block gets an identity separate from every list copy while sharing the deck's request counter.
+	function rt.new_sender(): requests.Sender
+		return requests.new_sender(nil, ensure(), readonly, new_uid)
+	end
+
+	-- Sends the settings block's window request after advancing and saving the shared request counter.
+	function rt.send_from(
+		cx: BlockCx,
+		sender: requests.Sender,
+		verb: string,
+		fields: { [string]: string }
+	): (boolean, string?)
+		if verb ~= "cfg" then
+			return false, "settings blocks may send cfg only"
+		end
+		local url, d = requests.request(ledger, sender, ensure(), readonly, verb, fields, compat.now(), new_uid)
+		commit(d)
+		local ok, err = compat.open(cx, url)
+		if not ok then
+			local reason = err or "request could not be opened"
+			transport.note_error(link, "open cfg failed: " .. reason)
+			return false, reason
+		end
+		return true, nil
+	end
+
+	-- Changes the default agent after validation, then persists it and refreshes every list copy.
+	function rt.set_agent(kind: string): string?
+		if not Agent.valid_kind(kind) then
+			return "agent kind not supported"
+		end
+		local d = ensure()
+		if readonly then
+			return "settings are read-only"
+		end
+		local out = store.clone(d)
+		out.settings.agent = kind
+		commit(out)
+		render_all()
+		return save_error
+	end
+
+	-- Changes one list action's key after validation, then persists it and refreshes every list copy.
+	-- A nil key removes the override and restores the action's default, which is refused when another action
+	-- holds that default key: an action left with no working key would strand the list.
+	function rt.set_key(action: string, key: string?): string?
+		local d = ensure()
+		if readonly then
+			return "settings are read-only"
+		end
+		if key ~= nil then
+			local reason = keymap.check(d.settings.keys, action, key)
+			if reason ~= nil then
+				return reason
+			end
+		else
+			local default = keymap.DEFAULT_OF[action]
+			if default ~= nil then
+				local reason = keymap.check(d.settings.keys, action, default)
+				if reason ~= nil then
+					return reason
+				end
+			end
+		end
+		local out = store.clone(d)
+		if key == nil then
+			out.settings.keys[action] = nil
+		else
+			out.settings.keys[action] = key
+		end
+		commit(out)
+		render_all()
+		return save_error
+	end
+
+	-- Restores every list action's default key, then persists and refreshes every list copy.
+	function rt.reset_keys(): string?
+		local d = ensure()
+		if readonly then
+			return "settings are read-only"
+		end
+		local out = store.clone(d)
+		out.settings.keys = {}
+		commit(out)
+		render_all()
+		return save_error
+	end
+
+	-- The machine name stored by the list's launch arguments.
+	function rt.host_name(): string?
+		return ensure().session.host
 	end
 
 	-- A key in a copy; true when the view changed (every other copy is rendered too).
@@ -732,7 +955,7 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 		blk.reveal_due = true
 	end
 
-	-- The spawn filter: string work only, never kv; the binding is applied on the next tick. A second omp for an
+	-- The spawn filter: string work only, never kv; the binding is applied on the next tick. A second process for an
 	-- agent that already runs here comes back as the replacement to spawn instead.
 	function rt.spawn(spec: bind.Spec): bind.Replace?
 		touch()

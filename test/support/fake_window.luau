@@ -7,6 +7,8 @@
 -- Each test file runs in its own process, so the window modules' state starts fresh in every file.
 
 local Compat = require("../../lib/compat")
+local Protocol = require("../../lib/shared/protocol")
+local Chords = require("../../lib/window/chords")
 
 local M = {}
 
@@ -15,6 +17,7 @@ M.NULL = table.freeze({ json_null = true })
 
 -- Wall-clock ms at fake time 0.
 local WALL_BASE = 1700000000000
+local PLUGIN_DEFAULTS = Chords.defaults("linux")
 
 export type Pane = {
 	pane: number,
@@ -38,6 +41,7 @@ export type Host = { id: number, name: string, kind: string, state: string, sess
 export type Session = { id: number, name: string, host: number, tabs: { number } }
 export type Event = { pane: number, act: string, value: any }
 export type Toast = { level: string, text: string, sub: string? }
+export type NewBlock = { pane: number, kind: string, how: string?, args: { string }?, opts: any }
 
 type Timer = { due: number, order: number, fn: (cx: WindowCx?) -> (), cancelled: boolean }
 
@@ -63,6 +67,7 @@ export type World = {
 	stopped: { number },
 	closed: { number },
 	opened: { number },
+	new_blocks: { NewBlock },
 	-- Knobs: what `new_block` answers ("ok", "missing" for no Ready plugin, else an error text); whether a session
 	-- switch is seen at once or only once the test moves the view itself; the panes listed but with no program
 	-- running (a block that never started), whose events Tern refuses.
@@ -77,6 +82,10 @@ export type World = {
 	arrange_noop: boolean,
 	-- Each `cx.layout:arrange` spec the plugin passed, in order.
 	arranged: { any },
+	-- Raw user keybinding overrides, as `cx.settings:keybinds()` reports them.
+	keybinds: { [string]: any },
+	-- Plugin registrations, dropped by a settings write until the entrypoint calls `tern.bind` again.
+	plugin_keybinds: { [string]: string },
 }
 
 local world: World
@@ -87,6 +96,17 @@ local timers: { Timer } = {}
 local files: { [string]: any } = {}
 local logs: { string } = {}
 local fs_fails = false
+
+local function default_plugin_keybinds(): { [string]: string }
+	local out: { [string]: string } = {}
+	for _, action in Protocol.CHORD_ACTIONS do
+		local chord = PLUGIN_DEFAULTS[action.id]
+		if chord ~= nil then
+			out[chord] = Chords.id(action.id)
+		end
+	end
+	return out
+end
 
 local function fresh_world(): World
 	return {
@@ -107,6 +127,7 @@ local function fresh_world(): World
 		stopped = {},
 		closed = {},
 		opened = {},
+		new_blocks = {},
 		block_result = "ok",
 		switch_lags = false,
 		dead = {},
@@ -114,6 +135,8 @@ local function fresh_world(): World
 		arrange_raises = nil,
 		arrange_noop = false,
 		arranged = {},
+		keybinds = {},
+		plugin_keybinds = default_plugin_keybinds(),
 	}
 end
 
@@ -254,6 +277,30 @@ local function managed_session(s: Session): any
 	}
 end
 
+local function clone_keybinds(values: { [string]: any }): { [string]: any }
+	local out: { [string]: any } = {}
+	for chord, value in values do
+		out[chord] = if type(value) == "table" then table.clone(value) else value
+	end
+	return out
+end
+
+-- The registered plugin layer with each raw user override applied over it.
+local function effective_keymap(): { [string]: { string } }
+	local out: { [string]: { string } } = {}
+	for chord, action in world.plugin_keybinds do
+		out[chord] = { action }
+	end
+	for chord, value in world.keybinds do
+		if type(value) == "string" then
+			out[chord] = { value }
+		elseif type(value) == "table" then
+			out[chord] = table.clone(value)
+		end
+	end
+	return out
+end
+
 local function view_session(session: number)
 	local s = world.sessions[session]
 	if s ~= nil then
@@ -285,6 +332,29 @@ local fake_cx: any = {
 			end
 			table.insert(world.stopped, pane)
 			remove_pane(pane)
+		end,
+	},
+	actions = {
+		keys = function(_self: any): { [string]: { string } }
+			return effective_keymap()
+		end,
+	},
+	settings = {
+		keybinds = function(_self: any): { [string]: any }
+			return clone_keybinds(world.keybinds)
+		end,
+		bind = function(_self: any, chord: string, action: string)
+			world.keybinds[chord] = action
+			world.plugin_keybinds = {}
+		end,
+		unbind = function(_self: any, chord: string)
+			world.keybinds[chord] = {}
+			world.plugin_keybinds = {}
+		end,
+		set = function(_self: any, key: string, value: { [string]: any })
+			assert(key == "keybinds", "the fake settings store only accepts keybinds")
+			world.keybinds = clone_keybinds(value)
+			world.plugin_keybinds = {}
 		end,
 	},
 	hosts = {
@@ -484,18 +554,36 @@ local fake_cx: any = {
 			remove_pane(pane)
 		end,
 	},
-	new_block = function(_self: any, kind: string, _args: { string }?, _how: any, opts: any): number?
+	new_block = function(_self: any, kind: string, args: { string }?, how: string?, opts: any?): number?
 		if world.block_result == "missing" then
 			return nil
 		elseif world.block_result ~= "ok" then
 			error(world.block_result, 0)
 		end
-		local target = world.panes[opts.target]
-		assert(target ~= nil and target.tab ~= nil, "new_block beside a tiled pane")
-		local tab: number = target.tab
-		-- A copy opens left of the tab's leftmost pane.
-		local pane = M.pane(tab, { kind = "plugin", block = kind, title = "jumpr", left = true })
+		local options = opts or {}
+		local tab: number
+		if how == "tab" then
+			local session = world.current_session
+			assert(session ~= nil, "new_block tab needs a session in view")
+			tab = M.tab(session)
+		else
+			local target = world.panes[options.target]
+			assert(target ~= nil and target.tab ~= nil, "new_block beside a tiled pane")
+			tab = target.tab
+		end
+		-- A beside block opens left of the tab's leftmost pane.
+		local pane = M.pane(tab, { kind = "plugin", block = kind, title = "jumpr", left = how ~= "tab" })
+		if options.focus == true then
+			M.focus(pane)
+		end
 		table.insert(world.opened, tab)
+		table.insert(world.new_blocks, {
+			pane = pane,
+			kind = kind,
+			how = how,
+			args = if args ~= nil then table.clone(args) else nil,
+			opts = options,
+		})
 		return pane
 	end,
 	toast = function(_self: any, level: string, text: string, sub: string?)
@@ -517,6 +605,23 @@ end
 -- a window whose machines changed.
 function M.reset_world()
 	world = fresh_world()
+end
+
+-- Replaces the raw user keybinding overrides.
+function M.set_keybinds(values: { [string]: any })
+	world.keybinds = clone_keybinds(values)
+end
+
+-- A copy of the raw user keybinding overrides.
+function M.keybinds(): { [string]: any }
+	return clone_keybinds(world.keybinds)
+end
+
+-- Re-registers the plugin defaults after the current handler returns, matching when Tern exposes them to actions.
+function M.rearm_chords()
+	Compat.timer(0, function(_cx: WindowCx?)
+		world.plugin_keybinds = default_plugin_keybinds()
+	end)
 end
 
 -- A host named `name` ("local" or "remote"); returns its id.
@@ -663,11 +768,11 @@ function M.park(pane: number)
 	world.panes[pane] = p
 end
 
--- The copies of the list (plugin blocks) in `tab`, lowest first.
+-- The copies of the list in `tab`, lowest first.
 function M.copies_in(tab: number): { number }
 	local out: { number } = {}
 	for _, pane in tab_panes(tab) do
-		if world.panes[pane].block ~= nil then
+		if world.panes[pane].block == Protocol.BLOCK_KIND then
 			table.insert(out, pane)
 		end
 	end

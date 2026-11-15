@@ -675,6 +675,30 @@ do
 	check(stale.waiting == nil, "stale status counts nobody as waiting")
 end
 
+-- An agent whose vibe workers have a turn running counts as running everywhere a code is read (its row, its group's
+-- header, the tiles, the filters) and its row is marked vibing; a question still wins and leaves no mark.
+do
+	local deck, sets, st = sample()
+	st.a = Status.with_vibing({ { s = "i", u = true, src = "agents" } })
+	local rows = Model.rows(deck, PANES, sets, st, NONE, "ok")
+	local a = find(rows, "a")
+	check(a.code == "running" and a.vibing == true, "a vibing row is running and marked vibing")
+	check(find(rows, "c").code == "running" and find(rows, "c").vibing == nil, "a plain working row is not vibing")
+	local tally = rows[1].tally :: { [string]: number }
+	check(tally.running == 1 and tally.waiting == 1 and tally.idle == nil, "the header counts it under running")
+	local tiles = Model.tally(deck, st, "ok")
+	check(tiles.running == 2 and tiles.waiting == 1 and tiles.idle == nil, "the tiles count it under running")
+	check(
+		labels(Model.rows(deck, PANES, sets, st, { filter = "running" }, "ok")) == "#Webapp,Auth Fix,#notes,omp 1",
+		"the running filter shows the vibing row"
+	)
+	check(#Model.rows(deck, PANES, sets, st, { filter = "idle" }, "ok") == 0, "the idle filter does not show it")
+	check(find(Model.rows(deck, PANES, sets, st, NONE, "stale"), "a").vibing == nil, "stale status marks nothing")
+	st.b = Status.with_vibing(st.b)
+	local b = find(Model.rows(deck, PANES, sets, st, NONE, "ok"), "b")
+	check(b.code == "waiting" and b.vibing == nil, "an asking agent with a vibe worker running is waiting, not vibing")
+end
+
 -- Restart mode: a proven session wins, then never-ran, then the last closed agent, otherwise the picker.
 do
 	local deck = Store.empty()

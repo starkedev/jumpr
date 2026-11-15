@@ -21,8 +21,10 @@ local protocol = require("../shared/protocol")
 local queue = require("./queue")
 local requests = require("./requests")
 local sessions = require("./sessions")
+local status = require("../shared/status")
 local store = require("./store")
 local transport = require("./transport")
+local vibe = require("./vibe")
 local view = require("./view")
 
 local M = {}
@@ -39,6 +41,8 @@ local SNAPSHOT_TTL_MS = 200
 -- A conversation lookup waits this long between tries, and gives up after this many tries since the record last bound.
 local LOOKUP_GAP_MS = 3000
 local LOOKUP_MAX = 10
+-- While a copy is open, the live omp agents' session files are read for running vibe worker turns this often.
+local VIBE_EVERY_MS = 5000
 -- What the list needs of the machine and of its copies' blocks: compat in production.
 export type Io = {
 	pane_list: () -> ({ Compat.PaneItem }?, string?),
@@ -56,6 +60,7 @@ export type Io = {
 	fs_list: (path: string) -> ({ string }?, string?),
 	fs_read: (path: string, max_bytes: number?) -> (string?, string?),
 	run_status: (argv: { string }, cb: (status: number?) -> ()) -> (boolean, string?),
+	run_output: (argv: { string }, cb: (stdout: string?) -> ()) -> (boolean, string?),
 	home: () -> string?,
 	kv_get: (key: string) -> (any, string?),
 	kv_set: (key: string, value: any) -> (boolean, string?),
@@ -124,6 +129,8 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 	local save_error: string? = nil
 	local binding = bind.new()
 	local link = transport.new()
+	local follower = vibe.new()
+	local last_vibe: number? = nil
 	local ledger = requests.new()
 	local blocks: { [Copy]: true } = {}
 	local shared: Shared? = nil
@@ -313,6 +320,22 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 		return panes
 	end
 
+	-- The merged status as a row or tile shows it: each vibing omp agent's entries are marked (`status.with_vibing`).
+	-- The map is copied only when an agent is vibing, so what transport returned is never changed.
+	local function shown_status(now: number): model.StatusById
+		local by_id = transport.status_by_id(link, now)
+		local out: model.StatusById? = nil
+		for id in vibe.vibing(follower) do
+			local entries = by_id[id]
+			if entries ~= nil and #entries > 0 then
+				local copy = out or table.clone(by_id)
+				copy[id] = status.with_vibing(entries)
+				out = copy
+			end
+		end
+		return out or by_id
+	end
+
 	-- The rows every copy shows: one pane list, the machine's merged status, the shared UI. The shared selection is
 	-- clamped against these rows.
 	local function rows_for(): { model.Row }
@@ -325,14 +348,7 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 		local sh = list()
 		local now = compat.now()
 		local any: any = panes or {}
-		local rows = model.rows(
-			d,
-			any,
-			bind.pane_sets(binding),
-			transport.status_by_id(link, now),
-			sh.ui,
-			transport.health(link, now)
-		)
+		local rows = model.rows(d, any, bind.pane_sets(binding), shown_status(now), sh.ui, transport.health(link, now))
 		sh.ui.selection = model.clamp_selection(rows, sh.ui.selection, d)
 		snap_rows = rows
 		return rows
@@ -481,7 +497,7 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 			health = health,
 			age_ms = transport.age(link, now),
 			row_age = transport.row_ages(link, now),
-			tally = model.tally(d, transport.status_by_id(link, now), health),
+			tally = model.tally(d, shown_status(now), health),
 			version = transport.version(link, now),
 			dupb = blk.status.latest.dupb,
 			readonly = readonly,
@@ -541,13 +557,17 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 		return h
 	end
 
-	-- A bind starts the lookup again, including one that already holds a conversation id.
-	local function note_bound(id: string)
+	-- A bind starts the lookup again, including one that already holds a conversation id, and starts the agent's vibe
+	-- workers over: a turn its last process left running never settles. True when the agent was vibing until now.
+	local function note_bound(id: string): boolean
 		local h = hunt_of(id)
 		h.gen += 1
 		h.attempts = 0
 		h.settled = false
 		h.last_ms = 0
+		local was_vibing = vibe.vibing(follower)[id] ~= nil
+		vibe.restarted(follower, id, wall())
+		return was_vibing
 	end
 
 	-- Every other record's conversation id. This record's own id is left out, so a re-proof of it still counts.
@@ -615,13 +635,43 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 		end)
 	end
 
+	-- Reads the live omp agents' session files for running vibe worker turns, at most every VIBE_EVERY_MS. An answer
+	-- that changes which agents are vibing rebuilds the rows and renders every copy.
+	local function poll_vibe(now: number)
+		local last = last_vibe
+		if last ~= nil and now - last < VIBE_EVERY_MS then
+			return
+		end
+		local home = compat.home()
+		if home == nil then
+			return
+		end
+		last_vibe = now
+		local ids: { string } = {}
+		for id, rec in ensure().agents do
+			if rec.cli == Agent.OMP and rec.state == "live" then
+				table.insert(ids, id)
+			end
+		end
+		table.sort(ids)
+		vibe.poll(follower, compat :: vibe.Compat, home, ids, function(changed: boolean)
+			if changed then
+				touch()
+				render_all()
+			end
+		end)
+	end
+
 	local function step()
 		touch()
 		local now, w = compat.now(), wall()
 		local d, bound = bind.apply_queued(binding, ensure())
+		local unvibed = false
 		for _, id in bound do
 			requests.clear_start(ledger, id)
-			note_bound(id)
+			if note_bound(id) then
+				unvibed = true
+			end
 		end
 		local expired, notices, errors = requests.expire(ledger, d, now, w)
 		for _, line in errors do
@@ -632,7 +682,7 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 			last_gc = now
 			d = store.gc(d, w)
 		end
-		local changed = commit(d)
+		local changed = commit(d) or unvibed
 		for _, b in bind.take_blocked(binding) do
 			table.insert(
 				notices,
@@ -654,8 +704,12 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 		-- An agent can start or exit while the list is hidden, so the lookup runs before that return.
 		lookup_sessions(ensure(), now)
 		if next(blocks) == nil then
+			-- No copy is open, so nothing shows a pill: what the follower last learned is dropped, and a list
+			-- that opens again starts from a fresh answer rather than one the lists never saw.
+			vibe.clear(follower)
 			return
 		end
+		poll_vibe(now)
 		local panes = panes_now()
 		if panes ~= nil then
 			local live = bind.live_set(panes)

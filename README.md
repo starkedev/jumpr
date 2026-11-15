@@ -240,6 +240,9 @@ Restarting an exited agent with `Enter` brings back its own conversation: an omp
 Status comes from Tern's own agent tracking: running, waiting for you, idle, error or stopped.
 Each row shows its status, how long it has been in it, its folder when that is not the group's, and what is waiting on it.
 Press `i` to see where each row's status comes from.
+An omp agent in `/vibe` mode hands its work to background workers.
+While one of those workers has a turn running, the agent's row counts as running and its pill says `vibing`, even when the agent itself sits idle at its prompt.
+A question or an error still shows first, and with no worker running the row reads as Tern reports it.
 An agent you parked in Tern keeps running, and its row keeps its status and says `in no tab`.
 Moving onto it leaves your tabs as they are; `Enter` brings it back into a tab of its own, with its copy of the list, and goes to it.
 
@@ -257,6 +260,9 @@ It runs:
   The grep only answers yes or no; a process's environment is never read into the plugin.
   The conversation id it proves comes from Claude Code's own session files, `~/.claude/sessions/<pid>.json`, which Jumpr reads for this lookup.
 - `git rev-parse --git-common-dir`, to name a group after its repository.
+- `sh -c` with `wc`, `tail`, `head` and `grep`, every 5 seconds while a list is open, on each running omp agent's session files (`~/.omp/deck/<id>/`), to tell whether a `/vibe` worker of it is running.
+  It follows the one file omp itself continues — the most recently modified non-empty one, as omp's `--continue` picks — and reads only what omp wrote there since the last look.
+  Of that file, only omp's bookkeeping records of its vibe workers and modes (a turn starting or ending, a spawn, a tombstone, a mode change, an exit) ever reach the plugin; a conversation's messages never do.
 - `tern --version`, for the diagnostics dump.
 
 It types only the text you enter for `o` and `q`, into that agent's pane.
@@ -268,7 +274,7 @@ It writes, in Jumpr's data folder on each machine (`<state>/plugin-data/jumpr/`;
   A chord change goes into Tern's own `settings.json` keybinds, not into Jumpr's files.
 - Diagnostics dumps (`diag-window-<ms>.json` and `diag-host-<ms>.json`), only when you run "Jumpr: diagnostics".
 
-Each omp agent's conversation lives in `~/.omp/deck/<id>`, which omp writes and Jumpr never deletes, even when you stop the agent with `d`.
+Each omp agent's conversation lives in `~/.omp/deck/<id>`, which omp writes and Jumpr never deletes, even when you stop the agent with `d`; Jumpr reads it only for the `vibing` check above.
 Any other agent's conversation lives in its CLI's own files, which Jumpr reads only for the restart lookup above.
 Jumpr makes no network requests of its own.
 
@@ -290,6 +296,9 @@ Delete that folder by hand to start fresh.
   Checked end to end on Linux: two Claude agents in one folder were closed and restarted, and each came back into its own conversation, with no picker.
 - Without that lookup — on macOS, or for another agent — Enter on an exited agent continues the last conversation of its kind in that folder when Jumpr can prove that is safe, and opens Tern's conversation picker otherwise.
 - Only Claude Code has been tried through the ACP path; `codex`, `copilot` and custom agent ids take the same route but are unobserved.
+- `vibing` rests on the records omp 18.20 writes to its session file.
+  An omp that writes them differently is never shown as vibing, and its row reads as Tern reports it.
+  A worker's turn cut off by a crash leaves no end record: if Jumpr did not see the agent start again (it was loaded later), that row can read `vibing` until that worker's next turn settles or until the agent leaves `/vibe`.
 - Windows is untested; macOS and Linux are the tested platforms.
 - A restart of Tern's session daemon on an agents' machine is untested: groups and records are stored, but how agents rejoin the list afterwards has not been checked.
   Tern may bring a chat back by itself while its row still reads exited, and pressing Enter on that row before the list catches up is untested.

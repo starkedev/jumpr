@@ -55,6 +55,9 @@ export type Machine = {
 	grep: { [string]: number },
 	-- Argument vectors `run_status` was given, in order.
 	probes: { { string } },
+	-- Argument vectors `run_output` was given, in order, each with `answer`, which the test calls with the stdout the
+	-- process printed (nil: it failed). Nothing answers until the test does.
+	outputs: { { argv: { string }, answer: (stdout: string?) -> () } },
 	-- Directories `fs_list` was asked for, in order.
 	lists: { string },
 	logs: { string },
@@ -181,6 +184,10 @@ function M.machine(deck: Store.Deck?): Machine
 			cb(if status == nil then 1 else status)
 			return true, nil
 		end,
+		run_output = function(argv: { string }, cb: (stdout: string?) -> ()): (boolean, string?)
+			table.insert(m.outputs, { argv = table.clone(argv), answer = cb })
+			return true, nil
+		end,
 		home = function(): string?
 			m.home_reads += 1
 			return m.home
@@ -258,6 +265,7 @@ function M.machine(deck: Store.Deck?): Machine
 		home_reads = 0,
 		grep = {},
 		probes = {},
+		outputs = {},
 		lists = {},
 		logs = {},
 		now = 0,

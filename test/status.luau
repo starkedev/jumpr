@@ -57,6 +57,44 @@ code_is(nil, true, { state = "exited" }, "stopped", "no entry, exited with no st
 code_is({ s = "w" }, false, { state = "exited", exit = 0 }, "stopped", "a stale entry for an exited record")
 code_is({ s = "w" }, false, { state = "exited", exit = 1 }, "error", "a stale entry for a failed exited record")
 
+-- vibing: an idle agent whose vibe workers have a turn running is running, ahead of its own unseen finish; a question,
+-- an error, an exit and a stale entry read as they would without it.
+code_is({ s = "i", v = true }, true, LIVE, "running", "idle while a vibe worker runs")
+code_is({ s = "i", u = true, v = true }, true, LIVE, "running", "a vibe worker running outranks an unseen finish")
+code_is({ s = "w", v = true }, true, LIVE, "running", "working while a vibe worker runs")
+code_is({ s = "q", v = true }, true, LIVE, "waiting", "a question outranks a vibe worker")
+code_is({ s = "i", e = "delivery failed", v = true }, true, LIVE, "error", "a delivery error outranks a vibe worker")
+code_is({ s = "i", u = true, f = true, v = true }, true, LIVE, "error", "an unseen failed turn outranks a vibe worker")
+code_is({ s = "x", v = true }, true, { state = "exited", exit = 1 }, "error", "exit ≠ 0 outranks a vibe worker")
+code_is({ s = "x", v = true }, true, LIVE, "stopped", "an exited pane is stopped whatever its workers")
+code_is({ s = "i", v = true }, false, LIVE, "unknown", "a stale vibing entry counts as no entry")
+code_is({ s = "i", v = true }, false, { state = "exited", exit = 0 }, "stopped", "a stale vibing entry, exited 0")
+check(Status.vibing({ s = "w", v = true }) and Status.vibing({ s = "i", v = true }), "working and idle can vibe")
+check(not Status.vibing({ s = "q", v = true }) and not Status.vibing({ s = "x", v = true }), "asking and exited do not")
+check(not Status.vibing({ s = "i" }) and not Status.vibing({ s = "w", v = false }), "no flag is no vibing")
+
+-- with_vibing marks every entry still running and copies the exited ones as they are, never touching its argument.
+do
+	local working: Status.Entry = { s = "w", src = "agents" }
+	local idle: Status.Entry = { s = "i", u = true, c = 1000 }
+	local dead: Status.Entry = { s = "x", e = "exit status 1" }
+	local list = { working, idle, dead }
+	local out = Status.with_vibing(list)
+	check(out ~= list and #out == 3 and #list == 3, "with_vibing gives a new list of the same length")
+	check(out[1] ~= working and out[1].v == true and out[1].s == "w" and out[1].src == "agents", "working is marked")
+	check(out[2].v == true and out[2].u == true and out[2].c == 1000, "idle is marked and keeps its fields")
+	check(out[3] ~= dead and out[3].v == nil and out[3].e == "exit status 1", "exited is copied unmarked")
+	check(working.v == nil and idle.v == nil and dead.v == nil, "the entries given are not changed")
+	check(list[1] == working and list[2] == idle and list[3] == dead, "the list given is not changed")
+	check(Status.code(out[2], true, LIVE) == "running", "a marked unseen idle entry is running")
+end
+
+-- A list another machine sent never carries the host-only vibing flag, whatever it claims.
+do
+	local win = Status.apply(nil, { full = true, seq = 1, a = { x = { { s = "i", v = true } :: any } } }, 1, 0)
+	check(#win.a.x == 1 and win.a.x[1].v == nil, "a decoded entry drops v")
+end
+
 -- The one order: error, waiting, running, idle, keyed along the shifted number row.
 local want_order = { { "error", "!" }, { "waiting", "@" }, { "running", "#" }, { "idle", "$" } }
 check(#Status.ORDER == #want_order, "four ranked statuses")

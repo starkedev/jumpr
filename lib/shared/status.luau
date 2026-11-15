@@ -11,7 +11,18 @@ local M = {}
 -- first saw the pane, so another window that watched the change happen outranks it.
 -- k: the pane is parked (its program runs, in no tab); absent means it is in a tab, which is all an older window
 -- ever sends.
-export type Entry = { s: string, u: boolean?, f: boolean?, e: string?, src: string?, c: number?, k: boolean? }
+-- v: one of this omp agent's vibe workers has a turn running. The host sets it from omp's session file; no window
+-- sends it, and a list another machine sent never carries it.
+export type Entry = {
+	s: string,
+	u: boolean?,
+	f: boolean?,
+	e: string?,
+	src: string?,
+	c: number?,
+	k: boolean?,
+	v: boolean?,
+}
 
 -- "error" | "waiting" | "running" | "idle" | "stopped" | "unknown".
 export type Code = string
@@ -77,6 +88,8 @@ end
 
 -- The mapping table, first match wins, top to bottom. A stale entry (`fresh = false`) counts as no entry: then an
 -- `exited` host record gives `stopped` for exit 0 (or no exit status) and `error` otherwise, and anything else `unknown`.
+-- An idle agent whose vibe workers have a turn running (`v`) is still at work, so it is running ahead of its own unseen
+-- finish; a question or an error still wins.
 function M.code(entry: Entry?, fresh: boolean, record: RecordState?): Code
 	if entry == nil or not fresh then
 		return exited_code(record)
@@ -87,11 +100,14 @@ function M.code(entry: Entry?, fresh: boolean, record: RecordState?): Code
 	if (entry.e ~= nil and entry.e ~= "") or exit_failed or (entry.f == true and unseen) then
 		return "error"
 	end
-	if s == "q" or (s == "i" and unseen) then
+	if s == "q" then
 		return "waiting"
 	end
-	if s == "w" then
+	if s == "w" or (s == "i" and entry.v == true) then
 		return "running"
+	end
+	if s == "i" and unseen then
+		return "waiting"
 	end
 	if s == "i" then
 		return "idle"
@@ -199,6 +215,25 @@ end
 -- The agent is idle, its finish seen or unseen; a held message may be typed into it.
 function M.idle(e: Entry): boolean
 	return e.s == "i"
+end
+
+-- The agent is working or idle while one of its vibe workers has a turn running: its row reads `vibing`.
+function M.vibing(e: Entry): boolean
+	return e.v == true and (e.s == "w" or e.s == "i")
+end
+
+-- `list` with every entry that has not exited marked as vibing (`v`): new shallow copies, exited ones copied unchanged.
+-- The list given is never changed, so what the windows sent stays as they sent it.
+function M.with_vibing(list: { Entry }): { Entry }
+	local out: { Entry } = {}
+	for _, e in list do
+		local copy = table.clone(e)
+		if copy.s ~= "x" then
+			copy.v = true
+		end
+		table.insert(out, copy)
+	end
+	return out
 end
 
 -- What an entry says, its change time and source aside: the window stamps a new change time only when this differs.

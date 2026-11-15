@@ -1241,7 +1241,8 @@ do
 	check(stored(m).closed[Store.closed_key("omp", "/work")] == nil, "an omp exit does not stamp closed")
 end
 
--- An omp agent never starts a session lookup, even when a session file is planted.
+-- An omp agent never starts a session lookup, even when a session file is planted. Its vibe poll reads home and
+-- lists its own deck folder, and nothing else: no probe, no listing under the Claude sessions.
 do
 	local list, m = list_on(deck())
 	plant(m, "42", "sessA", "/work", true)
@@ -1249,7 +1250,16 @@ do
 	list.tick()
 	m.advance(3000)
 	list.tick()
-	check(#m.probes == 0 and #m.lists == 0 and m.home_reads == 0, "an omp agent never triggers a lookup")
+	local omp_lists = 0
+	for _, path in m.lists do
+		if string.find(path, "/.omp/deck/", 1, true) ~= nil then
+			omp_lists += 1
+		end
+	end
+	check(
+		#m.probes == 0 and omp_lists == #m.lists and #m.lists > 0,
+		"an omp agent never triggers a lookup, only its own vibe poll"
+	)
 end
 
 -- An agent's last usable pane title is remembered on its record and saved once: a turned spinner frame or a title that
@@ -1312,6 +1322,195 @@ do
 	titles[22] = "Parser tests"
 	list.tick()
 	check(record_of().title == "Parser tests" and label() == "Parser tests", "until the chat names itself again")
+end
+
+-- Vibe mode: while a copy is open the list reads each live omp agent's own session file for its workers' turns.
+local VIBE_FILE = "2027-01-15T07-00-00-000Z_s1.jsonl"
+
+-- Plants omp agent `id`'s session file, so a poll has a file to read.
+local function plant_omp(m: Fake.Machine, id: string)
+	m.home = HOME
+	m.files[HOME .. "/.omp/deck/" .. id .. "/" .. VIBE_FILE] = ""
+end
+
+-- One vibe lifecycle line as omp writes it, for worker `worker`, stamped `stamp` (UTC; fake time 0 is
+-- 2027-01-15T08:00:00.000Z).
+local function lifecycle(m: Fake.Machine, worker: string, action: string, stamp: string): string
+	return m.json({
+		type = "custom",
+		customType = "vibe-session-lifecycle",
+		data = { version = 1, id = worker, ownerId = "Main", action = action, turn = 1 },
+		timestamp = stamp,
+	})
+end
+
+-- Answers poll `n` as its shell does for one file: the header (the mark, the file it chose, the mark again, its
+-- size), then the lines.
+local function answer(m: Fake.Machine, n: number, size: number, lines: { string })
+	local out = "\030" .. HOME .. "/.omp/deck/agent-a/" .. VIBE_FILE .. "\030" .. tostring(size) .. "\n"
+	for _, line in lines do
+		out ..= line .. "\n"
+	end
+	m.outputs[n].answer(out)
+end
+
+local function row_of(f: View.Frame, id: string): any
+	for _, row in f.rows do
+		if row.id == id then
+			return row
+		end
+	end
+	return nil
+end
+
+-- A worker turn that started makes the idle agent's row running and vibing, and the tally counts it as running; the
+-- answer re-renders the copy. Polls are 5 s apart, each reads on from where the last stopped, and the turn settling
+-- returns the row to idle.
+do
+	local list, m = list_on(deck())
+	plant_omp(m, "agent-a")
+	local c, cx, b = open(list, 101)
+	local seq = 0
+	local function report()
+		seq += 1
+		list.event(c, status_action(m, "win1", seq, { ["agent-a"] = { { s = "i", src = "agents" } } }), cx)
+	end
+	report()
+	list.tick()
+	check(#m.outputs == 1, "a tick with a copy open starts one poll")
+	local argv = m.outputs[1].argv
+	check(
+		#argv == 7
+			and argv[1] == "sh"
+			and argv[5] == "0"
+			and argv[6] == "-"
+			and argv[7] == HOME .. "/.omp/deck/agent-a/" .. VIBE_FILE,
+		"the poll reads the agent's session file from its start: " .. table.concat(argv, " ")
+	)
+	check(row_of(list.frame(c, cx), "agent-a").code == "idle", "before the answer the row is idle")
+	local renders = b.renders
+	answer(m, 1, 120, { lifecycle(m, "W1", "turn-started", "2027-01-15T07:59:59.000Z") })
+	check(b.renders == renders + 1, "a changed answer renders the copy")
+	local f = list.frame(c, cx)
+	local row = row_of(f, "agent-a")
+	check(row.code == "running" and row.vibing == true, "a running worker turn makes the idle row running and vibing")
+	check((f.tally.running or 0) == 1 and (f.tally.idle or 0) == 0, "the tally counts the vibing agent as running")
+	m.advance(4999)
+	report()
+	list.tick()
+	check(#m.outputs == 1, "no poll starts within 5 s of the last")
+	m.advance(1)
+	report()
+	list.tick()
+	check(#m.outputs == 2 and m.outputs[2].argv[5] == "120", "a poll 5 s later reads on from the last size")
+	answer(m, 2, 200, { lifecycle(m, "W1", "turn-settled", "2027-01-15T08:00:04.000Z") })
+	f = list.frame(c, cx)
+	row = row_of(f, "agent-a")
+	check(row.code == "idle" and row.vibing == nil, "a settled turn returns the row to idle")
+	check((f.tally.running or 0) == 0 and f.tally.idle == 1, "and the tally counts it idle again")
+end
+
+-- No poll starts while no copy is open; the first tick with one open polls.
+do
+	local list, m = list_on(deck())
+	plant_omp(m, "agent-a")
+	list.tick()
+	m.advance(5000)
+	list.tick()
+	check(#m.outputs == 0, "no poll starts with no copy open")
+	open(list, 101)
+	list.tick()
+	check(#m.outputs == 1, "a tick after a copy opens polls")
+end
+
+-- A live ACP agent has no omp session file and is never polled.
+do
+	local list, m = list_on(claude_deck("abcdefgh", { state = "live", pane = 21, ran = true }))
+	m.panes[21] = true
+	plant_omp(m, "abcdefgh")
+	open(list, 101)
+	list.tick()
+	m.advance(5000)
+	list.tick()
+	local omp_lists = 0
+	for _, path in m.lists do
+		if string.find(path, "/.omp/", 1, true) ~= nil then
+			omp_lists += 1
+		end
+	end
+	check(#m.outputs == 0 and omp_lists == 0, "a live ACP agent is never polled")
+end
+
+-- A new process for the agent (it binds again) ends what its last process left running: the row stops vibing at
+-- once, a turn stamped before the bind is ignored, and one stamped after it counts.
+do
+	local list, m = list_on(deck())
+	plant_omp(m, "agent-a")
+	m.advance(20000)
+	local c, cx, b = open(list, 101)
+	local seq = 0
+	local function report()
+		seq += 1
+		list.event(c, status_action(m, "win1", seq, { ["agent-a"] = { { s = "i", src = "agents" } } }), cx)
+	end
+	report()
+	list.tick()
+	answer(m, 1, 120, { lifecycle(m, "W1", "turn-started", "2027-01-15T08:00:10.000Z") })
+	check(row_of(list.frame(c, cx), "agent-a").vibing == true, "with no bind seen the file's history is trusted")
+	local renders = b.renders
+	list.command_started({ pane = 11, line = "omp --continue --session-dir ~/.omp/deck/agent-a" })
+	list.tick()
+	check(b.renders > renders, "the bind renders the copy")
+	local row = row_of(list.frame(c, cx), "agent-a")
+	check(row.code == "idle" and row.vibing == nil, "the bind ends the last process's worker turns")
+	m.advance(5000)
+	report()
+	list.tick()
+	check(#m.outputs == 2, "the next poll starts")
+	answer(m, 2, 200, { lifecycle(m, "W2", "turn-started", "2027-01-15T08:00:19.000Z") })
+	row = row_of(list.frame(c, cx), "agent-a")
+	check(row.code == "idle" and row.vibing == nil, "a turn stamped before the bind is ignored")
+	m.advance(5000)
+	report()
+	list.tick()
+	check(#m.outputs == 3, "a third poll starts")
+	answer(m, 3, 280, { lifecycle(m, "W3", "turn-started", "2027-01-15T08:00:21.000Z") })
+	row = row_of(list.frame(c, cx), "agent-a")
+	check(row.code == "running" and row.vibing == true, "a turn stamped after the bind counts")
+end
+
+-- A changed vibe answer renders every open copy, and a list that opens again starts from a fresh answer: with no
+-- copy open the follower is cleared, so no pill the closed lists never saw survives.
+do
+	local list, m = list_on(deck())
+	plant_omp(m, "agent-a")
+	local c1, cx1, b1 = open(list, 101)
+	local c2, cx2, b2 = open(list, 102)
+	local seq = 0
+	local function report()
+		seq += 1
+		list.event(c1, status_action(m, "win1", seq, { ["agent-a"] = { { s = "i", src = "agents" } } }), cx1)
+	end
+	report()
+	list.tick()
+	local r1, r2 = b1.renders, b2.renders
+	answer(m, 1, 120, { lifecycle(m, "W1", "turn-started", "2027-01-15T08:00:10.000Z") })
+	check(b1.renders > r1 and b2.renders > r2, "a changed answer renders every open copy")
+	check(row_of(list.frame(c2, cx2), "agent-a").vibing == true, "the second copy shows the vibing row")
+	-- Both copies close (their panes leave the list): after the grace ticks the follower is cleared, and a copy
+	-- that opens again sees no stale pill.
+	m.panes[101] = nil
+	m.panes[102] = nil
+	list.tick()
+	list.tick()
+	list.tick()
+	local c3, cx3, b3 = open(list, 103)
+	check(row_of(list.frame(c3, cx3), "agent-a").vibing == nil, "a reopened list shows no stale vibing pill")
+	m.advance(5000)
+	list.tick()
+	check(#m.outputs == 2, "the reopened list polls again")
+	answer(m, 2, 140, { lifecycle(m, "W1", "turn-settled", "2027-01-15T08:00:30.000Z") })
+	check(b3.renders == 1, "an answer that changes nothing after a clear renders nothing")
 end
 
 print("Runtime: " .. checks .. " checks passed")

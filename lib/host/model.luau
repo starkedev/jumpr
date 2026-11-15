@@ -29,7 +29,8 @@ export type Selection = { kind: string, id: string?, gid: string? }
 -- (deleting while one of its agents is `live`).
 -- Agent only: id, cwd, state, failed, cancel (a pending record that is being removed), src (the status entries'
 -- sources, for the `i` overlay), asking (a status entry says `waiting_input`: typed text would answer it), hold
--- (why a held `q` message has not been sent; nil with none held), parked (its one running pane runs in no tab).
+-- (why a held `q` message has not been sent; nil with none held), parked (its one running pane runs in no tab),
+-- vibing (the row is running and one of its omp vibe workers has a turn running; nil otherwise).
 export type Row = {
 	kind: string,
 	gid: string,
@@ -54,6 +55,7 @@ export type Row = {
 	asking: boolean?,
 	hold: string?,
 	parked: boolean?,
+	vibing: boolean?,
 }
 
 local STOP_WINDOW_MS = 60 * 1000
@@ -295,9 +297,13 @@ function M.rows(
 			local live = M.is_live(r, set)
 			local dup = M.is_dup(set, entries)
 			local asking = false
+			local vibing = false
 			for _, e in entries do
 				if status.asking(e) then
 					asking = true
+				end
+				if status.vibing(e) then
+					vibing = true
 				end
 			end
 			if group.deleting == true and r.state == "live" then
@@ -322,6 +328,7 @@ function M.rows(
 				asking = asking,
 				hold = M.hold(deck.queue[id], health, live, dup),
 				parked = if M.is_parked(r, entries, fresh, dup) then true else nil,
+				vibing = if vibing and code == "running" then true else nil,
 			}
 			table.insert(agents, row)
 			table.insert(codes, code)

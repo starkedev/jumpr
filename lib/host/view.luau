@@ -242,8 +242,9 @@ function M.clock_key(f: Frame): string
 	return table.concat(parts, "|")
 end
 
--- The pill on an agent's first line: its record state when that says more than the status does.
-local function pill(row: model.Row): (string, string)
+-- The word and role of the pill on an agent's first line: its record state when that says more than the status does,
+-- then `vibing` for a running omp agent one of whose vibe workers has a turn running, coloured as running.
+function M.pill(row: model.Row): (string, string)
 	if row.state == "pending" then
 		if row.cancel then
 			return "removing", "deck.pending"
@@ -256,6 +257,9 @@ local function pill(row: model.Row): (string, string)
 	elseif row.state == "exited" and row.code ~= "error" then
 		-- A non-zero exit is an error: it keeps the red error pill, as the tiles count it.
 		return "exited", "deck.stopped"
+	end
+	if row.vibing then
+		return "vibing", code_role("running")
 	end
 	local code = row.code or "unknown"
 	local st = status.of(code)
@@ -400,7 +404,7 @@ end
 
 -- One agent in a card: status dot, label and pill on the first line, the dim meta line under it.
 local function agent_item(f: Frame, row: model.Row, selected: boolean, group_cwd: string?): Node
-	local word, word_role = pill(row)
+	local word, word_role = M.pill(row)
 	local dot_role = code_role(row.code)
 	local extra = "deck.item"
 	if row.dim then

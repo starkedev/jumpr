@@ -48,6 +48,25 @@ for suite in "${suites[@]}"; do
 	luau "$suite"
 done
 
+
+echo "==> vibe reader script"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/deck"
+printf '{"type":"custom","customType":"vibe-session-lifecycle","data":{"action":"turn-started"},"timestamp":"2026-01-01T00:00:00.000Z"}\nnoise\n' >"$tmp/deck/old.jsonl"
+printf '{"type":"mode_change","mode":"none"}\n' >"$tmp/deck/new.jsonl"
+touch -d "2026-01-01 00:00:00" "$tmp/deck/old.jsonl"
+touch -d "2026-01-02 00:00:00" "$tmp/deck/new.jsonl"
+script="$(awk '/^local SCRIPT = \[\[/{sub(/^local SCRIPT = \[\[/, ""); if (length($0) > 0) print; f=1; next} f && /\]\]$/{sub(/\]\]$/, ""); print; f=0; next} f' lib/host/vibe.luau)"
+size="$(wc -c <"$tmp/deck/new.jsonl")"
+line='{"type":"mode_change","mode":"none"}'
+got="$(sh -c "$script" sh 0 - "$tmp/deck/old.jsonl" "$tmp/deck/new.jsonl" "$tmp/deck/none.jsonl" 5 "$tmp/deck/old.jsonl" "$tmp/deck/old.jsonl" "$tmp/deck/new.jsonl" 5 "$tmp/deck/new.jsonl" "$tmp/deck/old.jsonl" "$tmp/deck/new.jsonl")"
+want="$(printf '\036%s\036%s\n%s\n\036%s\036%s\n%s\n\036%s\036%s\n' "$tmp/deck/new.jsonl" "$size" "$line" "$tmp/deck/new.jsonl" "$size" "$line" "$tmp/deck/new.jsonl" "$size")"
+if [ "$got" != "$want" ]; then
+	echo "check: the vibe reader script did not answer as expected:" >&2
+	printf 'want: %q\ngot:  %q\n' "$want" "$got" >&2
+	exit 1
+fi
 echo "==> types"
 if [ ! -f tern.d.luau ]; then
 	if ! command -v tern >/dev/null 2>&1; then

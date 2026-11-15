@@ -6,6 +6,20 @@ Update with `tern plugin install github.com/starkedev/jumpr --force` on each mac
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-16
+
+### Added
+
+- An omp agent in `/vibe` mode counts as running while one of its workers has a turn running, and its pill says `vibing`.
+  That holds even when the agent itself sits idle at its prompt, as it does after Esc ends omp's wait for a worker.
+  A question or an error still shows first, and with no worker running the row reads as before.
+  Jumpr reads this from the agent's own session file on the agent's machine, every 5 seconds while a list is open (see "What it runs and writes" in the README).
+
+  The reader follows the one session file omp's own `--continue` picks and reads only what omp wrote since the last look, so it works with an omp of any version that writes the same records, and costs one small process per machine, not per agent.
+  Tested live on Linux (Tern 0.9.21, omp 18.20.2) and the reader's shell on macOS; only omp 18.20 has been observed writing the records (see Known limitations in the README).
+
+  No stored data changes, and machines may update one at a time: the protocol is unchanged from 0.2.0.
+
 ## [0.2.0] - 2026-11-16
 
 The list is no longer tied to omp: `n` starts the machine's default agent, which can be omp or any agent Tern's ACP chat runs, such as `claude`, `codex` or `copilot`.
@@ -161,7 +175,8 @@ Tested on Tern 0.9.10 and 0.9.11.
 - Every message between the halves carries a protocol version, and a mismatch shows a banner naming the machine to update.
 - `scripts/check.sh` runs stylua, the unit suites, a strict `luau-lsp` type check and design-rule checks.
 
-[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/starkedev/jumpr/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/starkedev/jumpr/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/starkedev/jumpr/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/starkedev/jumpr/compare/v0.1.2...v0.1.3

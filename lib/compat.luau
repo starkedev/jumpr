@@ -716,4 +716,19 @@ function M.run_status(argv: { string }, cb: (status: number?) -> ()): (boolean, 
 	return ok, err
 end
 
+-- Runs `argv` with no Tern shell (`tern.process.run`, `timeout_ms` 5000). `cb` gets its stdout when it exits 0 in
+-- time, else nil. If the process cannot start, `cb(nil)` runs before this returns, and the result is false with the
+-- error.
+function M.run_output(argv: { string }, cb: (stdout: string?) -> ()): (boolean, string?)
+	local ok, err = act(function()
+		tern.process.run(argv, { timeout_ms = 5000 }, function(res: ProcessResult, _cx: WindowCx?)
+			cb(if res.status == 0 and not res.timed_out then str(res.stdout) or "" else nil)
+		end)
+	end)
+	if not ok then
+		cb(nil)
+	end
+	return ok, err
+end
+
 return M

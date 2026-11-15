@@ -224,4 +224,26 @@ do
 	check(back == "main.cards.g1.a-aaaa2222", "a selection after none is revealed")
 end
 
+-- A vibing row's pill says `vibing` in the running role; a record state that says more (starting, stopping, exited)
+-- still shows its own pill first.
+do
+	local run_role = (Status.of("running") :: Status.Status).role
+	local function pill(fields: { [string]: any }): string
+		local row: { [string]: any } = { kind = "agent", gid = "g1", id = "a", state = "live", code = "running" }
+		for k, v in fields do
+			row[k] = v
+		end
+		local word, role = View.pill(row :: any)
+		return word .. " " .. role
+	end
+	check(pill({}) == "running " .. run_role, "a running row says running")
+	check(pill({ vibing = true }) == "vibing " .. run_role, "a vibing row says vibing in the running role")
+	check(pill({ state = "pending", vibing = true }) == "starting deck.pending", "a pending record says starting")
+	check(pill({ state = "stopping", vibing = true }) == "stopping deck.pending", "a stopping record says stopping")
+	check(
+		pill({ state = "exited", code = "stopped", vibing = true }) == "exited deck.stopped",
+		"an exited record says exited"
+	)
+end
+
 print("View: " .. checks .. " checks passed")

@@ -9,7 +9,7 @@
 --     native editing on, so the input line submits on the "enter" key and there is no submit event.
 --   {kind = "edit", text}  the open input line's whole new text, for a host that applies Tern's native edit events.
 --   {kind = "git_root", folder, common_dir?}  the answer to a `git_root` effect.
---   {kind = "folder_checked", purpose, folder, ok, gid?, id?, text?}  the answer to a `check_folder` effect: its
+--   {kind = "folder_checked", purpose, folder, ok, gid?, id?, text?, cli?}  the answer to a `check_folder` effect: its
 --     fields echoed back, plus `ok`, whether `folder` is a directory on this machine.
 --   {kind = "show_due", id}  the 120 ms pause after a list-mode move onto agent `id` elapsed.
 --   {kind = "click", gid?, id?}  a pointer click on a row of the list (the host maps the clicked node with
@@ -28,15 +28,16 @@
 --     `last_send_ms` and saves it before typing (`queue.send`), and picks the pane from its own bindings, so no pane
 --     id passes through here.
 --   {kind = "git_root", folder}  find the folder's git common dir on this machine.
---   {kind = "check_folder", purpose, folder, gid?, id?, text?}  check that `folder` is a directory on this machine
---     and answer with `folder_checked`. Purposes: "folder" (the g folder line), "new" (n, with the group `gid` and
---     the first prompt `text`), "retry" (Enter on a failed pending row `id`) and "restart" (Enter on an exited row
---     `id`); Enter in that row's `o` line asks for either too. Tern starts a pane whose folder is
---     missing in the home directory, and omp then moves itself to a temp dir, so nothing is stored or started in a
---     folder this machine does not have.
+--   {kind = "check_folder", purpose, folder, gid?, id?, text?, cli?}  check that `folder` is a directory on this
+--     machine and answer with `folder_checked`. Purposes: "folder" (the g folder line), "new" (n, with the group
+--     `gid`, the first prompt `text` and, from the `N` picker, the agent `cli`; without it, the default agent),
+--     "retry" (Enter on a failed pending row `id`) and "restart" (Enter on an exited row `id`); Enter in that row's
+--     `o` line asks for either too. Tern starts a pane whose folder is missing in the home directory, and omp then
+--     moves itself to a temp dir, so nothing is stored or started in a folder this machine does not have.
 --   {kind = "show", id}  arm the 120 ms timer whose firing feeds `show_due` back.
 --   {kind = "render"}  something visible changed (the block's key handler returns false without it).
 
+local Agent = require("../shared/agent")
 local identity = require("../shared/identity")
 local keymap = require("./keymap")
 local model = require("./model")
@@ -49,17 +50,18 @@ local M = {}
 export type Selection = model.Selection
 
 -- mode: "list" | "input" | "confirm" | "pick" | "order" | "menu". purpose (input): "search" | "new" | "folder" |
--- "group" | "label" | "send" | "queue"; (confirm): "stop" | "drop" | "group"; (pick): "move".
+-- "group" | "label" | "send" | "queue"; (confirm): "stop" | "drop" | "group"; (pick): "move" | "kind".
 -- text: the open input line. title: its prompt (the question, in confirm). search, filter (a status code from
 -- `status.ORDER`, never its key), show_src: list state.
 -- notice: a one-line message, cleared by the next key. em: Esc mode from the latest status ("A" | "B").
 -- show_pending: the deck id a list-mode move rested on, waiting for the 120 ms pause; every other key clears it.
--- block_cwd: the block's own folder (g prefill). folder, touched, then_n: the g flow (the confirmed folder,
--- whether the name line was edited, whether n continues after it). target_gid (n, confirm group, V on a header),
--- target_id (r, o, q, d, m, V on an agent). pick: the highlighted group's gid in the `m` picker (a gid, so a group
--- swept while the picker is open cannot shift it onto another). order_at: where the row `V` picked up stood (in its
--- group, or among the groups), for Esc to put it back. menu: the highlighted item's index in the `?` menu (its items
--- are always the same, in the same order, so an index stays on the same command).
+-- block_cwd: the block's own folder (g prefill). folder, touched, then_n, n_cli: the g flow (the confirmed folder,
+-- whether the name line was edited, whether n continues after it, and the agent the `N` picker chose for it).
+-- target_gid (n, N, confirm group, V on a header), target_id (r, o, q, d, m, V on an agent). pick: the highlighted
+-- group's gid in the `m` picker (a gid, so a group swept while the picker is open cannot shift it onto another), or
+-- the highlighted agent in the `N` picker, whose choices are `kinds` (read once, as it opens). order_at: where the row
+-- `V` picked up stood (in its group, or among the groups), for Esc to put it back. menu: the highlighted item's index
+-- in the `?` menu (its items are always the same, in the same order, so an index stays on the same command).
 export type UI = {
 	mode: string,
 	purpose: string?,
@@ -76,9 +78,11 @@ export type UI = {
 	folder: string?,
 	touched: boolean,
 	then_n: boolean,
+	n_cli: string?,
 	target_gid: string?,
 	target_id: string?,
 	pick: string?,
+	kinds: { string }?,
 	order_at: number?,
 	menu: number?,
 }
@@ -100,6 +104,7 @@ export type Event = {
 	ok: boolean?,
 	purpose: string?,
 	gid: string?,
+	cli: string?,
 }
 
 export type Effect = {
@@ -111,6 +116,7 @@ export type Effect = {
 	text: string?,
 	purpose: string?,
 	gid: string?,
+	cli: string?,
 }
 
 M.DUPLICATE = "duplicate: two panes share this agent"
@@ -171,9 +177,11 @@ function M.new_ui(saved: any?): UI
 		folder = nil,
 		touched = false,
 		then_n = false,
+		n_cli = nil,
 		target_gid = nil,
 		target_id = nil,
 		pick = nil,
+		kinds = nil,
 		order_at = nil,
 		menu = nil,
 	}
@@ -203,6 +211,7 @@ function M.folder_checked(effect: Effect, ok: boolean): Event
 		gid = effect.gid,
 		id = effect.id,
 		text = effect.text,
+		cli = effect.cli,
 	}
 end
 
@@ -225,6 +234,7 @@ local function ui_changed(a: UI, b: UI): boolean
 		or a.notice ~= b.notice
 		or a.folder ~= b.folder
 		or a.then_n ~= b.then_n
+		or a.n_cli ~= b.n_cli
 		or a.pick ~= b.pick
 		or a.menu ~= b.menu
 end
@@ -270,9 +280,11 @@ local function close_mode(ui: UI)
 	ui.folder = nil
 	ui.touched = false
 	ui.then_n = false
+	ui.n_cli = nil
 	ui.target_gid = nil
 	ui.target_id = nil
 	ui.pick = nil
+	ui.kinds = nil
 	ui.order_at = nil
 	ui.menu = nil
 end
@@ -417,7 +429,8 @@ end
 
 -- `n` starts the agent at once: the group's folder is checked on this machine before anything is stored or sent.
 -- With no group to start in (so no rows either), the g flow runs first, prefilled with the block's folder, then n.
-local function start_n(s: Step, gid: string?)
+-- `cli` is the agent the `N` picker chose; nil starts the default agent.
+local function start_n(s: Step, gid: string?, cli: string?)
 	local g = find_group(s.deck, gid)
 	if g == nil then
 		g = s.deck.groups[1]
@@ -425,6 +438,7 @@ local function start_n(s: Step, gid: string?)
 	if g == nil then
 		open_input(s.ui, "folder", "folder", s.ui.block_cwd or "")
 		s.ui.then_n = true
+		s.ui.n_cli = cli
 		return
 	end
 	if g.deleting == true then
@@ -432,7 +446,7 @@ local function start_n(s: Step, gid: string?)
 		s.ui.notice = M.DELETING
 		return
 	end
-	table.insert(s.effects, { kind = "check_folder", purpose = "new", folder = g.cwd, gid = g.gid })
+	table.insert(s.effects, { kind = "check_folder", purpose = "new", folder = g.cwd, gid = g.gid, cli = cli })
 end
 
 -- Where Enter on `id`'s row would start the agent again: "restart" for an exited record, "retry" for a failed
@@ -687,6 +701,25 @@ local function move_key(s: Step, row: model.Row?)
 	s.ui.pick = row.gid
 end
 
+-- `N`: the agent picker, on the default agent. Enter starts a new agent of the highlighted kind as `n` would, in the
+-- selected row's group. A group that is being deleted refuses, as `n` does.
+local function kind_key(s: Step, row: model.Row?)
+	local ui = s.ui
+	local gid = if row ~= nil then row.gid else nil
+	local g = find_group(s.deck, gid)
+	if g ~= nil and g.deleting == true then
+		ui.notice = M.DELETING
+		return
+	end
+	local default = s.deck.settings.agent
+	ui.mode = "pick"
+	ui.purpose = "kind"
+	ui.title = "new agent"
+	ui.kinds = Agent.options(default)
+	ui.pick = default
+	ui.target_gid = gid
+end
+
 -- `V` picks the selected row up to reorder it (`order` mode): an agent within its group (`target_id`), or a group
 -- header among the groups (`target_gid`). Refused while a search or filter hides rows (checked first, since the
 -- filter may hide every row), since a step past a hidden row would look like nothing happened.
@@ -746,6 +779,7 @@ local MENU: { MenuSpec } = {
 	{ action = "reorder", label = "reorder", short = "move", needs = "row" },
 	{ action = "stop", label = "", needs = "row" },
 	{ action = "new", label = "new agent", short = "new" },
+	{ action = "new_kind", label = "new agent, pick kind" },
 	{ action = "group", label = "new group", short = "group" },
 	{ action = "search", label = "search" },
 	-- (per `status.ORDER` entry a "<word> only" item, then per entry an "add or drop <word>" item, go here in its order)
@@ -887,6 +921,8 @@ local function list_key(s: Step, ev: Event)
 		request(s, "settings", {})
 	elseif action == "new" then
 		start_n(s, if row ~= nil then row.gid else nil)
+	elseif action == "new_kind" then
+		kind_key(s, row)
 	elseif action == "group" then
 		local r = if row ~= nil and row.id ~= nil then s.deck.agents[row.id] else nil
 		open_input(ui, "folder", "folder", if r ~= nil then r.cwd else (ui.block_cwd or ""))
@@ -1011,7 +1047,7 @@ local function new_checked(s: Step, ev: Event)
 			pos = r.pos
 		end
 	end
-	local cli = deck.settings.agent
+	local cli = ev.cli or deck.settings.agent
 	local out = store.clone(deck)
 	out.agents[id] = {
 		gid = g.gid,
@@ -1063,14 +1099,14 @@ local function submit_group(s: Step)
 		return
 	end
 	local folder = ui.folder :: string
-	local then_n = ui.then_n
+	local then_n, n_cli = ui.then_n, ui.n_cli
 	for _, g in s.deck.groups do
 		if g.name == name then
 			close_mode(ui)
 			ui.selection = { kind = "header", gid = g.gid }
 			ui.notice = "group " .. name .. " already exists — selected"
 			if then_n then
-				start_n(s, g.gid)
+				start_n(s, g.gid, n_cli)
 			end
 			return
 		end
@@ -1097,7 +1133,7 @@ local function submit_group(s: Step)
 	ui.selection = { kind = "header", gid = gid }
 	save(s)
 	if then_n then
-		start_n(s, gid)
+		start_n(s, gid, n_cli)
 	end
 end
 
@@ -1269,10 +1305,44 @@ local function move_agent(s: Step, id: string, target: store.Group)
 	save(s)
 end
 
+-- A key in the `N` agent picker: the mapped down/up actions and arrows move the highlight, Enter starts a new agent
+-- of that kind as `n` would, and Esc or anything else leaves it unchanged.
+local function kind_pick_key(s: Step, ev: Event)
+	local ui = s.ui
+	local kinds = ui.kinds or {}
+	local name = ev.name
+	local ch = char_of(ev)
+	local last = #kinds
+	local at = math.clamp(table.find(kinds, ui.pick or "") or 1, 1, math.max(last, 1))
+	local action = if ch ~= nil then s.map.action_of[ch] else nil
+	local stepping = name == "up" or name == "down" or action == "down" or action == "up"
+	local to = if stepping then moved(s.map, name, ch, at, last) else nil
+	if to ~= nil then
+		ui.pick = kinds[math.clamp(to, 1, math.max(last, 1))]
+	elseif name == "enter" then
+		local cli, gid = ui.pick, ui.target_gid
+		close_mode(ui)
+		-- The group the picker opened on, swept meanwhile, refuses rather than starting in another.
+		if gid ~= nil and find_group(s.deck, gid) == nil then
+			ui.notice = M.GROUP_GONE
+			return
+		end
+		if cli ~= nil then
+			start_n(s, gid, cli)
+		end
+	elseif name == "escape" then
+		close_mode(ui)
+	end
+end
+
 -- A key in the move picker: the mapped down/up actions and arrows move the highlight (the mapped last action, Home
 -- and End are the list's, not the picker's), Enter moves the agent there, and Esc or anything else leaves it
 -- unchanged. A group that is being deleted refuses, and one swept meanwhile is gone.
 local function pick_key(s: Step, ev: Event)
+	if s.ui.purpose == "kind" then
+		kind_pick_key(s, ev)
+		return
+	end
 	local ui = s.ui
 	local name = ev.name
 	local ch = char_of(ev)

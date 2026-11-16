@@ -16,6 +16,7 @@ M.ACTIONS = table.freeze({
 	table.freeze({ id = "fold", key = "h", label = "fold group" }),
 	table.freeze({ id = "unfold", key = "l", label = "open group" }),
 	table.freeze({ id = "new", key = "n", label = "new agent" }),
+	table.freeze({ id = "new_kind", key = "N", label = "new agent, pick kind" }),
 	table.freeze({ id = "group", key = "g", label = "new group" }),
 	table.freeze({ id = "rename", key = "r", label = "rename" }),
 	table.freeze({ id = "move", key = "m", label = "move to another group" }),

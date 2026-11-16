@@ -71,9 +71,9 @@ end
 
 -- A list key shows exactly as bound, in a text field that gets Tern's Reset once the key is changed.
 do
-	local props = SettingsView.props(on_page("keys"), context({ new = "N" }), "devbox")
+	local props = SettingsView.props(on_page("keys"), context({ new = "A" }), "devbox")
 	local new, down, next_group = row(props, "new"), row(props, "down"), row(props, "next_group")
-	check(new.control.value == "N", "a changed key shows as bound")
+	check(new.control.value == "A", "a changed key shows as bound")
 	check(
 		new.control.k == "text" and new.changed == true and new.defaultLabel == "n",
 		"a changed key row is a text field naming its default, which Tern draws with Reset"

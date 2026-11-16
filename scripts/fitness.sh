@@ -223,7 +223,7 @@ if [ "${#hygiene_files[@]}" -gt 0 ]; then
 		# test suites' Capitalized aliases resolve too.
 		used=""
 		for f in "${hygiene_files[@]}"; do
-			rows=$(rg --no-filename --only-matching --no-require-git "\b($bases)\.[A-Za-z_][A-Za-z0-9_]*" "$f" \
+			rows=$(rg --no-filename --only-matching --no-require-git --ignore-case "\b($bases)\.[A-Za-z_][A-Za-z0-9_]*" "$f" \
 				| awk -F. '{ print tolower($1) " " $2 }') || true
 			if [ -n "$rows" ]; then
 				used+="$rows"$'\n'

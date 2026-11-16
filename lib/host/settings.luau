@@ -59,7 +59,6 @@ local AGENT_ROWS = { "agent", "other" }
 local ESC_ROW = "esc"
 local WAITING_ROW = "waiting"
 local RESET_KEYS_ROW = "reset_keys"
-local COMMON_AGENTS = { Agent.OMP, "claude", "codex", "copilot" }
 local KEY_ROWS: { string } = {}
 local KEY_ACTIONS: { [string]: boolean } = {}
 for _, action in keymap.ACTIONS do
@@ -80,14 +79,6 @@ local WINDOW_OLDER_NOTICE = "The window runs an older Jumpr; update Jumpr on the
 -- Cmd on macOS, the Windows or Super key elsewhere. `+` joins a chord's parts, so the `+` key is spelled `plus`.
 local META_MODIFIER = "cmd"
 local CHORD_KEY_NAMES: { [string]: string } = { ["+"] = "plus" }
-
-function M.agent_options(current: string): { string }
-	local options = table.clone(COMMON_AGENTS)
-	if table.find(options, current) == nil then
-		table.insert(options, current)
-	end
-	return options
-end
 
 function M.new(): State
 	return { page = "agents", focus = "agent", editing = nil, all_selected = nil, notice = nil }
@@ -341,7 +332,7 @@ local function choice_key(state: State, ctx: Context, event: Event): (State, { E
 	if editing == nil then
 		return state, {}
 	end
-	local options = M.agent_options(ctx.settings.agent)
+	local options = Agent.options(ctx.settings.agent)
 	local at = table.find(options, editing.option or ctx.settings.agent) or 1
 	local name = event.name
 	local ch = key_char(event)
@@ -645,7 +636,7 @@ local function select_event(state: State, ctx: Context, item: string?): (State, 
 	end
 	if state.page == "agents" and item ~= nil then
 		local option = string.match(item, "^agent=(.+)$")
-		if option ~= nil and table.find(M.agent_options(ctx.settings.agent), option) ~= nil then
+		if option ~= nil and table.find(Agent.options(ctx.settings.agent), option) ~= nil then
 			local out = copy(state)
 			local editing: Editing = { row = "agent", option = option }
 			out.focus = "agent"

@@ -589,15 +589,19 @@ local function window(total: number, at: number, rows: number): (number, number,
 	return first, math.min(total, first + rows - 1), sel
 end
 
--- The picker's window. The highlight is a gid (the first group when it is gone).
-local function pick_window(f: Frame): (number, number, number)
+-- The picker's window. The `m` highlight is a gid (the first group when it is gone); the `N` highlight is an agent.
+local function pick_window(f: Frame, count: number): (number, number, number)
 	local at = 1
-	for i, g in f.groups do
-		if g.gid == f.ui.pick then
-			at = i
+	if f.ui.purpose == "kind" then
+		at = table.find(f.ui.kinds or {}, f.ui.pick or "") or 1
+	else
+		for i, g in f.groups do
+			if g.gid == f.ui.pick then
+				at = i
+			end
 		end
 	end
-	return window(#f.groups, at, PICK_ROWS)
+	return window(count, at, PICK_ROWS)
 end
 
 -- A picker's title and its current movement bindings.
@@ -674,13 +678,18 @@ local function dock(f: Frame): Node?
 		table.insert(children, para(ui.title, "deck.confirm"))
 	end
 	if ui.mode == "pick" then
-		local first, last, sel = pick_window(f)
+		local kinds = if ui.purpose == "kind" then ui.kinds or {} else nil
+		local first, last, sel = pick_window(f, if kinds ~= nil then #kinds else #f.groups)
 		table.insert(children, line(M.pick_title(ui.title, f.map), "deck.pick-title", f.cols))
 		for i = first, last do
-			local g = f.groups[i]
-			local text = (if i == sel then "› " else "  ")
-				.. g.name
-				.. (if g.deleting == true then " (deleting)" else "")
+			local label
+			if kinds ~= nil then
+				label = kinds[i]
+			else
+				local g = f.groups[i]
+				label = g.name .. (if g.deleting == true then " (deleting)" else "")
+			end
+			local text = (if i == sel then "› " else "  ") .. label
 			table.insert(children, line(text, if i == sel then "deck.pick deck.sel" else "deck.pick", f.cols))
 		end
 	end

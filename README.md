@@ -68,9 +68,10 @@ Tern has no separate update command; `--force` replaces the installed copy and r
 4. Press `n` on the group to start an agent in that folder, in a new tab.
 
 `n` starts the machine's default agent, which is omp until you change it.
-To start something else, press `,` in the list to open the settings page and set the default agent (see [Settings](#settings)); any agent Tern's ACP chat runs can be the default.
+To start another agent just this once, press `N` instead: it opens a picker of agents (omp, `claude`, `codex`, `copilot`, and your default agent if it is none of them), starting on the default; `j`/`k` move, Enter starts the highlighted one in the selected group, and Esc leaves.
+To change what `n` starts, press `,` in the list to open the settings page and set the default agent (see [Settings](#settings)); any agent Tern's ACP chat runs can be the default.
 
-Only agents started from Jumpr with `n` are listed.
+Only agents started from Jumpr with `n` or `N` are listed.
 Agents you start yourself in a plain tab are left alone; [How it works](#how-it-works) explains why.
 
 ## Keys
@@ -116,6 +117,7 @@ Ctrl+J is a poor choice of your own: on Linux and Windows it is Tern's own join 
 | `Tab` | Fold or unfold a group |
 | `h` / `l` | Fold or unfold the selected group |
 | `n` | Start a new agent in the selected group |
+| `N` | Pick an agent from a list, then start it in the selected group |
 | `g` | New group (asks for a folder first) |
 | `r` | Rename the agent; the name also becomes its tab's name |
 | `m` | Move the agent to another group |
@@ -173,7 +175,7 @@ The settings page's "This window" page flips this (see [Settings](#settings)).
 
 Click a group's header to fold or unfold it, and click an agent to select it, as if you had moved onto it.
 Click a count tile to show that status only, as its key does, and Option+click (alt+click) it to add it to the filter or drop it.
-Clicks only act in the list itself; while an input, a question, the group picker, the command menu or a reorder is open, they do nothing.
+Clicks only act in the list itself; while an input, a question, a picker, the command menu or a reorder is open, they do nothing.
 
 ## Settings
 
@@ -316,7 +318,7 @@ Delete that folder by hand to start fresh.
 - **A banner says "update Jumpr on …".**
   The two halves run different versions: run the update command on the machine the banner names.
 - **An agent you started yourself is not in the list.**
-  Only agents started with `n` are listed (see [How agents get into the list](#how-agents-get-into-the-list)).
+  Only agents started with `n` or `N` are listed (see [How agents get into the list](#how-agents-get-into-the-list)).
 - **Enter on an exited agent opened a picker instead of its conversation.**
   Without a proven conversation id, Jumpr continues a conversation only when it knows that one is this agent's; pick the right conversation from Tern's picker (see [Known limitations](#known-limitations)).
 - **Something else looks wrong.**

@@ -6,6 +6,14 @@ Update with `tern plugin install github.com/starkedev/jumpr --force` on each mac
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-11-16
+
+### Added
+
+- `N` starts a new agent of a kind you pick: a picker lists omp, `claude`, `codex`, `copilot` and your default agent, starting on the default, and Enter starts the highlighted one in the selected group as `n` would.
+  The default agent `n` starts is left as it was; the picker is also in the `?` menu, and its key can be changed on the settings page.
+  A list key you had moved to `N` goes back to its default, since `N` now has its own action; "Reset all keys" on the settings page clears the leftover setting.
+
 ## [0.2.2] - 2026-11-16
 
 ### Changed
@@ -185,7 +193,8 @@ Tested on Tern 0.9.10 and 0.9.11.
 - Every message between the halves carries a protocol version, and a mismatch shows a banner naming the machine to update.
 - `scripts/check.sh` runs stylua, the unit suites, a strict `luau-lsp` type check and design-rule checks.
 
-[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/starkedev/jumpr/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/starkedev/jumpr/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/starkedev/jumpr/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/starkedev/jumpr/compare/v0.1.4...v0.2.0

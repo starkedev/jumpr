@@ -1434,12 +1434,27 @@ do
 	select(b, { kind = "header", gid = "g2" })
 	char(b, "n")
 	check(b.ui.notice == "group is being deleted" and b.ui.mode == "list", "n on a deleting group refuses")
+	char(b, "N")
+	check(b.ui.notice == "group is being deleted" and b.ui.mode == "list", "N on a deleting group refuses")
 	select(b, { kind = "agent", id = "a" })
 	char(b, "m")
 	char(b, "j")
 	key(b, "enter")
 	check(b.ui.notice == "group is being deleted" and b.ui.mode == "list", "m into a deleting group refuses")
 	check(b.deck.agents.a.gid == "g1" and kinds(b.effects) == "render", "and moves nothing")
+end
+
+-- The group the N picker opened on, swept while it is open, refuses rather than starting in another group.
+do
+	local b = block(sample())
+	select(b, { kind = "header", gid = "g2" })
+	char(b, "N")
+	local out = Store.clone(b.deck)
+	table.remove(out.groups, 2)
+	b.deck = out
+	key(b, "enter")
+	check(b.ui.notice == "group is gone" and b.ui.mode == "list", "Enter on a swept group refuses")
+	check(kinds(b.effects) == "render" and next(b.deck.agents) ~= nil, "and starts nothing")
 end
 
 -- i toggles show_src, and it is kept in the save() fields.
@@ -1518,6 +1533,66 @@ do
 	check(start ~= nil and start.cwd == "/home/a/block", "the agent starts in the new group's folder")
 	check(start ~= nil and start.cli == "omp" and start.mode == "new", "the default omp agent starts in new mode")
 	check(b.deck.agents.abcdefgh ~= nil, "the record is stored")
+end
+
+-- N opens the agent picker on the default agent; Enter starts the highlighted kind in the selected group, and the
+-- default agent stays as it was.
+do
+	local b = block(sample())
+	b.deck.settings.agent = "codex"
+	select(b, { kind = "header", gid = "g2" })
+	char(b, "N")
+	check(b.ui.mode == "pick" and b.ui.purpose == "kind", "N opens the agent picker")
+	check(b.ui.pick == "codex", "on the default agent")
+	check(
+		b.ui.kinds ~= nil and table.concat(b.ui.kinds, ",") == "omp,claude,codex,copilot",
+		"offering the agents the settings page offers"
+	)
+	check(#b.effects == 1 and b.effects[1].kind == "render" and b.deck.agents.abcdefgh == nil, "nothing starts yet")
+	char(b, "k")
+	check(b.ui.pick == "claude", "k moves the highlight up")
+	char(b, "k")
+	check(b.ui.pick == "omp", "to the first agent")
+	char(b, "k")
+	check(b.ui.pick == "omp", "and the highlight stops there")
+	char(b, "j")
+	key(b, "enter")
+	check(b.ui.mode == "list" and b.ui.kinds == nil, "Enter closes the picker")
+	check(kinds(b.effects) == "check_folder,render", "the group's folder is checked first, as the picker closes")
+	check(b.effects[1].gid == "g2" and b.effects[1].cli == "claude", "for the selected group and the picked agent")
+	answer(b, true)
+	local r = b.deck.agents.abcdefgh
+	check(r ~= nil and r.gid == "g2" and r.cli == "claude", "the record runs the picked agent")
+	local start = request_of(b.effects, "start")
+	check(start ~= nil and start.cli == "claude" and start.mode == "new", "and starts it in new mode")
+	check(b.deck.settings.agent == "codex", "the default agent is unchanged")
+
+	-- Esc leaves without starting anything.
+	char(b, "N")
+	key(b, "escape")
+	check(b.ui.mode == "list" and b.ui.pick == nil and kinds(b.effects) == "render", "Esc closes it, nothing starts")
+
+	-- A default agent outside the common ones is offered last, highlighted.
+	b.deck.settings.agent = "gemini"
+	char(b, "N")
+	check(b.ui.kinds ~= nil and b.ui.kinds[5] == "gemini" and b.ui.pick == "gemini", "a custom default is offered")
+end
+
+-- N with no group yet runs the g flow first, then starts the picked agent there.
+do
+	local b = block(Store.empty())
+	char(b, "N")
+	char(b, "j")
+	key(b, "enter")
+	check(b.ui.mode == "input" and b.ui.purpose == "folder", "the folder input opens after the pick")
+	key(b, "enter")
+	answer(b, true)
+	key(b, "enter")
+	local n_check = b.effects[2]
+	check(n_check ~= nil and n_check.kind == "check_folder" and n_check.cli == "claude", "the pick survives the g flow")
+	answer(b, true, rand_from({ 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8 }))
+	local start = request_of(b.effects, "start")
+	check(start ~= nil and start.cli == "claude", "the picked agent starts in the new group")
 end
 
 -- g: the folder is prefilled from the selected agent; a git_root answer updates the untouched name.

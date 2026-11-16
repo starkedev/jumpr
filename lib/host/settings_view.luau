@@ -35,7 +35,7 @@ end
 
 local function choice_options(current: string): { Option }
 	local options: { Option } = {}
-	for _, value in settings.agent_options(current) do
+	for _, value in Agent.options(current) do
 		table.insert(options, { value = value, label = value })
 	end
 	return options

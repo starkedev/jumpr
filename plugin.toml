@@ -1,7 +1,7 @@
 schema = 1
 id = "jumpr"
 name = "Jumpr"
-version = "0.2.2"
+version = "0.2.3"
 description = "Keyboard-driven list of your coding agents — omp or any CLI Tern's ACP chat runs — grouped by project, one list per machine Tern is attached to."
 icon = "list"
 host = "host.luau"

@@ -18,6 +18,7 @@ local expected = {
 	{ id = "fold", key = "h", label = "fold group" },
 	{ id = "unfold", key = "l", label = "open group" },
 	{ id = "new", key = "n", label = "new agent" },
+	{ id = "new_kind", key = "N", label = "new agent, pick kind" },
 	{ id = "group", key = "g", label = "new group" },
 	{ id = "rename", key = "r", label = "rename" },
 	{ id = "move", key = "m", label = "move to another group" },

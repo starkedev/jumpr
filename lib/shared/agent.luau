@@ -24,6 +24,9 @@ local DEFAULT_TITLES: { [string]: boolean } = {
 	["GitHub Copilot"] = true,
 }
 
+-- The agents Jumpr offers by name, in the settings page's Default agent menu and the `N` picker.
+local COMMON: { string } = { M.OMP, "claude", "codex", "copilot" }
+
 -- True when the kind is 1 to 32 characters, starts alphanumeric and contains only alphanumerics, `_` or `-`.
 function M.valid_kind(kind: string): boolean
 	return #kind >= 1 and #kind <= MAX_KIND_LENGTH and string.find(kind, "^[%w][%w_%-]*$") ~= nil
@@ -50,6 +53,15 @@ end
 -- True when a title is one of the exact defaults shown by a supported agent.
 function M.is_default_title(title: string): boolean
 	return DEFAULT_TITLES[title] == true
+end
+
+-- The agents to choose from: the common ones, then `current` (the default agent) when it is none of them.
+function M.options(current: string): { string }
+	local options = table.clone(COMMON)
+	if table.find(options, current) == nil then
+		table.insert(options, current)
+	end
+	return options
 end
 
 -- Builds a shell-safe omp or ACP launch command, or nil when a component is invalid.

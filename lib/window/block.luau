@@ -9,6 +9,7 @@ local diag = require("./diag")
 local leader = require("./leader")
 local pusher = require("./pusher")
 local protocol = require("../shared/protocol")
+local zen = require("./zen")
 
 local M = {}
 
@@ -62,8 +63,10 @@ function M.in_view(cx: WindowCx): (number?, string?)
 	return pusher.copy_in_tab(tab) or pusher.blocks_for(host.name)[1], host.name
 end
 
--- `jumpr://back`: focus the last non-deck pane seen focused in `host`'s deck session.
+-- `jumpr://back`: focus the last non-deck pane seen focused in `host`'s deck session. A copy this window zoomed for
+-- zen mode gives its tab back first, so the pane it goes to is not hidden behind the list.
 function M.back(cx: WindowCx, host: string): (boolean, string?)
+	zen.release(cx)
 	local rec = last_pane[host]
 	if rec == nil then
 		return false, "no pane to go back to on " .. host

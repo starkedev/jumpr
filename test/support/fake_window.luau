@@ -86,6 +86,9 @@ export type World = {
 	keybinds: { [string]: any },
 	-- Plugin registrations, dropped by a settings write until the entrypoint calls `tern.bind` again.
 	plugin_keybinds: { [string]: string },
+	-- The tabs zoomed onto their focused block, and every palette action the plugin ran, in order.
+	zoomed: { [number]: boolean },
+	actions_run: { string },
 }
 
 local world: World
@@ -137,6 +140,8 @@ local function fresh_world(): World
 		arranged = {},
 		keybinds = {},
 		plugin_keybinds = default_plugin_keybinds(),
+		zoomed = {},
+		actions_run = {},
 	}
 end
 
@@ -338,6 +343,15 @@ local fake_cx: any = {
 		keys = function(_self: any): { [string]: { string } }
 			return effective_keymap()
 		end,
+		-- "Zoom block" toggles the zoom of the focused pane's tab, as Tern's does; any other action is only recorded.
+		run = function(_self: any, id_or_label: string): string
+			table.insert(world.actions_run, id_or_label)
+			local p = if world.focused ~= nil then world.panes[world.focused] else nil
+			if id_or_label == "Zoom block" and p ~= nil and p.tab ~= nil then
+				world.zoomed[p.tab] = not world.zoomed[p.tab]
+			end
+			return id_or_label
+		end,
 	},
 	settings = {
 		keybinds = function(_self: any): { [string]: any }
@@ -460,7 +474,7 @@ local fake_cx: any = {
 			for i = #panes - 1, 1, -1 do
 				node = { { pane = panes[i] }, node }
 			end
-			return { root = node }
+			return { root = node, zoomed = world.zoomed[tab] == true, focus = world.tab_focus[tab] }
 		end,
 	},
 	sessions = {

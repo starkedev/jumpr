@@ -125,6 +125,7 @@ Ctrl+J is a poor choice of your own: on Linux and Windows it is Tern's own join 
 | `d` | Stop the agent, or delete the group (asks `y/n`) |
 | `o` | Send a message to the agent now. On an exited agent, or one whose start failed, start it again first; the message is sent once it is idle. When its conversation has to be picked, the message is held and Enter opens the picker; it is sent once a conversation is picked and the chat is idle |
 | `q` | Queue a message, sent once the agent is idle |
+| `z` | Zen mode: the list takes over the whole tab, centred, and moving through it shows no agent's tab. `z` leaves it, and so does Esc while Esc returns to your pane (the default); going to an agent with Enter leaves it too |
 | `i` | Show where each row's status comes from |
 | `/` | Search labels, folders and group names |
 | `?` | Open the command menu |
@@ -162,6 +163,7 @@ The head line names the filter in words, for example `filter @ waiting` or `filt
 
 When a move rests on a live agent for 120 ms, that agent's tab comes to the front.
 Any other key in that pause cancels it.
+In zen mode (`z`) moves bring no tab to the front: the list fills the window, so you can rearrange and look around without the tabs flicking past.
 
 ![Moving through the list with j and k brings each live agent's tab to the front; Enter goes into the waiting agent, and cmd+\ goes back to the tab last worked in, then returns](docs/jumpr.gif)
 

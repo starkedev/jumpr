@@ -150,7 +150,7 @@ local verb_count = 0
 for _ in Protocol.VERBS do
 	verb_count += 1
 end
-check(verb_count == 10, "ten verbs are known")
+check(verb_count == 11, "eleven verbs are known")
 do
 	local shown = Protocol.parse_url(Protocol.request_url("show", "b", 4, "devbox", { id = "k2x7abcd" }))
 	assert(shown ~= nil, "show parses")

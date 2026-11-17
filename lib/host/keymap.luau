@@ -24,6 +24,7 @@ M.ACTIONS = table.freeze({
 	table.freeze({ id = "stop", key = "d", label = "stop agent" }),
 	table.freeze({ id = "send", key = "o", label = "send a message" }),
 	table.freeze({ id = "queue", key = "q", label = "queue a message" }),
+	table.freeze({ id = "zen", key = "z", label = "zen mode" }),
 	table.freeze({ id = "sources", key = "i", label = "show status sources" }),
 	table.freeze({ id = "search", key = "/", label = "search" }),
 	table.freeze({ id = "menu", key = "?", label = "commands" }),

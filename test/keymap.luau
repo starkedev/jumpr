@@ -26,6 +26,7 @@ local expected = {
 	{ id = "stop", key = "d", label = "stop agent" },
 	{ id = "send", key = "o", label = "send a message" },
 	{ id = "queue", key = "q", label = "queue a message" },
+	{ id = "zen", key = "z", label = "zen mode" },
 	{ id = "sources", key = "i", label = "show status sources" },
 	{ id = "search", key = "/", label = "search" },
 	{ id = "menu", key = "?", label = "commands" },

@@ -6,6 +6,15 @@ Update with `tern plugin install github.com/starkedev/jumpr --force` on each mac
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-11-17
+
+### Added
+
+- `z` turns on zen mode, for rearranging and looking around: the list takes over its whole tab, drawn down the middle at a readable width, and moving through it no longer brings each agent's tab to the front.
+  `z` leaves zen mode, as do Esc (while Esc returns to your pane, the default), going to an agent with Enter, and hiding the list; the head line says `zen` while it is on.
+  Update Jumpr on the machine your Tern window runs on too: a window still on an older Jumpr only shows `zen` in the head line and stops the previews.
+  A list key you had moved to `z` goes back to its default, since `z` now has its own action.
+
 ## [0.2.3] - 2026-11-16
 
 ### Added
@@ -193,7 +202,8 @@ Tested on Tern 0.9.10 and 0.9.11.
 - Every message between the halves carries a protocol version, and a mismatch shows a banner naming the machine to update.
 - `scripts/check.sh` runs stylua, the unit suites, a strict `luau-lsp` type check and design-rule checks.
 
-[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/starkedev/jumpr/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/starkedev/jumpr/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/starkedev/jumpr/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/starkedev/jumpr/compare/v0.2.0...v0.2.1

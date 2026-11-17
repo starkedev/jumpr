@@ -110,6 +110,14 @@
 	white-space: pre;
 }
 
+/* Zen mode: the list and its dock hold the middle of the zoomed pane, as wide as view.ZEN_COLS (96 cells). */
+[data-surface='plugin.jumpr.list'] [data-role~='deck.zen'] {
+	width: 100%;
+	max-width: 96ch;
+	margin-left: auto;
+	margin-right: auto;
+}
+
 /* The layout: count tiles on top, one card per group, a key legend at the bottom. Each status rule
    above sets --deck-c (this engine has no color-mix on currentColor), so dots, pills and tiles stay in step. */
 

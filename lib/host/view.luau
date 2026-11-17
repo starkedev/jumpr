@@ -47,6 +47,10 @@ export type Frame = {
 -- The dock input's node id (a child keyed "input" of the dock), for the focus op.
 M.INPUT_ID = "dock.input"
 
+-- How wide the list is in zen mode, in cells: it holds the middle of a zoomed pane at this width, so styles.css's
+-- `deck.zen` max-width must match.
+M.ZEN_COLS = 96
+
 -- The keys that give the cards stable node ids (a block names a child `<parent id>.<key>`): the cards column, each
 -- group's head, and each agent (prefixed, so no deck id can collide with the head's key).
 local CARDS_KEY = "cards"
@@ -158,6 +162,9 @@ function M.head_parts(f: Frame): { string }
 	end
 	if f.ui.search ~= nil and f.ui.mode ~= "input" then
 		table.insert(parts, "/" .. f.ui.search)
+	end
+	if f.ui.zen then
+		table.insert(parts, "zen")
 	end
 	table.insert(parts, M.status_label(f.health, f.age_ms))
 	return parts
@@ -710,7 +717,7 @@ local function dock(f: Frame): Node?
 	if #children == 0 then
 		return nil
 	end
-	return with_role(tern.ui.col(children), "deck.dock")
+	return with_role(tern.ui.col(children), if ui.zen then "deck.dock deck.zen" else "deck.dock")
 end
 
 function M.view(f: Frame): BlockView
@@ -725,7 +732,10 @@ function M.view(f: Frame): BlockView
 	else
 		table.insert(top, div("deck.cards", cards(f, model.index_of(f.rows, f.ui.selection)), CARDS_KEY))
 	end
-	return { main = with_role(tern.ui.col(top), "deck.main"), dock = dock(f) }
+	return {
+		main = with_role(tern.ui.col(top), if f.ui.zen then "deck.main deck.zen" else "deck.main"),
+		dock = dock(f),
+	}
 end
 
 -- The pane title.

@@ -19,6 +19,7 @@ M.VERBS = table.freeze({
 	name = true,
 	settings = true,
 	cfg = true,
+	zen = true,
 }) :: { [string]: boolean }
 
 -- The global chord actions, in settings-page order.

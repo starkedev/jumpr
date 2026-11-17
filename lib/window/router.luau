@@ -1,7 +1,8 @@
 --!strict
 -- The jumpr:// request handler. The leader window handles list requests; a cfg request goes only to the window
--- focused in its settings pane. A request is parsed and version-checked, dropped when its `r` is at or below the
--- last handled `r` for its block uid `b`, and dispatched to its verb handler.
+-- focused in its settings pane, and a zen request only to the window focused in the copy that sent it.
+-- A request is parsed and version-checked, dropped when its `r` is at or below the last handled `r` for its block
+-- uid `b`, and dispatched to its verb handler.
 -- A host opens each URL in every window attached to it, on every machine, and each machine names that host its own
 -- way, so the window finds the host with `protocol.request_host`: it acts when its focus is in a copy of the list
 -- that sent the request (the URL's deck session `sn`), and the URL's `host` by exact name is only the fallback when
@@ -20,6 +21,7 @@ local chords = require("./chords")
 local diag = require("./diag")
 local leader = require("./leader")
 local pusher = require("./pusher")
+local zen = require("./zen")
 
 local M = {}
 
@@ -511,19 +513,27 @@ local function reject_version(cx: WindowCx, url: string, version: string, from: 
 	end
 end
 
--- Handles one jumpr:// URL. A cfg request routes first to its focused settings pane; every other verb is handled
--- only by the leader window. Returns the verb handled, or nil when the request was dropped.
+-- Handles one jumpr:// URL. A cfg request routes first to its focused settings pane, and a zen request to its focused
+-- copy of the list, so only the window the key was pressed in acts; every other verb is handled only by the leader
+-- window. Returns the verb handled, or nil when the request was dropped.
 function M.handle(cx: WindowCx, url: string, pane: number?): string?
 	local url_verb = string.match(url, "^jumpr://(%a+)%?")
-	if url_verb == "cfg" then
+	if url_verb == "cfg" or url_verb == "zen" then
 		pusher.scan(cx)
-		local settings_host: string?, settings_session: string? = nil, nil
+		local from_host: string?, from_session: string? = nil, nil
 		if pane ~= nil then
-			settings_host, settings_session = pusher.settings_info(pane)
+			if url_verb == "cfg" then
+				from_host, from_session = pusher.settings_info(pane)
+			else
+				from_host, from_session = pusher.block_info(pane)
+			end
 		end
 		local focused = compat.session_focused(cx)
-		if pane == nil or settings_host == nil or settings_session == nil or focused ~= pane then
-			diag.error("router", "cfg dropped: its settings pane is not focused in this window")
+		if pane == nil or from_host == nil or from_session == nil or focused ~= pane then
+			-- A zen key acts only in the window it was pressed in; every other window sees it unfocused, as expected.
+			if url_verb == "cfg" then
+				diag.error("router", "cfg dropped: its settings pane is not focused in this window")
+			end
 			return nil
 		end
 		local version, from = protocol.check_url(url)
@@ -541,9 +551,13 @@ function M.handle(cx: WindowCx, url: string, pane: number?): string?
 			return nil
 		end
 		last_r[req.b] = req.r
-		req.host = settings_host
-		req.sn = settings_session
-		cfg(cx, req, pane)
+		req.host = from_host
+		req.sn = from_session
+		if req.verb == "zen" then
+			zen.set(cx, pane, req.fields.on == "1")
+		else
+			cfg(cx, req, pane)
+		end
 		return req.verb
 	end
 

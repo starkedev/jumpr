@@ -12,6 +12,7 @@ local agents = require("./agents")
 local diag = require("./diag")
 local leader = require("./leader")
 local pusher = require("./pusher")
+local zen = require("./zen")
 
 local M = {}
 
@@ -484,10 +485,12 @@ resume_deferred = function(cx: WindowCx, waiting: Deferred)
 	end
 end
 
--- "Jumpr: hide or show list" step one: cancels deferred actions, sets hidden and closes this host's copies.
+-- "Jumpr: hide or show list" step one: cancels deferred actions, sets hidden and closes this host's copies, giving
+-- back first the tab of a copy zoomed for zen mode.
 function M.hide(cx: WindowCx)
 	cancel_retry()
 	leader.take()
+	zen.release(cx)
 	table.clear(tried_at)
 	leader.set_hidden(true)
 	local host = compat.current_host(cx)

@@ -455,6 +455,46 @@ do
 	)
 end
 
+-- Zen: the focused copy that asks zooms its tab with Tern's "Zoom block", once; off gives the tab back. A copy that
+-- is not focused in this window asks for nothing here, so another window's key never zooms this one's pane.
+do
+	Fake.view(deck)
+	Fake.focus(copy)
+	local world = Fake.world()
+	local tab = world.panes[copy].tab :: number
+	local function zen(r: number, on: string, from: number): string?
+		return Router.handle(cx, Protocol.request_url("zen", "zen-blk", r, "devbox", { on = on }, "deck"), from)
+	end
+	check(zen(1, "1", copy) == "zen" and world.zoomed[tab] == true, "zen on zooms the copy's tab")
+	check(#world.actions_run == 1 and world.actions_run[1] == "Zoom block", "with Tern's Zoom block action")
+	check(zen(2, "1", copy) == "zen" and #world.actions_run == 1, "zen on in a zoomed tab runs nothing")
+	check(zen(3, "0", copy) == "zen" and world.zoomed[tab] == false, "zen off gives the tab back")
+	check(zen(4, "0", copy) == "zen" and #world.actions_run == 2, "zen off in a tab not zoomed runs nothing")
+	local other = Fake.pane(tab)
+	Fake.focus(other)
+	check(zen(5, "1", copy) == nil and world.zoomed[tab] == false, "an unfocused copy's zen is dropped")
+	Fake.close(other)
+
+	-- Zen turned on in one tab's copy and left from another tab's copy gives the first tab back.
+	Fake.focus(copy)
+	check(zen(6, "1", copy) == "zen" and world.zoomed[tab] == true, "zen on in the first tab")
+	local t2 = Fake.tab(deck)
+	Fake.agent(t2, "agent-z")
+	local copy2 = Fake.pane(t2, { kind = "plugin", block = Protocol.BLOCK_KIND, left = true })
+	Pusher.rebuild(cx)
+	Fake.focus(copy2)
+	check(zen(7, "0", copy2) == "zen" and world.zoomed[tab] == false, "zen off from another tab's copy unzooms it")
+	check(world.focused == copy2, "and focus stays where the key was pressed")
+
+	-- Going back from a zoomed copy gives its tab back first.
+	Fake.focus(copy)
+	check(zen(8, "1", copy) == "zen" and world.zoomed[tab] == true, "zen on again")
+	Router.handle(cx, Protocol.request_url("back", "zen-blk", 9, "devbox", {}, "deck"), copy)
+	check(world.zoomed[tab] == false, "back gives the zoomed tab back")
+	Fake.close(copy2)
+	Fake.focus(copy)
+end
+
 -- Stop: `cx.agents:stop` closes the agent's pane and the stop is answered at once. A pane it answers for but leaves
 -- open, as Tern did for a chat whose agent never started, is closed a moment later and only then answered; a pane that
 -- goes by itself meanwhile is not closed again, and one that cannot be closed is answered with an error, so the list

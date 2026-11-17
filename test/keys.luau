@@ -1773,6 +1773,53 @@ do
 	check(f.ui.show_pending == nil and kinds(f.effects):find("show") == nil, "a duplicate row emits no show")
 end
 
+-- z: zen mode asks the window to zoom the list, and no move shows an agent's tab while it is on. Esc leaves zen
+-- (before it would leave the list), and Enter on an agent leaves zen before it goes there.
+do
+	local b = block(sample())
+	select(b, { kind = "header", gid = "g1" })
+	char(b, "z")
+	local on = request_of(b.effects, "zen")
+	check(b.ui.zen == true and on ~= nil and on.on == "1", "z turns zen on and asks for the zoom")
+	char(b, "j")
+	check(b.ui.selection ~= nil and b.ui.selection.id == "a", "moves still move")
+	check(b.ui.show_pending == nil and kinds(b.effects):find("show") == nil, "but show no agent's tab")
+	key(b, "escape")
+	local off = request_of(b.effects, "zen")
+	check(b.ui.zen == false and off ~= nil and off.on == "0", "Esc leaves zen, giving the tab back")
+	check(request_of(b.effects, "back") == nil, "and stays in the list")
+	char(b, "z")
+	char(b, "z")
+	local again = request_of(b.effects, "zen")
+	check(b.ui.zen == false and again ~= nil and again.on == "0", "z again leaves zen")
+
+	char(b, "z")
+	key(b, "enter")
+	check(kinds(b.effects) == "request:zen,request:jump,render", "Enter leaves zen, then goes to the agent")
+	check(b.ui.zen == false, "zen is off once it has gone")
+
+	-- A move armed before zen does not show its agent once zen is on.
+	local c = block(sample())
+	select(c, { kind = "header", gid = "g1" })
+	char(c, "j")
+	char(c, "z")
+	send(c, { kind = "show_due", id = "a" })
+	check(request_of(c.effects, "show") == nil, "a show pending as zen starts is dropped")
+end
+
+-- Enter on an exited agent in zen leaves zen before the restart lands on it.
+do
+	local deck = sample()
+	agent(deck, "x", "g1", 3, { state = "exited", exit = 1, ended_ms = NOW - 50, cwd = "/home/a/webapp", cli = "omp" })
+	local b = block(deck)
+	select(b, { kind = "agent", id = "x" })
+	char(b, "z")
+	key(b, "enter")
+	answer(b, true)
+	check(kinds(b.effects):find("request:zen,request:start", 1, true) ~= nil, "zen off goes out before the start")
+	check(b.ui.zen == false, "and zen is off")
+end
+
 -- show_due asks for the show only while the pause is unbroken.
 do
 	local b = block(sample())

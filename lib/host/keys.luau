@@ -62,6 +62,8 @@ export type Selection = model.Selection
 -- the highlighted agent in the `N` picker, whose choices are `kinds` (read once, as it opens). order_at: where the row
 -- `V` picked up stood (in its group, or among the groups), for Esc to put it back. menu: the highlighted item's index
 -- in the `?` menu (its items are always the same, in the same order, so an index stays on the same command).
+-- zen: zen mode, on every copy (one list state): the copy it was turned on in takes its whole tab, and moves show no
+-- agent's tab.
 export type UI = {
 	mode: string,
 	purpose: string?,
@@ -85,6 +87,7 @@ export type UI = {
 	kinds: { string }?,
 	order_at: number?,
 	menu: number?,
+	zen: boolean,
 }
 
 -- The block's save() fields (the block uid is the host's).
@@ -184,6 +187,7 @@ function M.new_ui(saved: any?): UI
 		kinds = nil,
 		order_at = nil,
 		menu = nil,
+		zen = false,
 	}
 end
 
@@ -237,6 +241,7 @@ local function ui_changed(a: UI, b: UI): boolean
 		or a.n_cli ~= b.n_cli
 		or a.pick ~= b.pick
 		or a.menu ~= b.menu
+		or a.zen ~= b.zen
 end
 
 local function trim(s: string): string
@@ -335,6 +340,14 @@ local function request(s: Step, verb: string, fields: { [string]: string })
 	table.insert(s.effects, { kind = "request", verb = verb, fields = fields })
 end
 
+-- Turns zen mode on or off, and asks the window to zoom the copy the key was pressed in over its tab, or to give the
+-- tab back. A pending show is dropped: zen shows no agent's tab.
+local function set_zen(s: Step, on: boolean)
+	s.ui.zen = on
+	s.ui.show_pending = nil
+	request(s, "zen", { on = if on then "1" else "0" })
+end
+
 -- The refusal for a folder this machine does not have.
 local function folder_missing(s: Step): string
 	return M.FOLDER_MISSING .. model.host_label(s.deck)
@@ -396,11 +409,11 @@ end
 -- A move in list mode just set the selection (`before` is the selection it started from). Landing on a different
 -- `live`, non-duplicate agent row emits `show(id)` and marks it pending (that agent's tab comes to the front
 -- once no other key follows within the pause); a header, `pending`, `exited`, duplicate or parked row leaves the tab
--- as it is, and so does a move that stayed put. A parked agent has no tab to show: moving past it must not give it one,
--- which Enter does.
+-- as it is, and so does a move that stayed put, and every move in zen mode. A parked agent has no tab to show: moving
+-- past it must not give it one, which Enter does.
 local function after_move(s: Step, before: Selection?)
 	local row = selected_row(s)
-	if same_selection(before, s.ui.selection) then
+	if s.ui.zen or same_selection(before, s.ui.selection) then
 		return
 	end
 	if row ~= nil and row.kind == "agent" and row.live and not row.dup and not row.parked and row.id ~= nil then
@@ -490,6 +503,10 @@ local function enter_agent(s: Step, row: model.Row)
 		s.ui.notice = if r.cancel == true then M.REMOVING else M.STARTING
 		return
 	end
+	-- Going to an agent leaves zen first, so the tab it leaves is not left zoomed onto the list.
+	if s.ui.zen then
+		set_zen(s, false)
+	end
 	request(s, "jump", { id = id })
 end
 
@@ -555,6 +572,10 @@ local function restart(s: Step, ev: Event)
 	local fields: { [string]: string } =
 		{ id = id, cwd = nr.cwd, cli = r.cli, mode = mode, label = nr.label or "", land = "1" }
 	attach_sid(fields, mode, sid)
+	-- The window lands on the new pane in its own tab: leave zen first, as going to an agent does.
+	if s.ui.zen then
+		set_zen(s, false)
+	end
 	request(s, "start", fields)
 end
 
@@ -784,6 +805,7 @@ local MENU: { MenuSpec } = {
 	{ action = "search", label = "search" },
 	-- (per `status.ORDER` entry a "<word> only" item, then per entry an "add or drop <word>" item, go here in its order)
 	{ key = "0", label = "every status" },
+	{ action = "zen", label = "zen mode" },
 	{ action = "sources", label = "show status sources" },
 	{ action = "settings", label = "settings" },
 	{ action = "fold", label = "fold group", needs = "group" },
@@ -879,6 +901,8 @@ local function list_key(s: Step, ev: Event)
 			ui.search = nil
 		elseif ui.filter ~= nil then
 			ui.filter = nil
+		elseif ui.zen then
+			set_zen(s, false)
 		else
 			request(s, "back", {})
 		end
@@ -915,6 +939,8 @@ local function list_key(s: Step, ev: Event)
 		ui.mode = "menu"
 		ui.title = "commands"
 		ui.menu = 1
+	elseif action == "zen" then
+		set_zen(s, not ui.zen)
 	elseif action == "sources" then
 		ui.show_src = not ui.show_src
 	elseif action == "settings" then

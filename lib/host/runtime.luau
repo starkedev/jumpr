@@ -188,6 +188,9 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 		return state_for(nil)
 	end
 
+	-- The copy zen mode was turned on in (the one the window zoomed), while zen is on.
+	local zen_copy: Copy? = nil
+
 	-- A snapshot of the host's pane list and the rows built from it serves a burst of views (a key in one copy renders
 	-- every copy): it stays valid while nothing calls `touch` and for at most SNAPSHOT_TTL_MS.
 	local rev = 0
@@ -242,6 +245,16 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 	local function render_all()
 		for blk in blocks do
 			render(blk)
+		end
+	end
+
+	-- Ends zen once the copy it was turned on in is gone (the list hidden, its tab closed, a render that found it
+	-- closed), so the copies left are not kept from showing agents' tabs.
+	local function end_lost_zen()
+		if zen_copy ~= nil and not blocks[zen_copy] then
+			zen_copy = nil
+			list().ui.zen = false
+			render_all()
 		end
 	end
 
@@ -436,7 +449,11 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 			if e.kind == "save_kv" then
 				save(ensure())
 			elseif e.kind == "request" and e.verb ~= nil then
-				if not send(blk, e.verb, e.fields or {}) then
+				local fields: { [string]: string } = e.fields or {}
+				if e.verb == "zen" then
+					zen_copy = if fields.on == "1" then blk else nil
+				end
+				if not send(blk, e.verb, fields) then
 					rendered = true
 				end
 			elseif e.kind == "git_root" and e.folder ~= nil then
@@ -521,7 +538,8 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 			readonly = readonly,
 			load_banner = load_banner,
 			save_error = save_error,
-			cols = compat.cols(blk.cx) or 32,
+			-- Zen draws the list at most `view.ZEN_COLS` wide, in the middle of its pane.
+			cols = if sh.ui.zen then math.min(compat.cols(blk.cx) or 32, view.ZEN_COLS) else compat.cols(blk.cx) or 32,
 			groups = d.groups,
 		}
 	end
@@ -721,6 +739,7 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 
 		-- An agent can start or exit while the list is hidden, so the lookup runs before that return.
 		lookup_sessions(ensure(), now)
+		end_lost_zen()
 		if next(blocks) == nil then
 			-- No copy is open, so nothing shows a pill: what the follower last learned is dropped, and a list
 			-- that opens again starts from a fresh answer rather than one the lists never saw.
@@ -738,6 +757,7 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 				end
 			end
 		end
+		end_lost_zen()
 
 		-- Rows are the same for every copy: built once per tick, and only while a copy exists.
 		if next(blocks) == nil then

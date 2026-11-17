@@ -270,6 +270,13 @@ function M.actions_keys(cx: WindowCx): ({ [string]: { string } }?, string?)
 	end)
 end
 
+-- Runs a palette action by id or exact label (`cx.actions:run`).
+function M.actions_run(cx: WindowCx, id_or_label: string): (boolean, string?)
+	return act(function()
+		cx.actions:run(id_or_label)
+	end)
+end
+
 -- Binds a chord to one action (`cx.settings:bind`).
 function M.settings_bind(cx: WindowCx, chord: string, action: string): (boolean, string?)
 	return act(function()
@@ -340,6 +347,13 @@ end
 function M.session_tab_of(cx: WindowCx, pane: number): (number?, string?)
 	return call(function(): number?
 		return cx.session:tab_of(pane)
+	end)
+end
+
+-- A tab's split tree, floats, zoom and focused block (`cx.session:layout`); nil for an unknown tab.
+function M.tab_layout(cx: WindowCx, tab: number): (TabLayout?, string?)
+	return call(function(): TabLayout?
+		return cx.session:layout(tab)
 	end)
 end
 

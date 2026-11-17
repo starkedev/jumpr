@@ -6,6 +6,27 @@ Update with `tern plugin install github.com/starkedev/jumpr --force` on each mac
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-18
+
+### Changed
+
+- Claude and Codex now run as their real CLIs, `claude` and `codex`, in the agent's tab, instead of through Tern's ACP chat, so your claude.ai connectors and artifacts work.
+  Other agents, such as `copilot`, still start through the ACP chat.
+  Install `claude` and `codex` on each machine that runs those agents; they no longer need an ACP adapter.
+- Restart running Claude agents to get your connectors: exit each one in its tab, then press Enter on its row.
+  It comes back in the real CLI, in the same conversation when Jumpr knew its id, and through Claude's own conversation picker otherwise.
+  Codex agents started through the ACP chat come back in the real CLI too, through Codex's own picker.
+- Restarts are exact: a Claude agent always returns to its own conversation, by an id Jumpr gives it when you start it, and on Linux it follows a `/clear` to the new one.
+  A Codex agent returns to its own conversation once Jumpr has found it in Codex's files, after the first message; until then a restart opens Codex's own picker, and Jumpr learns the one you pick.
+  Neither ever falls back to "the last conversation in this folder", which could be another agent's.
+- Claude and Codex rows show running, waiting for you and idle from the CLI's own status, as omp's do.
+- `o` and `q` on a Claude or Codex agent type only when the agent reports itself idle, the text and then Enter; at any other time the message is held until it does, so it never lands in a startup screen, a permission question or a picker.
+- Update Jumpr on every machine together: the window's machine and the agents' machine must both run this version.
+  The two halves now speak a new protocol version, and a mismatch shows a banner naming the machine to update.
+  No stored data changes: your groups, labels and agents carry over.
+
+  Known limits: Codex's `/new` is not followed; a `CODEX_HOME` outside `~/.codex` is ignored, so Codex restarts go through the picker; a Codex you start by hand in the same folder within minutes of a Codex agent can be mistaken for its conversation; and after a restart of Tern's session daemon, a Codex agent retyped as plain `codex` starts a new conversation (see Known limitations in the README).
+
 ## [0.2.6] - 2026-11-17
 
 ### Changed
@@ -216,7 +237,8 @@ Tested on Tern 0.9.10 and 0.9.11.
 - Every message between the halves carries a protocol version, and a mismatch shows a banner naming the machine to update.
 - `scripts/check.sh` runs stylua, the unit suites, a strict `luau-lsp` type check and design-rule checks.
 
-[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/starkedev/jumpr/compare/v0.2.6...v0.3.0
 [0.2.6]: https://github.com/starkedev/jumpr/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/starkedev/jumpr/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/starkedev/jumpr/compare/v0.2.3...v0.2.4

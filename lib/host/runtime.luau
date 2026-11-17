@@ -39,10 +39,17 @@ local SHOW_PAUSE_MS = 120
 -- The pane list and rows built for one burst of views are reused for at most this long.
 local SNAPSHOT_TTL_MS = 200
 -- A conversation lookup waits this long between tries, and gives up after this many tries since the record last bound.
+-- A proven claude's session file is read again this often, so its stored conversation id follows `/clear`.
 local LOOKUP_GAP_MS = 3000
 local LOOKUP_MAX = 10
+-- A codex agent's rollout appears only at its first prompt, which can come at any time: after its quick tries its
+-- lookup goes on this often for as long as it holds no thread.
+local LOOKUP_SLOW_MS = 30000
 -- While a copy is open, the live omp agents' session files are read for running vibe worker turns this often.
 local VIBE_EVERY_MS = 5000
+-- A claude or codex agent's Enter is typed this long after its text: written together, its prompt takes both as one
+-- paste and the Enter as a new line (Codex always, Claude past 62 characters), and Codex needs 30 ms between them.
+local ENTER_DELAY_MS = 200
 -- What the list needs of the machine and of its copies' blocks: compat in production.
 export type Io = {
 	pane_list: () -> ({ Compat.PaneItem }?, string?),
@@ -388,13 +395,38 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 	local dispatch: (blk: Copy, ev: keys.Event) -> boolean
 
 	-- Types `text` and Enter into the pane bound to deck id `id` (the host's own pane, picked from its bindings). The
-	-- caller has already saved the deck, so a reload between the save and this call cannot send twice.
-	local function type_into(id: string, text: string): (boolean, string?)
-		local pane = bind.pane_for(binding, ensure(), id)
+	-- caller has already saved the deck, so a reload between the save and this call cannot send twice. A claude or
+	-- codex agent gets its Enter as a second write `ENTER_DELAY_MS` later, into the same pane only: when that pane is
+	-- no longer the agent's by then, or the write fails, the deck and notice `late` gives are kept, as for a failed
+	-- write. A reload in between loses that Enter, and the text is never typed twice.
+	local function type_into(id: string, text: string, late: queue.Late): (boolean, string?)
+		local d = ensure()
+		local pane = bind.pane_for(binding, d, id)
 		if pane == nil then
 			return false, "pane gone"
 		end
-		return compat.pane_write(pane, text .. "\r")
+		local r = d.agents[id]
+		if r == nil or not Agent.is_cli(r.cli) then
+			return compat.pane_write(pane, text .. "\r")
+		end
+		local ok, err = compat.pane_write(pane, text)
+		if not ok then
+			return false, err
+		end
+		compat.timer(ENTER_DELAY_MS, function()
+			local entered, why = false, "pane gone"
+			if bind.pane_for(binding, ensure(), id) == pane then
+				local wrote, write_err = compat.pane_write(pane, "\r")
+				entered, why = wrote, tostring(write_err)
+			end
+			if not entered then
+				local kept, notice = late(ensure(), why)
+				commit(kept)
+				list().ui.notice = notice
+				render_all()
+			end
+		end)
+		return true, nil
 	end
 
 	-- What `queue.send` and `queue.flush` need: a save that makes the deck the one held here and says whether kv took
@@ -574,33 +606,44 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 		end
 		return true
 	end
-	-- Tries since the record last bound. A proven answer stops further tries until the next bind.
+	-- Tries since the record last bound, and the proof once one is found: from then on the proven claude is followed
+	-- (`follow_sessions`) rather than looked up, until the next bind or until it is gone. `picked` says whether the
+	-- start the record last bound from opened Codex's resume picker, which decides how its thread is proven.
 	type Hunt = {
 		attempts: number,
 		last_ms: number,
 		running: boolean,
 		settled: boolean,
 		gen: number,
+		proof: sessions.Proof?,
+		picked: boolean,
 	}
 	local hunts: { [string]: Hunt } = {}
 
 	local function hunt_of(id: string): Hunt
 		local h = hunts[id]
 		if h == nil then
-			h = { attempts = 0, last_ms = 0, running = false, settled = false, gen = 0 }
+			h = { attempts = 0, last_ms = 0, running = false, settled = false, gen = 0, picked = false }
 			hunts[id] = h
 		end
 		return h
 	end
 
 	-- A bind starts the lookup again, including one that already holds a conversation id, and starts the agent's vibe
-	-- workers over: a turn its last process left running never settles. True when the agent was vibing until now.
-	local function note_bound(id: string): boolean
+	-- workers over: a turn its last process left running never settles. A bind that settles a start (`prior`, the record
+	-- before it, is pending) notes how that start ran: a codex agent with no thread that had run before restarts in
+	-- Codex's resume picker (`model.restart_mode`); any other bind (a second pane, a retyped line) keeps what it was.
+	-- True when the agent was vibing until now.
+	local function note_bound(id: string, prior: store.Record?): boolean
 		local h = hunt_of(id)
 		h.gen += 1
 		h.attempts = 0
 		h.settled = false
 		h.last_ms = 0
+		h.proof = nil
+		if prior ~= nil and prior.state == "pending" then
+			h.picked = prior.ran == true
+		end
 		local was_vibing = vibe.vibing(follower)[id] ~= nil
 		vibe.restarted(follower, id, wall())
 		return was_vibing
@@ -618,54 +661,141 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 		return taken
 	end
 
-	-- One live agent per tick, and only a kind whose conversation can be looked up. The answer arrives later.
-	-- A proven id is stored and further tries wait for the next bind; a miss retries after the gap, ten times.
+	-- Reads each due proven claude's session file again (`sessions.current`, no grep): `/clear` and a resume inside
+	-- claude change the live conversation id, and the stored id follows it unless another record holds that one. A
+	-- claude that is gone sends its agent back to the lookup, with a fresh run of tries. Returns the deck.
+	local function follow_sessions(d: store.Deck, ids: { string }, now: number, home: string): store.Deck
+		local out = d
+		for _, id in ids do
+			local h = hunt_of(id)
+			local proof = h.proof
+			if proof ~= nil then
+				h.last_ms = now
+				local sid = sessions.current(compat :: sessions.Compat, home, proof)
+				if sid == nil then
+					h.proof = nil
+					h.settled = false
+					h.attempts = 0
+				elseif not taken_except(out, id)[sid] then
+					out = model.set_session(out, id, sid, true)
+				end
+			end
+		end
+		return out
+	end
+
+	-- Whether a lookup with `attempts` tries since the last bind, the last of them `since` ms ago, is due: at once after
+	-- a bind, then every LOOKUP_GAP_MS up to LOOKUP_MAX tries; a codex agent's goes on every LOOKUP_SLOW_MS after that.
+	local function lookup_due(attempts: number, since: number, codex: boolean): boolean
+		if attempts == 0 then
+			return true
+		end
+		if attempts < LOOKUP_MAX then
+			return since >= LOOKUP_GAP_MS
+		end
+		return codex and since >= LOOKUP_SLOW_MS
+	end
+
+	-- The other codex agents in folder `cwd` that hold no thread, for `sessions.find_thread`: a thread that started in
+	-- the window of one of them, before it ended, may be its own.
+	local function codex_rivals(d: store.Deck, id: string, cwd: string): { sessions.Rival }
+		local out: { sessions.Rival } = {}
+		for other, rec in d.agents do
+			if other ~= id and rec.cli == Agent.CODEX and rec.cwd == cwd and rec.session == nil then
+				table.insert(out, { created_ms = rec.created_ms, ended_ms = rec.ended_ms })
+			end
+		end
+		return out
+	end
+
+	-- The hunt a lookup's answer belongs to, its run over; nil when the agent bound again since the lookup started.
+	local function answered(id: string, gen: number): Hunt?
+		local current = hunts[id]
+		if current == nil then
+			return nil
+		end
+		current.running = false
+		return if current.gen == gen then current else nil
+	end
+
+	-- Only a kind whose conversation can be looked up. A proven claude is followed every LOOKUP_GAP_MS; otherwise one
+	-- live agent per tick is looked up and its answer arrives later: a miss retries after the gap, ten times since the
+	-- last bind. A proof is of the pane's own claude, so its id is stored even over a different one (`/clear` moved it).
+	-- A codex agent is looked up only while it holds no thread, and a thread once stored is settled: nothing follows
+	-- it. Its rollout appears only at its first prompt, so after its ten tries it is looked up every LOOKUP_SLOW_MS.
 	local function lookup_sessions(d: store.Deck, now: number)
+		local follows: { string } = {}
 		local ids: { string } = {}
 		for id, rec in d.agents do
-			if rec.state == "live" and sessions.has(rec.cli) then
+			local codex = rec.cli == Agent.CODEX
+			if rec.state == "live" and sessions.has(rec.cli) and not (codex and rec.session ~= nil) then
 				local h = hunts[id]
 				local attempts = if h ~= nil then h.attempts else 0
 				local running = h ~= nil and h.running
 				local settled = h ~= nil and h.settled
-				local last_ms = if h ~= nil then h.last_ms else 0
-				local due = attempts == 0 or now - last_ms >= LOOKUP_GAP_MS
-				if not running and not settled and attempts < LOOKUP_MAX and due then
+				local since = now - (if h ~= nil then h.last_ms else 0)
+				if h ~= nil and h.proof ~= nil then
+					if since >= LOOKUP_GAP_MS then
+						table.insert(follows, id)
+					end
+				elseif not running and not settled and lookup_due(attempts, since, codex) then
 					table.insert(ids, id)
 				end
 			end
 		end
-		table.sort(ids)
-		local id = ids[1]
-		if id == nil then
+		if #follows == 0 and #ids == 0 then
 			return
 		end
 		local home = compat.home()
 		if home == nil then
 			return
 		end
-		local rec = d.agents[id]
+		table.sort(follows)
+		local out = follow_sessions(d, follows, now, home)
+		if commit(out) then
+			render_all()
+		end
+		table.sort(ids)
+		local id = ids[1]
+		if id == nil then
+			return
+		end
+		local rec = out.agents[id]
 		local h = hunt_of(id)
 		h.attempts += 1
 		h.last_ms = now
 		h.running = true
 		local gen = h.gen
-		local cwd = rec.cwd
-		local kind = rec.cli
-		sessions.find(compat :: sessions.Compat, home, kind, id, cwd, taken_except(d, id), function(sid: string?)
-			local current = hunts[id]
-			if current == nil or current.gen ~= gen then
-				if current ~= nil and current.running then
-					current.running = false
+		local taken = taken_except(out, id)
+		if rec.cli == Agent.CODEX then
+			local ask: sessions.Ask = {
+				cwd = rec.cwd,
+				created_ms = rec.created_ms,
+				now_ms = wall(),
+				picked = h.picked,
+				taken = taken,
+				rivals = codex_rivals(out, id, rec.cwd),
+			}
+			sessions.find_thread(compat :: sessions.Compat, home, ask, function(sid: string?)
+				local current = answered(id, gen)
+				if current == nil or sid == nil then
+					return
 				end
-				return
-			end
-			current.running = false
-			if sid == nil then
+				current.settled = true
+				if commit(model.set_session(ensure(), id, sid)) then
+					render_all()
+				end
+			end)
+			return
+		end
+		sessions.find(compat :: sessions.Compat, home, rec.cli, id, rec.cwd, taken, function(proof: sessions.Proof?)
+			local current = answered(id, gen)
+			if current == nil or proof == nil then
 				return
 			end
 			current.settled = true
-			if commit(model.set_session(ensure(), id, sid)) then
+			current.proof = proof
+			if commit(model.set_session(ensure(), id, proof.sid, true)) then
 				render_all()
 			end
 		end)
@@ -701,11 +831,12 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 	local function step()
 		touch()
 		local now, w = compat.now(), wall()
-		local d, bound = bind.apply_queued(binding, ensure())
+		local before = ensure()
+		local d, bound = bind.apply_queued(binding, before)
 		local unvibed = false
 		for _, id in bound do
 			requests.clear_start(ledger, id)
-			if note_bound(id) then
+			if note_bound(id, before.agents[id]) then
 				unvibed = true
 			end
 		end

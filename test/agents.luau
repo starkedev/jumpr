@@ -168,4 +168,60 @@ do
 	check(Agents.pane_for(HOST, ID) == OLD, "with every pane exited the lowest is the agent's")
 end
 
+-- Where an entry's state came from: Tern's agent state ("agents"), or else the pane alone ("pane"): a pane Tern holds
+-- no agent state for reads busy as working and not busy as idle, and an exited program reads from its exit status.
+-- Only the first says an agent's prompt is ready for typed text: a CLI that exited to the shell prompt reads not busy.
+do
+	local LISTED, LINE = 50, 51
+	local CLI = "def67890"
+	local listed_state = "idle"
+	local busy = false
+	local exited: number? = nil
+	local window: any = {
+		agents = {
+			list = function(_self: any): { any }
+				return {
+					{
+						pane = LISTED,
+						command = "omp --session-dir ~/.omp/deck/" .. ID,
+						cwd = "/",
+						state = listed_state,
+					},
+				}
+			end,
+		},
+	}
+	local function item(pane: number, line: string?): Compat.PaneItem
+		return {
+			pane = pane,
+			title = "codex",
+			focused = false,
+			floating = false,
+			parked = false,
+			busy = pane == LINE and busy,
+			alert = false,
+			line = line,
+			exited = if pane == LINE then exited else nil,
+		}
+	end
+	local both: { ManagedHost } = { table.clone(hosts[1]) }
+	both[1].panes = { LISTED, LINE }
+	-- The entries of the listed agent and of the pane matched only by its running line.
+	local function read(): (any, any)
+		local panes = { item(LISTED), item(LINE, "env JUMPR_ID=" .. CLI .. " codex") }
+		check(Agents.rebuild(window :: WindowCx, both, panes), "the rebuild reads both panes")
+		return Agents.entries(HOST)[ID][1], Agents.entries(HOST)[CLI][1]
+	end
+	local agent, line = read()
+	check(agent.s == "i" and agent.src == "agents", "an idle from Tern's agent state comes from the agents")
+	check(line.s == "i" and line.src == "pane", "a pane with no agent state, not busy, reads idle from the pane alone")
+	listed_state, busy = "working", true
+	agent, line = read()
+	check(agent.s == "w" and agent.src == "agents", "a working agent state comes from the agents")
+	check(line.s == "w" and line.src == "pane", "busy with no agent state reads working from the pane alone")
+	exited = 0
+	local _, gone = read()
+	check(gone.s == "x" and gone.src == "pane", "an exited program reads from the pane alone")
+end
+
 print("Agents: " .. checks .. " checks passed")

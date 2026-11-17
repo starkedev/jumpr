@@ -25,9 +25,11 @@ export type Record = {
 	ended_ms: number?,
 	stop_ms: number?,
 	last_send_ms: number?,
-	-- Which agent this record runs: "omp" or an ACP agent id.
+	-- Which agent this record runs: "omp", "claude", "codex" or an ACP agent id.
 	cli: string,
-	-- The ACP conversation id last proven by session lookup; never set for omp.
+	-- The conversation id this record resumes; never set for omp. A claude record gets its own v4 uuid at creation
+	-- (`claude --session-id`); a codex record gets its thread's UUID v7 once the rollout lookup proves it; an ACP
+	-- kind gets the id its session lookup last proved. Records from the ACP era keep what they stored.
 	session: string?,
 	-- Whether this agent has bound to a pane at least once.
 	ran: boolean?,

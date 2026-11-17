@@ -51,12 +51,16 @@ local function pane_key(pane: number): string
 end
 
 -- The entry the window sends for `pane`, with the time it last saw that entry change (none while it has seen none).
+-- Its source says where its state came from: Tern's agent state, which the agent itself reports, or else the pane
+-- alone (its program exited, or busy / not busy), which never says that an agent's prompt is ready for typed text.
 local function entry(pane: number, f: Facts): status.Entry
 	local s: string
+	local src = status.SRC_PANE
 	if f.exited ~= nil then
 		s = "x"
 	elseif f.state ~= nil and STATE_CODE[f.state] ~= nil then
 		s = STATE_CODE[f.state]
+		src = status.SRC_AGENTS
 	elseif f.busy then
 		s = "w"
 	else
@@ -75,7 +79,7 @@ local function entry(pane: number, f: Facts): status.Entry
 		u = if f.alert then true else nil,
 		f = if finished[pane] == "failed" then true else nil,
 		e = e,
-		src = "agents",
+		src = src,
 		c = if f.c > 0 then f.c else nil,
 		k = if f.parked then true else nil,
 	}

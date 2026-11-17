@@ -84,6 +84,30 @@ do
 	check(due_ids(deck, sets, status, true, nil, NOW) == "", "no bound pane is not due")
 end
 
+-- A claude or codex agent's held message is due only on an idle it reported itself (Tern's agent state), its finish
+-- seen or unseen: never on a pane that only reads not busy (a shell prompt), an idle with no source, or any other
+-- state. An omp agent still takes one on any idle.
+do
+	for _, cli in { "claude", "codex" } do
+		local deck, sets, status = sample()
+		deck.agents.a.cli = cli
+		check(due_ids(deck, sets, status, true, nil, NOW) == "a", cli .. ": an idle from Tern's agent state is due")
+		status.a = { { s = "i", u = true, src = "agents" } }
+		check(due_ids(deck, sets, status, true, nil, NOW) == "a", cli .. ": so is one with an unseen finish")
+		status.a = { { s = "i", src = "pane" } }
+		check(due_ids(deck, sets, status, true, nil, NOW) == "", cli .. ": a pane that only reads not busy is not")
+		status.a = { { s = "i" } }
+		check(due_ids(deck, sets, status, true, nil, NOW) == "", cli .. ": nor an idle with no source")
+		for _, s in { "w", "q", "x" } do
+			status.a = { { s = s, src = "agents" } }
+			check(due_ids(deck, sets, status, true, nil, NOW) == "", cli .. ": nor " .. s .. " from the agent")
+		end
+	end
+	local deck, sets, status = sample()
+	status.a = { { s = "i", src = "pane" } }
+	check(due_ids(deck, sets, status, true, nil, NOW) == "a", "an omp agent takes one on any idle, as before")
+end
+
 -- Not due while the record is pending, stopping or exited.
 do
 	for _, state in { "pending", "stopping", "exited" } do
@@ -247,6 +271,8 @@ type Host = {
 	sent: { string },
 	save_ok: boolean,
 	write_err: string?,
+	-- What each typing was told to do should an Enter typed after it fail.
+	lates: { Queue.Late },
 }
 
 local function host(): Host
@@ -258,8 +284,9 @@ local function host(): Host
 				table.insert(h.saves, d)
 				return h.save_ok
 			end,
-			write = function(id: string, text: string): (boolean, string?)
+			write = function(id: string, text: string, late: Queue.Late): (boolean, string?)
 				table.insert(h.log, "write")
+				table.insert(h.lates, late)
 				if h.write_err ~= nil then
 					return false, h.write_err
 				end
@@ -277,6 +304,7 @@ local function host(): Host
 		sent = {},
 		save_ok = true,
 		write_err = nil,
+		lates = {},
 	}
 	return h
 end
@@ -357,6 +385,43 @@ do
 	local none = host()
 	local same, nothing = Queue.flush(deck, {}, none.ports)
 	check(same == deck and not nothing and #none.log == 0, "nothing due does nothing")
+end
+
+-- An Enter typed after its text that fails (the port calls `late` with the deck held by then): an `o` message goes
+-- back as an untyped one does (the stamp it replaced, the text held with the reason, the notice), a held message is
+-- held again with its own stamp kept, so the retry waits for the guard, and either way a message held by then is
+-- kept and an agent gone by then leaves the deck as it is.
+do
+	local deck = sample()
+	deck.queue = {}
+	deck.agents.a.last_send_ms = NOW - 40000
+	deck.session.host = "devbox"
+	local h = host()
+	local out = Queue.send(deck, "a", "hello", h.ports)
+	check(#h.lates == 1 and out.agents.a.last_send_ms == NOW, "the text went, stamped, with a way back for its Enter")
+	local back, notice = h.lates[1](out, "pane gone")
+	check(back ~= out and back.agents.a.last_send_ms == NOW - 40000, "the stamp the send replaced goes back")
+	check(back.queue.a ~= nil and back.queue.a.text == "hello" and back.queue.a.err == "pane gone", "held, with why")
+	check(string.find(notice, "message for ", 1, true) == 1, "the notice names the message")
+	check(string.find(notice, "not sent on devbox: pane gone", 1, true) ~= nil, "and says why")
+	check(out.queue.a == nil and out.agents.a.last_send_ms == NOW, "the deck it was given is left as it was")
+	local queued = Store.clone(out)
+	queued.queue = Queue.set(queued.queue, "a", "newer", NOW + 100)
+	local kept = h.lates[1](queued, "pane gone")
+	check(kept.queue.a.text == "newer" and kept.queue.a.err == nil, "a message held by then is kept")
+	local gone = Store.clone(out)
+	gone.agents = {}
+	check(h.lates[1](gone, "pane gone") == gone, "an agent gone by then leaves the deck as it is")
+
+	local held = sample()
+	local flusher = host()
+	local due = Queue.sweep(held, { a = { [11] = true } }, { a = { { s = "i" } } }, true, {}, NOW)
+	local flushed = Queue.flush(held, due, flusher.ports)
+	check(#flusher.lates == 1 and flushed.queue.a == nil, "the held message went with a way back for its Enter")
+	local again, why = flusher.lates[1](flushed, "pane gone")
+	check(again.queue.a ~= nil and again.queue.a.text == "go" and again.queue.a.err == "pane gone", "held again")
+	check(again.agents.a.last_send_ms == NOW, "its own stamp stays, so the retry waits for the guard")
+	check(string.find(why, "queued message for ", 1, true) == 1, "the notice names the queued message")
 end
 
 print("Queue: " .. checks .. " checks passed")

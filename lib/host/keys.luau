@@ -146,6 +146,8 @@ M.GROUP_GONE = "group is gone"
 M.ORDER_FILTERED = "clear the search and filter to reorder"
 M.SELECT_GROUP = "select a group"
 M.SELECT_ROW = "select a row"
+-- `o` on a claude or codex agent that has not itself reported idle (`model.Row.ready`): the text is held, not typed.
+M.NOT_IDLE = "not idle yet — message queued"
 
 local ID_TRIES = 64
 
@@ -514,9 +516,10 @@ local function enter_agent(s: Step, row: model.Row)
 	request(s, "jump", { id = id })
 end
 
--- Puts the conversation id on a resume request. Every other mode leaves it off: the window reads sid only then.
+-- Puts the conversation id on a resume request and on a new start that has one (a claude agent's own id, drawn when
+-- it was created). Continue and pick leave it off.
 local function attach_sid(fields: { [string]: string }, mode: string, sid: string?)
-	if mode == "resume" and sid ~= nil then
+	if (mode == "resume" or mode == "new") and sid ~= nil then
 		fields.sid = sid
 	end
 end
@@ -524,7 +527,8 @@ end
 -- The retry Enter asked for, once its folder is checked: still a failed, pending record in the
 -- checked folder (anything else changed meanwhile, and nothing is done), and the folder is still there.
 -- The start mode is read from the stored record before failed and ended_ms are cleared. A resume also
--- carries that conversation id; other modes do not.
+-- carries that conversation id; other modes do not. A claude agent whose first start failed resumes the id it was
+-- created with, the same line its first start ran.
 local function retry(s: Step, ev: Event)
 	local id = ev.id :: string
 	local r = s.deck.agents[id]
@@ -583,9 +587,17 @@ local function restart(s: Step, ev: Event)
 	request(s, "start", fields)
 end
 
+-- Whether `o` types into an agent now rather than holding its text: its pane is `live`, and a claude or codex agent
+-- (`cli`) has itself reported idle (`row.ready`). Its trust, permission and picker screens read Enter as "confirm" and
+-- report no idle, so with no row (a filter hides it) a claude or codex agent never types.
+local function types_now(cli: boolean, row: model.Row?, live: boolean): boolean
+	return live and (not cli or (row ~= nil and row.ready == true))
+end
+
 -- The mapped send and queue actions on the selected row open a message input. Both refuse on a header ("select an
 -- agent") and on a duplicate. Send also refuses on an agent that is asking (typed text would answer its question)
--- and, when the pane is gone, with a message already held (queue edits that one). Queue opens with the held text.
+-- and, with a message already held, on one its text would only be held for (`types_now`: the pane is gone, or a
+-- claude or codex agent is not idle yet); queue edits that one. Queue opens with the held text.
 local function message_key(s: Step, row: model.Row?, action: string)
 	local ui = s.ui
 	if action ~= "send" and action ~= "queue" then
@@ -603,13 +615,14 @@ local function message_key(s: Step, row: model.Row?, action: string)
 		return
 	end
 	local id = row.id :: string
+	local r = s.deck.agents[id]
 	local held = queue.held(s.deck.queue, id)
 	if action == "send" then
 		if row.asking == true then
 			ui.notice = M.ASKING
 			return
 		end
-		if not row.live and held ~= nil then
+		if held ~= nil and not types_now(r ~= nil and Agent.is_cli(r.cli), row, row.live) then
 			ui.notice = M.HELD(s.map)
 			return
 		end
@@ -1054,7 +1067,8 @@ end
 
 -- The n start, once its group's folder is checked: only while the same group still passes and still owns that
 -- folder (anything else changed meanwhile, and nothing is done). A folder that is gone refuses with the notice;
--- nothing is stored or started.
+-- nothing is stored or started. A claude agent gets its conversation id here, drawn with the deck id and stored as
+-- its session, so its first start and every restart run the same line on that same conversation.
 local function new_checked(s: Step, ev: Event)
 	local ui = s.ui
 	local g = n_group(s, ev.gid)
@@ -1080,6 +1094,7 @@ local function new_checked(s: Step, ev: Event)
 		end
 	end
 	local cli = ev.cli or deck.settings.agent
+	local session: string? = if cli == Agent.CLAUDE then identity.new_uuid(s.rand) else nil
 	local out = store.clone(deck)
 	out.agents[id] = {
 		gid = g.gid,
@@ -1088,11 +1103,14 @@ local function new_checked(s: Step, ev: Event)
 		created_ms = s.now,
 		state = "pending",
 		cli = cli,
+		session = session,
 	}
 	s.deck = out
 	ui.selection = { kind = "agent", id = id, gid = g.gid }
 	save(s)
-	request(s, "start", { id = id, cwd = g.cwd, cli = cli, mode = "new" })
+	local fields: { [string]: string } = { id = id, cwd = g.cwd, cli = cli, mode = "new" }
+	attach_sid(fields, "new", session)
+	request(s, "start", fields)
 end
 
 -- Enter on the g folder line: a folder name `start` could never take is refused here; any other is checked on
@@ -1202,8 +1220,18 @@ local function row_of(s: Step, id: string): model.Row?
 	return nil
 end
 
--- Enter in the `o` input. Asks the host to send the text now when the agent is live (the host stamps and saves the
--- send before typing). An agent that Enter on its row would start again (exited, or a failed start) is started again
+-- Holds `text` as agent `id`'s queued message, and saves it.
+local function hold(s: Step, id: string, text: string)
+	local out = store.clone(s.deck)
+	out.queue = queue.set(s.deck.queue, id, text, s.now)
+	s.deck = out
+	save(s)
+end
+
+-- Enter in the `o` input. Asks the host to send the text now when it types into the agent now (`types_now`; the host
+-- stamps and saves the send before typing). A live claude or codex agent that has not itself reported idle (starting,
+-- working, or a pane that only reads not busy) holds the text as its queued message instead, which the queue sends
+-- once it reports idle. An agent that Enter on its row would start again (exited, or a failed start) is started again
 -- the same way, and the text is held as its queued message, which the queue sends once the agent is idle.
 -- A start that would open Tern's conversation picker is not started (a typed message could land in the picker):
 -- only the message is held, and the notice says Enter picks the conversation. Any other agent whose pane is gone
@@ -1232,18 +1260,18 @@ local function submit_send(s: Step)
 		ui.notice = M.DUPLICATE
 	elseif row ~= nil and row.asking == true then
 		ui.notice = M.ASKING
-	elseif live then
+	elseif types_now(Agent.is_cli(r.cli), row, live) then
 		table.insert(s.effects, { kind = "write", id = id, text = text })
 	elseif queue.held(s.deck.queue, id) ~= nil then
 		ui.notice = M.HELD(s.map)
+	elseif live then
+		hold(s, id, text)
+		ui.notice = M.NOT_IDLE
 	else
 		-- The mode the start would use, read from the stored record before anything changes, as `restart` and
 		-- `retry` read it: a picker start is not started here, so the held message cannot be typed into the picker.
 		local mode = model.restart_mode(r, id, s.deck)
-		local out = store.clone(s.deck)
-		out.queue = queue.set(s.deck.queue, id, text, s.now)
-		s.deck = out
-		save(s)
+		hold(s, id, text)
 		if start_purpose(r) == nil then
 			ui.notice = M.PANE_GONE
 		elseif mode == "pick" then

@@ -1,12 +1,13 @@
 --!strict
--- Messages to agents: `q` holds one until its agent is idle, and `o` and a due held message are typed through
--- `send` and `flush`, which own the order that keeps a message from going twice: stamp the record's `last_send_ms`,
--- save, and only then type; a failed save types nothing, and a failed typing rolls the stamp back (`o`) or keeps the
--- message held with its error (`q`). Each agent holds at most one message, in `deck.queue`, which lives in kv. A held
--- message is sent once, when its agent is idle on a fresh status, so a reload between the save and the typing cannot
--- send it twice (at most one message is lost, never two sent). No `tern` here: saving and typing are handed in.
--- Times here are wall-clock ms, the clock stored in `jumpr.v1`.
+-- Messages to agents: `q` holds one until its agent is idle (a claude or codex agent: until it has itself reported
+-- idle), and `o` and a due held message are typed through `send` and `flush`, which own the order that keeps a message
+-- from going twice: stamp the record's `last_send_ms`, save, and only then type; a failed save types nothing, and a
+-- failed typing rolls the stamp back (`o`) or keeps the message held with its error (`q`). Each agent holds at most
+-- one message, in `deck.queue`, which lives in kv. A held message is sent once, when its agent is idle on a fresh
+-- status, so a reload between the save and the typing cannot send it twice (at most one message is lost, never two
+-- sent). No `tern` here: saving and typing are handed in. Times here are wall-clock ms, the clock stored in `jumpr.v1`.
 
+local Agent = require("../shared/agent")
 local status = require("../shared/status")
 local model = require("./model")
 local store = require("./store")
@@ -53,7 +54,9 @@ end
 
 -- The held message of `id` when it may be typed now, else nil. `status_entry` is the pane's single status entry, not
 -- its status code, because `waiting` covers both `waiting_input` and idle with an unseen finish: only an idle entry
--- (seen or unseen, `status.idle`) takes a message, never one asking a question.
+-- (seen or unseen, `status.idle`) takes a message, never one asking a question. A claude or codex agent (`cli`) takes
+-- one only on an idle it reported itself (`status.reported_idle`): its trust, permission and picker screens read Enter
+-- as "confirm" and report no idle, and a pane that only reads not busy may be at a shell prompt.
 -- All of these must hold: the status is `fresh`; the record is `live` with a bound
 -- pane (`live`) that is not a duplicate; and there is no `last_send_ms`, or a working status was seen since it
 -- (`seen_working`, memory only, false after a reload), or `GUARD_MS` have passed since it.
@@ -61,6 +64,7 @@ function M.due(
 	q: Queue,
 	id: string,
 	status_entry: status.Entry?,
+	cli: boolean,
 	fresh: boolean,
 	live: boolean,
 	dup: boolean,
@@ -69,7 +73,10 @@ function M.due(
 	now: number
 ): store.QueueEntry?
 	local held = q[id]
-	if held == nil or status_entry == nil or not status.idle(status_entry) then
+	if held == nil or status_entry == nil then
+		return nil
+	end
+	if not (if cli then status.reported_idle(status_entry) else status.idle(status_entry)) then
 		return nil
 	end
 	if not fresh or not live or dup then
@@ -111,6 +118,7 @@ function M.sweep(
 				deck.queue,
 				id,
 				entry,
+				Agent.is_cli(record.cli),
 				fresh,
 				model.is_live(record, sets[id]),
 				model.is_dup(sets[id], entries),
@@ -149,37 +157,44 @@ function M.mark_failed(q: Queue, id: string, entry: store.QueueEntry, err: strin
 	return out
 end
 
--- An `o` message that was not typed: the record's `last_send_ms` goes back to `prev` (the stamp the send replaced),
--- and the text is kept as the agent's held message with `err` unless one is already held. A new deck.
+-- A message that was not typed, or whose Enter was not (`Late`): the record's `last_send_ms` goes back to `prev` (for
+-- `o` the stamp the send replaced; for a held message its own stamp, so the retry waits `GUARD_MS` as after
+-- `mark_failed`), and the text is kept as the agent's held message with `err` unless one is already held. A new deck;
+-- the same deck when the agent is gone by then.
 function M.unsent(deck: store.Deck, id: string, text: string, prev: number?, err: string, now: number): store.Deck
-	local out = store.clone(deck)
-	local record = out.agents[id]
-	if record ~= nil then
-		record.last_send_ms = prev
+	if deck.agents[id] == nil then
+		return deck
 	end
+	local out = store.clone(deck)
+	out.agents[id].last_send_ms = prev
 	if out.queue[id] == nil then
 		out.queue = M.mark_failed(out.queue, id, { text = text, at_ms = now }, err)
 	end
 	return out
 end
 
+-- What the host keeps when the Enter a port types after the text fails (`Ports.write`): given the deck it holds by
+-- then and the reason, the deck to save and the notice to show.
+export type Late = (deck: store.Deck, err: string) -> (store.Deck, string)
+
 -- What sending needs of the host. `save` saves a deck (it becomes the deck the host holds) and says whether kv took
--- it; `write` types text and Enter into agent `id`'s pane; `sent` tells the status side a message went to `id`, so the
+-- it; `write` types text and Enter into agent `id`'s pane, and when it types that Enter as a later second write which
+-- then fails, it keeps the deck and notice `late` gives; `sent` tells the status side a message went to `id`, so the
 -- next held one waits for a working status after it; `now` is wall-clock ms.
 export type Ports = {
 	save: (deck: store.Deck) -> boolean,
-	write: (id: string, text: string) -> (boolean, string?),
+	write: (id: string, text: string, late: Late) -> (boolean, string?),
 	sent: (id: string) -> (),
 	now: number,
 }
 
 -- Types `text` into `id` once `deck`, which records the send, is saved; a failed save types nothing.
-local function write_saved(ports: Ports, deck: store.Deck, id: string, text: string): (boolean, string?)
+local function write_saved(ports: Ports, deck: store.Deck, id: string, text: string, late: Late): (boolean, string?)
 	if not ports.save(deck) then
 		return false, "jumpr data not saved"
 	end
 	ports.sent(id)
-	return ports.write(id, text)
+	return ports.write(id, text, late)
 end
 
 local function not_sent(what: string, deck: store.Deck, id: string, err: string?): string
@@ -188,7 +203,8 @@ end
 
 -- `o`: types `text` into agent `id` now. The record is stamped and saved first; when the text could not be typed,
 -- the stamp goes back to what it was and the text is kept as the agent's held message with the error (unless one is
--- already held), and that is saved too. Returns the deck the host now holds and the notice when it was not sent.
+-- already held), and that is saved too. An Enter typed later that fails does the same to the deck held by then.
+-- Returns the deck the host now holds and the notice when it was not sent.
 function M.send(deck: store.Deck, id: string, text: string, ports: Ports): (store.Deck, string?)
 	local record = deck.agents[id]
 	if record == nil then
@@ -197,7 +213,11 @@ function M.send(deck: store.Deck, id: string, text: string, ports: Ports): (stor
 	local prev = record.last_send_ms
 	local stamped = store.clone(deck)
 	stamped.agents[id].last_send_ms = ports.now
-	local ok, err = write_saved(ports, stamped, id, text)
+	local function late(current: store.Deck, why: string): (store.Deck, string)
+		local back = M.unsent(current, id, text, prev, why, ports.now)
+		return back, not_sent("message for ", back, id, why)
+	end
+	local ok, err = write_saved(ports, stamped, id, text, late)
 	if ok then
 		return stamped, nil
 	end
@@ -207,27 +227,34 @@ function M.send(deck: store.Deck, id: string, text: string, ports: Ports): (stor
 end
 
 -- The held messages that are due (`sweep`), typed in order: each is deleted from the queue with its record stamped
--- and saved, then typed; a failed typing keeps it held with its error, saved, for the next idle. Returns the deck
--- the host now holds, whether anything changed, and the notice of the last message (sent, or why not).
+-- and saved, then typed; a failed typing keeps it held with its error, saved, for the next idle, and so does an Enter
+-- typed later that fails (unless another message is held by then). Returns the deck the host now holds, whether
+-- anything changed, and the notice of the last message (sent, or why not).
 function M.flush(deck: store.Deck, due: { Due }, ports: Ports): (store.Deck, boolean, string?)
 	local out = deck
 	local changed = false
 	local notice: string? = nil
 	for _, item in due do
-		local held = out.queue[item.id]
+		local id = item.id
+		local held = out.queue[id]
 		if held ~= nil then
-			local _, marked = M.mark_sent(out.queue, out, item.id, ports.now)
+			local text = held.text
+			local _, marked = M.mark_sent(out.queue, out, id, ports.now)
 			out = marked
 			changed = true
-			local ok, err = write_saved(ports, marked, item.id, held.text)
+			local function late(current: store.Deck, why: string): (store.Deck, string)
+				local back = M.unsent(current, id, text, ports.now, why, ports.now)
+				return back, not_sent("queued message for ", back, id, why)
+			end
+			local ok, err = write_saved(ports, marked, id, text, late)
 			if ok then
 				notice = "queued message sent"
 			else
 				local failed = store.clone(marked)
-				failed.queue = M.mark_failed(failed.queue, item.id, held, tostring(err))
+				failed.queue = M.mark_failed(failed.queue, id, held, tostring(err))
 				ports.save(failed)
 				out = failed
-				notice = not_sent("queued message for ", failed, item.id, err)
+				notice = not_sent("queued message for ", failed, id, err)
 			end
 		end
 	end

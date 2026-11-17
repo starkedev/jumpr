@@ -7,7 +7,7 @@ A keyboard-driven list of your coding agents for [Tern](https://stencil.so/tern)
 Agents sit in groups, one per project folder, and each row shows whether its agent is running, waiting for you, idle or in error.
 Moving through the list brings each agent's tab to the front, so the live agent is the preview, and Enter takes you into it.
 It works for agents on the machine in front of you and on remote machines Tern is attached to, one list per machine.
-Start omp, Claude Code or any agent Tern's ACP chat runs, and change the default agent, the chords and the list's keys from the built-in settings page.
+Start omp, Claude Code, Codex or any agent Tern's ACP chat runs, and change the default agent, the chords and the list's keys from the built-in settings page.
 
 - [Requirements](#requirements)
 - [Install](#install)
@@ -27,11 +27,14 @@ Start omp, Claude Code or any agent Tern's ACP chat runs, and change the default
 
 - Tern 0.9.18 or newer, on every machine that runs Jumpr: this version uses the ACP chat's `--resume`, `--continue` and `--sessions` flags and Tern's settings calls.
 - `omp` on the login shell's `PATH` of every machine that runs omp agents.
-- Any other agent is started through Tern's ACP chat, so the machine that runs agents needs the CLI that chat starts.
+- `claude` (Claude Code) and `codex` (Codex CLI) on the login shell's `PATH` of every machine that runs Claude or Codex agents.
+  Jumpr runs these two CLIs themselves in the agent's tab, not through Tern's ACP chat, so they need no ACP adapter.
+- Any other agent is started through Tern's ACP chat, so the machine that runs agents needs the CLI and ACP adapter that chat starts.
 - `git` on every machine you install Jumpr on, since `tern plugin install` clones the repository with it.
+- Jumpr updated together on the machine showing your Tern window and the machine running your agents (see [Install](#install)).
 - macOS or Linux; Windows is untested.
 
-The default agent is omp; the settings page changes it to any agent Tern's ACP chat runs, such as `claude`, `codex` or `copilot`.
+The default agent is omp; the settings page changes it to `claude`, `codex` or any agent Tern's ACP chat runs, such as `copilot`.
 
 ## Install
 
@@ -56,6 +59,8 @@ tern plugin install github.com/starkedev/jumpr --force
 ```
 
 Tern has no separate update command; `--force` replaces the installed copy and reloads it.
+Update every machine together.
+The window's half and the agents' half check each other's protocol version, and this version changed it: across a mismatch the list shows a banner naming the machine to update, and the window refuses the list's requests (starting, stopping and going to agents) until that machine is updated.
 [CHANGELOG.md](CHANGELOG.md) lists what changed in each version.
 
 ## Getting started
@@ -69,7 +74,7 @@ Tern has no separate update command; `--force` replaces the installed copy and r
 
 `n` starts the machine's default agent, which is omp until you change it.
 To start another agent just this once, press `N` instead: it opens a picker of agents (omp, `claude`, `codex`, `copilot`, and your default agent if it is none of them), starting on the default; `j`/`k` move, Enter starts the highlighted one in the selected group, and Esc leaves.
-To change what `n` starts, press `,` in the list to open the settings page and set the default agent (see [Settings](#settings)); any agent Tern's ACP chat runs can be the default.
+To change what `n` starts, press `,` in the list to open the settings page and set the default agent (see [Settings](#settings)); `claude`, `codex` or any agent Tern's ACP chat runs can be the default.
 
 Only agents started from Jumpr with `n` or `N` are listed.
 Agents you start yourself in a plain tab are left alone; [How it works](#how-it-works) explains why.
@@ -123,8 +128,8 @@ Ctrl+J is a poor choice of your own: on Linux and Windows it is Tern's own join 
 | `m` | Move the agent to another group |
 | `V` | Pick the row up to reorder it: an agent, or a group header among the groups. `j` / `k` move it; an agent moved past its group's last or first place goes on into the next group's top or the previous group's bottom (passing over a group being deleted, and opening a folded one). `Enter` or `V` drops it, `Esc` puts it back where it was, in its own group |
 | `d` | Stop the agent and take it off the list, or delete the group (asks `y/n`). An agent that has exited, or whose program no longer runs, comes off the list with nothing to stop. If a running agent cannot be stopped, it stays and the list says the stop failed |
-| `o` | Send a message to the agent now. On an exited agent, or one whose start failed, start it again first; the message is sent once it is idle. When its conversation has to be picked, the message is held and Enter opens the picker; it is sent once a conversation is picked and the chat is idle |
-| `q` | Queue a message, sent once the agent is idle |
+| `o` | Send a message to the agent now. On an exited agent, or one whose start failed, start it again first; the message is sent once it is idle. When its conversation has to be picked, the message is held and Enter opens the picker; it is sent once a conversation is picked and the chat is idle. A Claude Code or Codex agent is typed into only while it reports itself idle; otherwise the message is held until it does |
+| `q` | Queue a message, sent once the agent is idle (for Claude Code and Codex, once the agent reports itself idle) |
 | `z` | Zen mode: the list takes over the whole tab, centred, and moving through it shows no agent's tab. `z` leaves it, and so does Esc while Esc returns to your pane (the default); going to an agent with Enter leaves it too |
 | `i` | Show where each row's status comes from |
 | `/` | Search labels, folders and group names |
@@ -188,7 +193,7 @@ Each page names the machine its values belong to.
 
 ![The settings page on its "This window" page: a nav naming each page's machine, the Esc switch, and a chord box for each of the three global chords](docs/jumpr-settings.png)
 
-- **Agents** — the default agent `n` starts: pick a common one from the menu, or type any agent id Tern's ACP chat knows.
+- **Agents** — the default agent `n` starts: pick a common one from the menu (`claude` and `codex` run their own CLIs), or type any other agent id Tern's ACP chat knows.
   This value belongs to the machine whose list you are looking at.
 - **This window** — whether Esc returns to your pane, and the three global chords.
   Open a chord's row and press the chord, or type it as text such as `ctrl+alt+k`, then press Enter.
@@ -229,19 +234,52 @@ An omp agent starts as:
 omp --continue --session-dir ~/.omp/deck/<id>
 ```
 
+A Claude Code agent runs the real `claude` CLI, on a conversation id Jumpr draws when it makes the agent:
+
+```sh
+env JUMPR_ID=<id> sh -c 'claude --resume <uuid> || claude --session-id <uuid>'
+```
+
+The same line starts the agent and restarts it.
+`claude --resume` opens that conversation once it has messages; before its first message it refuses, and `claude --session-id` starts it fresh under that id.
+
+A Codex agent runs the real `codex` CLI:
+
+```sh
+env JUMPR_ID=<id> codex
+```
+
 Any other agent starts through Tern's ACP chat, as:
 
 ```sh
 env JUMPR_ID=<id> tern acp <agent>
 ```
 
-`<id>` is a random eight-character id Jumpr gives the agent.
+`<id>` is a random eight-character id Jumpr gives the agent, and `<uuid>` a random conversation id in the form Claude Code uses.
 Jumpr recognises its agents by that id — an omp agent carries it in its session folder under `~/.omp/deck/`, and any other agent carries it in the `JUMPR_ID` on its command — so agents started any other way are never listed.
-Restarting an exited agent with `Enter` brings back its own conversation: an omp agent resumes from its session folder, and any other agent resumes by conversation id where that can be proven, continues the last conversation of its kind in that folder when that is safe, and opens Tern's conversation picker otherwise (see [Known limitations](#known-limitations)).
+
+### Restarts
+
+Restarting an exited agent with `Enter` brings back its own conversation:
+
+- An omp agent resumes from its session folder.
+- A Claude Code agent runs its line again, on the conversation Jumpr holds for it.
+  `/clear` in Claude moves it to a new conversation id; on Linux Jumpr follows that, so a restart comes back to the conversation you were in.
+  An agent whose conversation Jumpr does not know (one an older Jumpr started through the ACP chat without learning its id) opens Claude's own conversation picker instead, as `env JUMPR_ID=<id> claude --resume`, and on Linux Jumpr learns the one you pick.
+- A Codex agent's conversation id is chosen by Codex, so Jumpr finds it in Codex's own files after the agent's first message (see [What it runs and writes](#what-it-runs-and-writes)).
+  Once found, a restart runs `env JUMPR_ID=<id> codex resume <thread id>`.
+  Until then, a restart opens Codex's own picker, `env JUMPR_ID=<id> codex resume`, and Jumpr learns the one you pick; a Codex agent whose first start never ran starts new with `codex` instead.
+- Any other agent continues the last conversation of its kind in that folder when Jumpr can prove that is safe, with `--continue`, and opens Tern's conversation picker otherwise, with `--sessions`.
+
+Claude Code and Codex agents are never restarted into "the last conversation in this folder", which could belong to another agent that is still running.
+Agents an older Jumpr started through the ACP chat as `claude` or `codex` keep their place in the list, and their next restart runs the real CLI by these rules.
+See [Known limitations](#known-limitations).
 
 ### Status
 
 Status comes from Tern's own agent tracking: running, waiting for you, idle, error or stopped.
+Claude Code and Codex report their own status to Tern, as omp does, so their rows read running, waiting for you and idle in the same way.
+A startup screen of either CLI (a folder-trust question, Codex's update offer) or its conversation picker never reports idle, so its row does not read idle while you answer it in the agent's tab.
 Each row shows its status, how long it has been in it, its folder when that is not the group's, and what is waiting on it.
 That age reads `<1m` for its first minute, then whole minutes, hours and days (`5m`, `2h`, `1d`), so the list redraws for it at most about once a minute.
 Press `i` to see where each row's status comes from, with how long ago it changed in the same units (`agents <1m`).
@@ -254,24 +292,38 @@ Moving onto it leaves your tabs as they are; `Enter` brings it back into a tab o
 
 <img src="docs/jumpr-parked.png" width="308" alt="The list with a parked agent selected, its row saying in no tab and that Enter brings it back">
 
+### Sending messages
+
+`o` and `q` type a message into the agent's pane.
+Into a Claude Code or Codex agent, Jumpr types only while Tern has the agent's own report that it is idle: the text first, then Enter about 200 ms later, because text and Enter typed together read as a paste whose Enter is a line break (in Codex always, in Claude Code past 62 characters).
+At any other time the message is held (`not idle yet — message queued`) and typed at the agent's next idle report, so it never lands in a startup screen, a permission question or a picker, where Enter would confirm whatever is highlighted.
+
 ## What it runs and writes
 
 It runs:
 
 - `omp --continue --session-dir ~/.omp/deck/<id>`, in a terminal tab, to start or restart an omp agent.
+- `env JUMPR_ID=<id> sh -c 'claude --resume <uuid> || claude --session-id <uuid>'`, in a terminal tab, to start or restart a Claude Code agent on its conversation, and `env JUMPR_ID=<id> claude --resume` to restart one whose conversation Jumpr does not know, in Claude's own picker.
+- `env JUMPR_ID=<id> codex`, in a terminal tab, to start a Codex agent; `env JUMPR_ID=<id> codex resume <thread id>` to restart one whose conversation Jumpr has found, and `env JUMPR_ID=<id> codex resume` to restart one whose conversation it has not, in Codex's own picker.
 - `env JUMPR_ID=<id> tern acp <agent>`, in a terminal tab, to start or restart any other agent through Tern's ACP chat.
-  A restart adds `--resume <session id>`, `--continue` or `--sessions` to that command.
-  While an agent runs, a second start of it (from another window, or by hand) runs a line saying so instead, and closes: two processes never share one agent.
-- `grep -q -z -x JUMPR_ID=<id> /proc/<pid>/environ`, on Linux, to prove which conversation belongs to which Claude Code agent before a restart.
+  A restart adds `--continue` or `--sessions` to that command.
+- `/bin/sh -c 'printf …'` in place of a second start of an agent that already runs (from another window, or by hand): it prints a line saying so and closes, so two processes never share one agent.
+- `grep -q -z -x JUMPR_ID=<id> /proc/<pid>/environ`, on Linux, to prove which `claude` process belongs to which Claude Code agent.
   The grep only answers yes or no; a process's environment is never read into the plugin.
-  The conversation id it proves comes from Claude Code's own session files, `~/.claude/sessions/<pid>.json`, which Jumpr reads for this lookup.
+  It runs on the `claude` process and on each process above it, up to the first without the agent's id (the pane's shell), and Jumpr reads `/proc/<pid>/stat` (parent and start time) and `/proc/<pid>/comm` (name) of the processes on that walk, so a `claude` the agent started itself is never taken for the agent's own.
+  The conversation id comes from Claude Code's own session files: Jumpr lists `~/.claude/sessions/` and reads the `<pid>.json` files there to find it, then reads that `claude`'s file again every 3 seconds while it runs, so the stored id follows `/clear`.
+- `sh -c` with `head`, to read Codex's conversation files (rollouts, `~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl`) and find a Codex agent's conversation.
+  Of each file it reads only the start of line 1, at most 2048 bytes and never past that line: the conversation's id, start time and folder, never a message.
+  It reads at most 30 files, those named for the days the agent's start can fall on; a conversation counts as the agent's only when it is the one conversation in the agent's folder that started between a minute before the agent's start and ten minutes after it, and no other Codex agent of the list could own it.
+  After a restart through Codex's picker it runs `sh -c` with `find`, `head` and `stat` over `~/.codex/sessions` instead, for at most 31 files changed since the restart, read the same way.
+  It looks once when the agent starts, then every 3 seconds for ten tries, then every 30 seconds until it finds the conversation, since Codex writes the file only at the first message.
 - `git rev-parse --git-common-dir`, to name a group after its repository.
 - `sh -c` with `wc`, `tail`, `head` and `grep`, every 5 seconds while a list is open, on each running omp agent's session files (`~/.omp/deck/<id>/`), to tell whether a `/vibe` worker of it is running.
   It follows the one file omp itself continues — the most recently modified non-empty one, as omp's `--continue` picks — and reads only what omp wrote there since the last look.
   Of that file, only omp's bookkeeping records of its vibe workers and modes (a turn starting or ending, a spawn, a tombstone, a mode change, an exit) ever reach the plugin; a conversation's messages never do.
 - `tern --version`, for the diagnostics dump.
 
-It types only the text you enter for `o` and `q`, into that agent's pane.
+It types only the text you enter for `o` and `q`, into that agent's pane; into a Claude Code or Codex agent, the text and then Enter, only while the agent reports itself idle (see [Sending messages](#sending-messages)).
 
 It writes, in Jumpr's data folder on each machine (`<state>/plugin-data/jumpr/`; `~/.local/state/tern/plugin-data/jumpr/` on Linux, `~/Library/Application Support/Tern/plugin-data/jumpr/` on macOS):
 
@@ -281,7 +333,8 @@ It writes, in Jumpr's data folder on each machine (`<state>/plugin-data/jumpr/`;
 - Diagnostics dumps (`diag-window-<ms>.json` and `diag-host-<ms>.json`), only when you run "Jumpr: diagnostics".
 
 Each omp agent's conversation lives in `~/.omp/deck/<id>`, which omp writes and Jumpr never deletes, even when you stop the agent with `d`; Jumpr reads it only for the `vibing` check above.
-Any other agent's conversation lives in its CLI's own files, which Jumpr reads only for the restart lookup above.
+A Claude Code or Codex agent's conversation lives in that CLI's own files under `~/.claude` or `~/.codex`, which Jumpr reads only for the lookups above and never writes.
+Any other agent's conversation lives where its ACP chat keeps it.
 Jumpr makes no network requests of its own.
 
 ## Uninstall
@@ -298,16 +351,22 @@ Delete that folder by hand to start fresh.
 
 ## Known limitations
 
-- Restarting an exited agent is exact, back into its own conversation, for omp always and for Claude Code on Linux.
-  Checked end to end on Linux: two Claude agents in one folder were closed and restarted, and each came back into its own conversation, with no picker.
-- Without that lookup — on macOS, or for another agent — Enter on an exited agent continues the last conversation of its kind in that folder when Jumpr can prove that is safe, and opens Tern's conversation picker otherwise.
-- Only Claude Code has been tried through the ACP path; `codex`, `copilot` and custom agent ids take the same route but are unobserved.
+- Restarting an exited agent is exact, back into its own conversation, for omp, for Claude Code, and for Codex once Jumpr has found its conversation.
+- Claude Code's `/clear` is followed on Linux only: on macOS, which has no `/proc`, a restart after `/clear` returns to the conversation the agent had before it.
+- Codex's `/new` is not followed: a restart returns to the conversation Jumpr found first.
+- Jumpr reads Codex's files under `~/.codex/sessions` only, so with `CODEX_HOME` set elsewhere it never finds a Codex agent's conversation, and every restart goes through Codex's picker.
+- A Codex you start by hand in the same folder within about ten minutes of a Codex agent's start can be taken for that agent's conversation, when the agent has not written its own yet.
+  Two Codex agents Jumpr starts in one folder at about the same time cannot be told apart: neither conversation is found, and both restart through Codex's picker.
+- On macOS, the Codex search after a picker restart reads file times with BSD `stat`, which is untested.
+- For any agent other than omp, Claude Code and Codex, Enter on an exited agent continues the last conversation of its kind in that folder when Jumpr can prove that is safe, and opens Tern's conversation picker otherwise.
+- Only Claude Code has been tried through the ACP path, before it moved to its own CLI; `copilot` and custom agent ids take that route but are unobserved.
 - `vibing` rests on the records omp 18.20 writes to its session file.
   An omp that writes them differently is never shown as vibing, and its row reads as Tern reports it.
   A worker's turn cut off by a crash leaves no end record: if Jumpr did not see the agent start again (it was loaded later), that row can read `vibing` until that worker's next turn settles or until the agent leaves `/vibe`.
 - Windows is untested; macOS and Linux are the tested platforms.
 - A restart of Tern's session daemon on an agents' machine is untested: groups and records are stored, but how agents rejoin the list afterwards has not been checked.
   Tern may bring a chat back by itself while its row still reads exited, and pressing Enter on that row before the list catches up is untested.
+  If Tern types an agent's line again after such a restart, a Claude Code agent comes back to its own conversation, but a Codex agent started with plain `codex` starts a new, empty one; its earlier conversation is untouched, and once Jumpr has found it, the agent's next restart from the list returns to it.
 - One window per machine is recommended.
   Several windows elect a leader between them, and that path is only lightly tested.
   If `window.json` cannot be written, every window acts alone, so keep to one window.
@@ -324,7 +383,10 @@ Delete that folder by hand to start fresh.
 - **An agent you started yourself is not in the list.**
   Only agents started with `n` or `N` are listed (see [How agents get into the list](#how-agents-get-into-the-list)).
 - **Enter on an exited agent opened a picker instead of its conversation.**
-  Without a proven conversation id, Jumpr continues a conversation only when it knows that one is this agent's; pick the right conversation from Tern's picker (see [Known limitations](#known-limitations)).
+  Without a proven conversation id, Jumpr never guesses for Claude Code or Codex, and continues another agent's conversation only when it knows that one is this agent's; pick the right conversation from the picker (see [Known limitations](#known-limitations)).
+  For Claude Code (on Linux) and Codex, Jumpr learns the one you pick for the next restart.
+- **A message sent with `o` to a Claude Code or Codex agent has not arrived.**
+  It is held until the agent reports itself idle: answer any question or startup screen in the agent's tab, and it is typed at the next idle.
 - **Something else looks wrong.**
   Run "Jumpr: diagnostics" from the palette.
   It writes a window dump and a host dump to Jumpr's data folder and copies their paths, which you can attach to an issue.

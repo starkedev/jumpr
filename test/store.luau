@@ -2,6 +2,8 @@
 -- Store schema, migration, copying, collection and injected I/O behavior. Pure test harness: no `tern`.
 
 local Store = require("../lib/host/store")
+local Model = require("../lib/host/model")
+local Agent = require("../lib/shared/agent")
 local checks = 0
 
 local function check(condition: boolean, message: string)
@@ -440,6 +442,74 @@ do
 	check(Store.closed_key("codex", "/work") ~= key, "another kind is another key")
 	check(Store.closed_key("claude", "") == "claude\n", "an empty folder still keeps the boundary")
 	check(Store.closed_key("", "/work") == "\n/work", "an empty kind still keeps the boundary")
+end
+
+-- ACP-era records cut over without a migration: an exited claude record with a session, one without, and a codex
+-- record that ran without one load through schema 2 (and a newer schema's display copy) field for field, and restart
+-- as the CLI agents. Claude resumes its stored id with the composite line (the CLI opens ACP-created conversations),
+-- claude without one opens the CLI's own picker, and codex that ran opens `codex resume`'s picker.
+do
+	local SID = "0b6c4f2e-8a1d-4c3e-9f7a-2d5e6b7c8a9f"
+	local function acp_deck(): Store.Deck
+		local deck = sample()
+		deck.agents = {
+			c1 = record("exited", { cli = "claude", session = SID, ran = true, exit = 0, ended_ms = NOW }),
+			c2 = record("exited", { cli = "claude", ran = true, exit = 0, ended_ms = NOW }),
+			x1 = record("exited", { cli = "codex", ran = true, exit = 0, ended_ms = NOW }),
+		}
+		return deck
+	end
+	local raw = acp_deck()
+	local deck, readonly = Store.migrate(json_copy(raw), NOW)
+	check(not readonly, "an ACP-era deck is writable schema 2")
+	for id, r in raw.agents do
+		local got = deck.agents[id]
+		for k, v in r :: any do
+			check((got :: any)[k] == v, "an ACP-era " .. id .. " record keeps " .. k)
+		end
+	end
+	local newer = json_copy(raw)
+	newer.schema = 3
+	local shown = Store.migrate(newer, NOW)
+	for id, r in raw.agents do
+		for k, v in r :: any do
+			check((shown.agents[id] :: any)[k] == v, "a newer display copy keeps ACP-era " .. id .. " " .. k)
+		end
+	end
+
+	local mode, sid = Model.restart_mode(deck.agents.c1, "c1", deck)
+	check(mode == "resume" and sid == SID, "an ACP-era claude record with a session resumes it")
+	check(
+		Agent.command("claude", "c1", mode :: Agent.Mode, sid)
+			== "env JUMPR_ID=c1 sh -c 'claude --resume " .. SID .. " || claude --session-id " .. SID .. "'",
+		"it restarts on the composite line with its stored id"
+	)
+	local mode2, sid2 = Model.restart_mode(deck.agents.c2, "c2", deck)
+	check(mode2 == "pick" and sid2 == nil, "an ACP-era claude record without a session picks")
+	check(
+		Agent.command("claude", "c2", mode2 :: Agent.Mode, sid2) == "env JUMPR_ID=c2 claude --resume",
+		"it opens the claude picker"
+	)
+	local mode3, sid3 = Model.restart_mode(deck.agents.x1, "x1", deck)
+	check(mode3 == "pick" and sid3 == nil, "an ACP-era codex record that ran picks")
+	check(
+		Agent.command("codex", "x1", mode3 :: Agent.Mode, sid3) == "env JUMPR_ID=x1 codex resume",
+		"it opens codex resume's picker"
+	)
+
+	-- A stored claude session that is not a lowercase uuid still loads, but restarts as if it had none (the picker):
+	-- it has no launch line, so resuming it would fail every restart.
+	local odd = acp_deck()
+	odd.agents.c1.session = string.upper(SID)
+	local odd_deck = Store.migrate(odd, NOW)
+	check(odd_deck.agents.c1.session == string.upper(SID), "a non-uuid ACP-era session loads unchanged")
+	local mode4, sid4 = Model.restart_mode(odd_deck.agents.c1, "c1", odd_deck)
+	check(mode4 == "pick" and sid4 == nil, "a non-uuid session restarts as if it had none")
+	check(
+		Agent.command("claude", "c1", mode4 :: Agent.Mode, sid4) == "env JUMPR_ID=c1 claude --resume",
+		"it opens the claude picker"
+	)
+	check(Agent.command("claude", "c1", "resume", "session-1") == nil, "an id that is not a uuid has no launch line")
 end
 
 print("Store: " .. checks .. " checks passed")

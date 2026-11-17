@@ -149,8 +149,21 @@ for _, want in answers do
 end
 check(Status.idle({ s = "i", u = true }), "an idle agent with an unseen finish is still idle")
 
+-- An idle the agent reported itself: an idle entry from Tern's agent state, its finish seen or unseen. Never one the
+-- pane alone reads (a shell prompt reads not busy too), one with no source, or any other state.
+do
+	check(Status.SRC_AGENTS == "agents" and Status.SRC_PANE == "pane", "the sources keep their wire values")
+	check(Status.reported_idle({ s = "i", src = Status.SRC_AGENTS }), "idle from Tern's agent state is reported")
+	check(Status.reported_idle({ s = "i", u = true, src = "agents" }), "so is one with an unseen finish")
+	check(not Status.reported_idle({ s = "i", src = Status.SRC_PANE }), "a pane that only reads not busy is not")
+	check(not Status.reported_idle({ s = "i" }), "nor an idle with no source")
+	for _, s in { "w", "q", "x" } do
+		check(not Status.reported_idle({ s = s, src = "agents" }), s .. " from the agent is no reported idle")
+	end
+end
+
 -- The three samenesses: what the window saw (change time and source aside), what is sent (everything), and what a
--- row shows (change time aside).
+-- row shows (change time and source aside: a source alone changes no status, so the agent's age runs on).
 do
 	local base: Status.Entry = { s = "i", u = true, src = "agents", c = 1000 }
 	local restamped: Status.Entry = { s = "i", u = true, src = "agents", c = 2000 }
@@ -163,7 +176,8 @@ do
 	check(Status.wire_key({ base }) ~= Status.wire_key({ other_src }), "a new source is sent again")
 	check(Status.wire_key({ base }) == Status.wire_key({ base }), "the same entries are not sent again")
 	check(Status.same_display({ base }, { restamped }), "a new change time leaves the row as it was")
-	check(not Status.same_display({ base }, { other_src }), "a new source changes the row")
+	check(Status.same_display({ base }, { other_src }), "a new source alone leaves the row as it was")
+	check(not Status.same_display({ base }, { changed }), "a cleared unseen flag changes the row")
 	check(not Status.same_display({ base }, { base, base }), "a second pane changes the row")
 	check(Status.same_display(nil, nil) and not Status.same_display({ base }, nil), "nil is only the same as nil")
 end

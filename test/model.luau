@@ -92,15 +92,56 @@ do
 	check(find(rows, "a").live and not d.live, "live needs a live record with a bound pane")
 	check(find(rows, "a").src == "agents", "an agent row carries its status source")
 
-	agent(deck, "e", "g2", 3, { cli = "claude" })
+	agent(deck, "e", "g2", 3, { cli = "copilot" })
 	sets.e = { [300] = true }
 	local panes = table.clone(PANES)
-	table.insert(panes, { pane = 300, title = "Claude Code" })
+	table.insert(panes, { pane = 300, title = "GitHub Copilot" })
 	local defaults = Model.rows(deck, panes, sets, st, NONE, "ok")
-	check(find(defaults, "e").label == "claude 3", "a default ACP title uses the CLI-aware fallback label")
+	check(find(defaults, "e").label == "copilot 3", "a default ACP title uses the CLI-aware fallback label")
 	panes[4].title = "Fix the parser"
 	local titled = Model.rows(deck, panes, sets, st, NONE, "ok")
 	check(find(titled, "e").label == "Fix the parser", "an ACP agent uses its custom pane title")
+end
+
+-- A live agent's title is cleaned for its own kind: a codex title drops its ` | <folder>`, a bare folder name is
+-- codex's default, and another agent's ` | ` stays.
+do
+	local deck, sets, st = sample()
+	agent(deck, "e", "g2", 3, { cli = "codex" })
+	agent(deck, "f", "g2", 4, { cli = "omp" })
+	sets.e = { [300] = true }
+	sets.f = { [400] = true }
+	local panes = table.clone(PANES)
+	table.insert(panes, { pane = 300, title = "⠼ Fix the bug | myrepo" })
+	table.insert(panes, { pane = 400, title = "fix A | B" })
+	local rows = Model.rows(deck, panes, sets, st, NONE, "ok")
+	check(find(rows, "e").label == "Fix the bug", "a codex title drops its folder")
+	check(find(rows, "f").label == "fix A | B", "an omp title keeps its ` | `")
+	panes[4].title = "myrepo"
+	check(
+		find(Model.rows(deck, panes, sets, st, NONE, "ok"), "e").label == "codex 3",
+		"a bare codex folder is a default"
+	)
+end
+
+-- ready: the row's one entry, on fresh status, is an idle the agent reported itself (`Status.reported_idle`), its
+-- finish seen or unseen. A pane that only reads not busy, any other state, stale status, no status and a duplicate's
+-- two entries are not.
+do
+	local deck, sets, st = sample()
+	local function ready(entries: { Status.Entry }, health: string?): boolean?
+		st.a = entries
+		return find(Model.rows(deck, PANES, sets, st, NONE, health or "ok"), "a").ready
+	end
+	local reported: Status.Entry = { s = "i", src = Status.SRC_AGENTS }
+	check(ready({ reported }) == true, "an idle from Tern's agent state is ready")
+	check(ready({ { s = "i", u = true, src = "agents" } }) == true, "so is one with an unseen finish")
+	check(ready({ { s = "i", src = Status.SRC_PANE } }) == nil, "a pane that only reads not busy is not")
+	check(ready({ { s = "w", src = "agents" } }) == nil, "a working agent is not")
+	check(ready({ { s = "q", src = "agents" } }) == nil, "an asking agent is not")
+	check(ready({ reported }, "stale") == nil, "nor an idle on stale status")
+	check(ready({}) == nil, "nor a row with no status")
+	check(ready({ reported, reported }) == nil, "nor a duplicate")
 end
 
 -- A row's label is the user's own label, else its pane's usable title, else the title its record remembers, else
@@ -112,10 +153,10 @@ do
 	deck.agents.b.title = "old parser"
 	deck.agents.c.title = "website copy"
 	deck.agents.d.title = "notes cleanup"
-	agent(deck, "e", "g2", 3, { cli = "claude", title = "Fix the parser" })
+	agent(deck, "e", "g2", 3, { cli = "copilot", title = "Fix the parser" })
 	sets.e = { [300] = true }
 	local panes = table.clone(PANES)
-	table.insert(panes, { pane = 300, title = "Claude Code" })
+	table.insert(panes, { pane = 300, title = "GitHub Copilot" })
 	local rows = Model.rows(deck, panes, sets, st, NONE, "ok")
 	check(find(rows, "a").label == "Auth Fix", "the user's own label wins over a remembered title")
 	check(find(rows, "b").label == "refactor parser", "a usable pane title wins over the remembered one")
@@ -613,8 +654,8 @@ do
 	local deck = Store.empty()
 	group(deck, "g1", "webapp")
 	group(deck, "g2", "notes")
-	local work = Store.closed_key("claude", "/work")
-	agent(deck, "a", "g1", 1, { cli = "claude", cwd = "/work", ran = true })
+	local work = Store.closed_key("copilot", "/work")
+	agent(deck, "a", "g1", 1, { cli = "copilot", cwd = "/work", ran = true })
 	agent(deck, "k", "g2", 1)
 	local deleting, stops = Model.delete_group(deck, "g1", NOW)
 	check(#stops == 1 and deleting.agents.a.state == "stopping", "the group's live agent is stopping")
@@ -721,12 +762,13 @@ do
 	check(b.code == "waiting" and b.vibing == nil, "an asking agent with a vibe worker running is waiting, not vibing")
 end
 
--- Restart mode: a proven session wins, then never-ran, then the last closed agent, otherwise the picker.
+-- Restart mode for an ACP kind: a proven session wins, then never-ran, then the last closed agent, otherwise the
+-- picker.
 do
 	local deck = Store.empty()
-	local work = Store.closed_key("claude", "/work")
+	local work = Store.closed_key("copilot", "/work")
 	agent(deck, "proved", "g1", 1, {
-		cli = "claude",
+		cli = "copilot",
 		cwd = "/work",
 		state = "exited",
 		ran = true,
@@ -734,9 +776,9 @@ do
 		exit = 0,
 		ended_ms = NOW,
 	})
-	agent(deck, "fresh", "g1", 2, { cli = "claude", cwd = "/work", state = "exited", exit = 0, ended_ms = NOW })
+	agent(deck, "fresh", "g1", 2, { cli = "copilot", cwd = "/work", state = "exited", exit = 0, ended_ms = NOW })
 	agent(deck, "marked", "g1", 3, {
-		cli = "claude",
+		cli = "copilot",
 		cwd = "/work",
 		state = "exited",
 		ran = false,
@@ -744,7 +786,7 @@ do
 		ended_ms = NOW,
 	})
 	agent(deck, "last", "g1", 4, {
-		cli = "claude",
+		cli = "copilot",
 		cwd = "/work",
 		state = "exited",
 		ran = true,
@@ -752,7 +794,7 @@ do
 		ended_ms = NOW,
 	})
 	agent(deck, "other", "g1", 5, {
-		cli = "claude",
+		cli = "copilot",
 		cwd = "/work",
 		state = "exited",
 		ran = true,
@@ -781,15 +823,63 @@ do
 	check(other_mode == "pick" and other_sid == nil, "another agent in that folder opens the picker")
 end
 
+-- Restart mode for claude and codex (real CLIs): a stored session resumes; with none they never continue, even as
+-- the last closed agent in their folder, so a restart can never land in another live agent's conversation.
+do
+	local function exited(cli: string, fields: { [string]: any }?): Store.Record
+		local deck = Store.empty()
+		local base: { [string]: any } = { cli = cli, cwd = "/work", state = "exited", ran = true, exit = 0 }
+		for k, v in (fields or {}) :: { [string]: any } do
+			base[k] = v
+		end
+		base.ended_ms = NOW
+		agent(deck, "x", "g1", 1, base)
+		return deck.agents.x
+	end
+	local deck = Store.empty()
+	deck.closed[Store.closed_key("claude", "/work")] = "x"
+	deck.closed[Store.closed_key("codex", "/work")] = "x"
+	local uuid = "0f8fad5b-d9cb-469f-a165-70867728950e"
+
+	-- The record ran (bound a pane) and is the last closed in its folder, but whether it was ever prompted is unknown:
+	-- the id drawn at creation resumes regardless, since the launch line resumes it or starts it fresh.
+	local claude_mode, claude_sid = Model.restart_mode(exited("claude", { session = uuid }), "x", deck)
+	check(claude_mode == "resume" and claude_sid == uuid, "a ran, possibly never-prompted claude session resumes")
+	local unbound_mode, unbound_sid = Model.restart_mode(exited("claude", { session = uuid, ran = false }), "x", deck)
+	check(unbound_mode == "resume" and unbound_sid == uuid, "a claude retry before it ever bound keeps its id")
+	local bare_mode, bare_sid = Model.restart_mode(exited("claude"), "x", deck)
+	check(bare_mode == "pick" and bare_sid == nil, "claude without a session opens the picker, never continues")
+	local bare_new = Model.restart_mode(exited("claude", { ran = false }), "x", deck)
+	check(bare_new == "pick", "claude without a session picks even before it bound: it has no new line without an id")
+
+	local codex_mode, codex_sid = Model.restart_mode(exited("codex", { session = uuid }), "x", deck)
+	check(codex_mode == "resume" and codex_sid == uuid, "codex with a proven thread resumes it")
+	local unproven_mode, unproven_sid = Model.restart_mode(exited("codex"), "x", deck)
+	check(unproven_mode == "pick" and unproven_sid == nil, "codex without a thread opens the picker, never continues")
+	local fresh_mode, fresh_sid = Model.restart_mode(exited("codex", { ran = false }), "x", deck)
+	check(fresh_mode == "new" and fresh_sid == nil, "a codex agent that never bound starts new")
+	local upper_mode, upper_sid = Model.restart_mode(exited("claude", { session = string.upper(uuid) }), "x", deck)
+	check(upper_mode == "pick" and upper_sid == nil, "claude with a non-uuid session picks as if it had none")
+	local odd_mode, odd_sid = Model.restart_mode(exited("codex", { session = "thread-1" }), "x", deck)
+	check(odd_mode == "pick" and odd_sid == nil, "codex that ran with a non-uuid thread picks")
+	local odd_new = Model.restart_mode(exited("codex", { session = "thread-1", ran = false }), "x", deck)
+	check(odd_new == "new", "codex that never ran with a non-uuid thread starts new")
+
+	local omp_mode = Model.restart_mode(exited("omp", { session = uuid }), "x", deck)
+	check(omp_mode == "new", "omp is unchanged: always new")
+	deck.closed[Store.closed_key("copilot", "/work")] = "x"
+	check(Model.restart_mode(exited("copilot"), "x", deck) == "continue", "an ACP kind still continues as last closed")
+end
+
 -- A non-omp close stamps its own kind and folder. A pane exit without a stop does not.
 do
 	local deck = Store.empty()
-	local work = Store.closed_key("claude", "/work")
-	local other = Store.closed_key("claude", "/other")
-	local codex = Store.closed_key("codex", "/work")
-	agent(deck, "a", "g1", 1, { cli = "claude", cwd = "/work", ran = true })
-	agent(deck, "b", "g1", 2, { cli = "claude", cwd = "/other", ran = true })
-	agent(deck, "c", "g1", 3, { cli = "codex", cwd = "/work", ran = true })
+	local work = Store.closed_key("copilot", "/work")
+	local other = Store.closed_key("copilot", "/other")
+	local gemini = Store.closed_key("gemini", "/work")
+	agent(deck, "a", "g1", 1, { cli = "copilot", cwd = "/work", ran = true })
+	agent(deck, "b", "g1", 2, { cli = "copilot", cwd = "/other", ran = true })
+	agent(deck, "c", "g1", 3, { cli = "gemini", cwd = "/work", ran = true })
 	local stamped = Model.stamp_closed(deck, "a")
 	check(stamped ~= deck and stamped.closed[work] == "a", "a non-omp close stamps a copy")
 	check(deck.closed[work] == nil, "stamping leaves the input untouched")
@@ -797,7 +887,7 @@ do
 	local folder = Model.stamp_closed(stamped, "b")
 	check(folder.closed[work] == "a" and folder.closed[other] == "b", "another folder gets its own stamp")
 	local kind = Model.stamp_closed(stamped, "c")
-	check(kind.closed[work] == "a" and kind.closed[codex] == "c", "another kind gets its own stamp")
+	check(kind.closed[work] == "a" and kind.closed[gemini] == "c", "another kind gets its own stamp")
 	local exited = Model.apply_exit(deck, "a", 0, NOW)
 	check(
 		exited.agents.a.state == "exited" and exited.agents.a.ran == true,
@@ -825,21 +915,21 @@ end
 -- A stop that deletes an ACP record stamps it closed, so an earlier exit in that folder is no longer last.
 do
 	local deck = Store.empty()
-	local work = Store.closed_key("claude", "/work")
-	local other = Store.closed_key("claude", "/other")
-	local codex = Store.closed_key("codex", "/work")
+	local work = Store.closed_key("copilot", "/work")
+	local other = Store.closed_key("copilot", "/other")
+	local gemini = Store.closed_key("gemini", "/work")
 	agent(deck, "early", "g1", 1, {
-		cli = "claude",
+		cli = "copilot",
 		cwd = "/work",
 		state = "exited",
 		ran = true,
 		exit = 0,
 		ended_ms = NOW - 5,
 	})
-	agent(deck, "late", "g1", 2, { cli = "claude", cwd = "/work", state = "stopping", stop_ms = NOW, ran = true })
-	agent(deck, "recent", "g1", 3, { cli = "claude", cwd = "/recent", ran = true, stop_ms = NOW - 1000 })
+	agent(deck, "late", "g1", 2, { cli = "copilot", cwd = "/work", state = "stopping", stop_ms = NOW, ran = true })
+	agent(deck, "recent", "g1", 3, { cli = "copilot", cwd = "/recent", ran = true, stop_ms = NOW - 1000 })
 	agent(deck, "elsewhere", "g1", 4, {
-		cli = "claude",
+		cli = "copilot",
 		cwd = "/other",
 		state = "exited",
 		ran = true,
@@ -847,7 +937,7 @@ do
 		ended_ms = NOW - 5,
 	})
 	agent(deck, "otherkind", "g1", 5, {
-		cli = "codex",
+		cli = "gemini",
 		cwd = "/work",
 		state = "exited",
 		ran = true,
@@ -856,7 +946,7 @@ do
 	})
 	deck.closed[work] = "early"
 	deck.closed[other] = "elsewhere"
-	deck.closed[codex] = "otherkind"
+	deck.closed[gemini] = "otherkind"
 	deck.queue.late = { text = "hold", at_ms = NOW }
 	local out = Model.apply_exit(deck, "late", 0, NOW)
 	check(out.agents.late == nil and out.queue.late == nil, "a stop deletes the record and its held message")
@@ -867,18 +957,18 @@ do
 	local kept, kept_sid = Model.restart_mode(out.agents.elsewhere, "elsewhere", out)
 	check(kept == "continue" and kept_sid == nil and out.closed[other] == "elsewhere", "another folder is left alone")
 	local kind, kind_sid = Model.restart_mode(out.agents.otherkind, "otherkind", out)
-	check(kind == "continue" and kind_sid == nil and out.closed[codex] == "otherkind", "another kind is left alone")
+	check(kind == "continue" and kind_sid == nil and out.closed[gemini] == "otherkind", "another kind is left alone")
 	local recent = Model.apply_exit(deck, "recent", 0, NOW)
 	check(recent.agents.recent == nil, "a live record whose stop is still inside the window is deleted")
-	check(recent.closed[Store.closed_key("claude", "/recent")] == "recent", "that delete stamps closed too")
+	check(recent.closed[Store.closed_key("copilot", "/recent")] == "recent", "that delete stamps closed too")
 end
 
 -- Reconcile exits and deletes in an arbitrary order, so it cannot leave a last-closed stamp.
 do
 	local deck = Store.empty()
-	local work = Store.closed_key("claude", "/work")
-	agent(deck, "a", "g1", 1, { cli = "claude", cwd = "/work", ran = true, pane = 1 })
-	agent(deck, "b", "g1", 2, { cli = "claude", cwd = "/work", ran = true, pane = 2 })
+	local work = Store.closed_key("copilot", "/work")
+	agent(deck, "a", "g1", 1, { cli = "copilot", cwd = "/work", ran = true, pane = 1 })
+	agent(deck, "b", "g1", 2, { cli = "copilot", cwd = "/work", ran = true, pane = 2 })
 	deck.closed[work] = "a"
 	local out = Model.reconcile_states(deck, {}, NOW)
 	check(out.agents.a.state == "exited" and out.agents.b.state == "exited", "both missing panes exit together")
@@ -891,9 +981,9 @@ do
 	check(deck.closed[work] == "a" and deck.agents.a.state == "live", "reconcile leaves its input untouched")
 
 	local mixed = Store.empty()
-	local other = Store.closed_key("claude", "/other")
+	local other = Store.closed_key("copilot", "/other")
 	agent(mixed, "early", "g1", 1, {
-		cli = "claude",
+		cli = "copilot",
 		cwd = "/work",
 		state = "exited",
 		ran = true,
@@ -901,15 +991,15 @@ do
 		ended_ms = NOW - 5,
 	})
 	agent(mixed, "late", "g1", 2, {
-		cli = "claude",
+		cli = "copilot",
 		cwd = "/work",
 		state = "stopping",
 		stop_ms = NOW,
 		ran = true,
 		pane = 9,
 	})
-	agent(mixed, "live", "g1", 3, { cli = "claude", cwd = "/work", ran = true, pane = 10 })
-	agent(mixed, "away", "g1", 4, { cli = "claude", cwd = "/other", ran = true, pane = 11 })
+	agent(mixed, "live", "g1", 3, { cli = "copilot", cwd = "/work", ran = true, pane = 10 })
+	agent(mixed, "away", "g1", 4, { cli = "copilot", cwd = "/other", ran = true, pane = 11 })
 	mixed.closed[work] = "early"
 	mixed.closed[other] = "away"
 	local cleared = Model.reconcile_states(mixed, { [11] = true }, NOW)
@@ -922,8 +1012,8 @@ do
 	check(Model.restart_mode(cleared.agents.away, "away", cleared) == "continue", "that folder still continues")
 
 	local both = Store.empty()
-	agent(both, "s1", "g1", 1, { cli = "claude", cwd = "/work", state = "stopping", ran = true, pane = 1 })
-	agent(both, "s2", "g1", 2, { cli = "claude", cwd = "/work", state = "stopping", ran = true, pane = 2 })
+	agent(both, "s1", "g1", 1, { cli = "copilot", cwd = "/work", state = "stopping", ran = true, pane = 1 })
+	agent(both, "s2", "g1", 2, { cli = "copilot", cwd = "/work", state = "stopping", ran = true, pane = 2 })
 	both.closed[work] = "s1"
 	local deleted = Model.reconcile_states(both, {}, NOW)
 	check(deleted.agents.s1 == nil and deleted.agents.s2 == nil, "both stopping records are deleted")
@@ -937,16 +1027,17 @@ do
 	check(omp_out.closed[work] == "keep", "reconciling omp does not clear an ACP stamp")
 end
 
--- set_session stores a different proven id on a live non-omp record, and leaves every other record alone.
+-- set_session stores a different proven id on a live non-omp record, and leaves every other record alone. A stored
+-- claude id is replaced only by the pane's own `claude` process (the `/clear` rule).
 do
 	local deck = Store.empty()
-	agent(deck, "a", "g1", 1, { cli = "claude", session = "old" })
+	agent(deck, "a", "g1", 1, { cli = "copilot", session = "old" })
 	local replaced = Model.set_session(deck, "a", "new")
-	check(replaced ~= deck and replaced.agents.a.session == "new", "a different id replaces the stored session")
+	check(replaced ~= deck and replaced.agents.a.session == "new", "a different id replaces an ACP agent's session")
 	check(deck.agents.a.session == "old", "set_session leaves its input untouched")
 	check(Model.set_session(replaced, "a", "new") == replaced, "an equal id leaves the deck")
 	local none = Store.empty()
-	agent(none, "b", "g1", 1, { cli = "claude" })
+	agent(none, "b", "g1", 1, { cli = "copilot" })
 	local filled = Model.set_session(none, "b", "sid")
 	check(filled.agents.b.session == "sid", "a record with no session takes the proven id")
 	check(none.agents.b.session == nil, "filling a session leaves the input untouched")
@@ -954,15 +1045,33 @@ do
 	local omp = Store.empty()
 	agent(omp, "o", "g1", 1)
 	check(Model.set_session(omp, "o", "sid") == omp, "omp never stores a session")
+	check(Model.set_session(omp, "o", "sid", true) == omp, "omp never stores one even from its own process")
 	local exited = Store.empty()
-	agent(exited, "e", "g1", 1, { cli = "claude", state = "exited", session = "old", exit = 0, ended_ms = NOW })
+	agent(exited, "e", "g1", 1, { cli = "copilot", state = "exited", session = "old", exit = 0, ended_ms = NOW })
 	check(Model.set_session(exited, "e", "new") == exited, "an exited record keeps its session")
 	local stopping = Store.empty()
-	agent(stopping, "s", "g1", 1, { cli = "claude", state = "stopping", session = "old" })
+	agent(stopping, "s", "g1", 1, { cli = "copilot", state = "stopping", session = "old" })
 	check(Model.set_session(stopping, "s", "new") == stopping, "a stopping record is left alone")
 	local pending = Store.empty()
-	agent(pending, "p", "g1", 1, { cli = "claude", state = "pending", session = "old" })
+	agent(pending, "p", "g1", 1, { cli = "copilot", state = "pending", session = "old" })
 	check(Model.set_session(pending, "p", "new") == pending, "a pending record is left alone")
+
+	local claude = Store.empty()
+	agent(claude, "c", "g1", 1, { cli = "claude", session = "old" })
+	check(Model.set_session(claude, "c", "nested") == claude, "a nested claude never replaces the stored id")
+	check(Model.set_session(claude, "c", "nested", false) == claude, "nor does any lookup not from the pane's own")
+	local cleared = Model.set_session(claude, "c", "after-clear", true)
+	check(cleared.agents.c.session == "after-clear", "the pane's own claude replaces it after /clear")
+	check(claude.agents.c.session == "old", "that replacement leaves its input untouched")
+	local claude_exited = Store.empty()
+	agent(claude_exited, "c", "g1", 1, { cli = "claude", state = "exited", session = "old", exit = 0, ended_ms = NOW })
+	check(Model.set_session(claude_exited, "c", "new", true) == claude_exited, "an exited claude keeps its session")
+	local claude_none = Store.empty()
+	agent(claude_none, "c", "g1", 1, { cli = "claude" })
+	check(Model.set_session(claude_none, "c", "sid").agents.c.session == "sid", "a claude with no session takes one")
+	local codex = Store.empty()
+	agent(codex, "x", "g1", 1, { cli = "codex", session = "old" })
+	check(Model.set_session(codex, "x", "new").agents.x.session == "new", "a codex thread is replaced as before")
 end
 
 print("Model: " .. checks .. " checks passed")

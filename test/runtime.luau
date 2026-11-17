@@ -3,6 +3,8 @@
 -- asks for (a folder check, a message typed, a tab shown), messages from the window, the pane bindings the hooks
 -- feed, the reply rule, and the pane-list snapshot. Every case builds its own list and machine.
 
+local Agent = require("../lib/shared/agent")
+local Bind = require("../lib/host/bind")
 local Compat = require("../lib/compat")
 local Fake = require("./support/fake_host")
 local Protocol = require("../lib/shared/protocol")
@@ -84,16 +86,39 @@ local function stored(m: Fake.Machine): Store.Deck
 end
 
 local HOME = "/home/dev"
+-- The pane shell the planted processes run under: it carries no agent's id.
+local SHELL_PID = "7"
+-- Claude Code conversation ids (uuids, the only shape its launch line takes).
+local SID_A = "aaaaaaaa-0000-4000-8000-00000000000a"
+local SID_B = "bbbbbbbb-0000-4000-8000-00000000000b"
+local SID_C = "cccccccc-0000-4000-8000-00000000000c"
 
--- Plants one Claude session file and, when `yes`, a grep that proves it.
+-- Plants process `pid` as `/proc` shows it: its name, its parent and its start time (`/proc/<pid>/stat`, read after
+-- the name's last `)`), and, when `carries`, the agent's id in its environment, which only grep's exit status tells.
+local function proc(m: Fake.Machine, pid: string, name: string, parent: string, carries: boolean, start: string?)
+	local stamp = start or ("1000" .. pid)
+	m.files["/proc/" .. pid .. "/stat"] =
+		string.format("%s (%s) S %s %s%s 0 0\n", pid, name, parent, string.rep("0 ", 17), stamp)
+	m.files["/proc/" .. pid .. "/comm"] = name .. "\n"
+	if carries then
+		m.grep[pid] = 0
+	else
+		m.grep[pid] = nil
+	end
+end
+
+-- Plants one Claude session file and, when `yes`, its `claude` carrying the agent's id as the pane shell's child, as
+-- `sh` leaves it on a fresh start.
 local function plant(m: Fake.Machine, pid: string, sid: string, cwd: string, yes: boolean)
 	m.home = HOME
 	m.files[HOME .. "/.claude/sessions/" .. pid .. ".json"] = m.json({ sessionId = sid, cwd = cwd })
 	if yes then
-		m.grep[pid] = 0
+		proc(m, SHELL_PID, "fish", "1", false)
+		proc(m, pid, "claude", SHELL_PID, true)
 	end
 end
 
+-- A pane running the ACP chat a claude agent ran before it ran as its CLI, still bound after the update.
 local function spawn_claude(list: Runtime.Runtime, m: Fake.Machine, pane: number, id: string)
 	m.panes[pane] = true
 	list.spawn({
@@ -101,6 +126,17 @@ local function spawn_claude(list: Runtime.Runtime, m: Fake.Machine, pane: number
 		args = { "-c", "env JUMPR_ID=" .. id .. " tern acp claude" },
 		env = { TERN_PANE = tostring(pane) },
 	})
+end
+
+-- The Claude Code line the window runs for claude agent `id` on conversation `sid`.
+local function claude_line(id: string, sid: string): string
+	return Agent.command("claude", id, "new", sid) :: string
+end
+
+-- A pane the window started with `line`, as Tern's spawn filter sees it: the pane shell running it.
+local function spawn_line(list: Runtime.Runtime, m: Fake.Machine, pane: number, line: string): Bind.Replace?
+	m.panes[pane] = true
+	return list.spawn({ program = "/bin/fish", args = { "-c", line }, env = { TERN_PANE = tostring(pane) } })
 end
 
 -- One group and one claude record. Fields override the pending start.
@@ -351,6 +387,138 @@ do
 	check(stored(m).queue["agent-a"] == nil, "and clears the hold")
 end
 
+-- Machine devbox's deck with agent-a (pane 11) running as `cli`; agent-b (pane 12) stays omp.
+local function cli_deck(cli: string): Store.Deck
+	local d = deck()
+	d.agents["agent-a"].cli = cli
+	if cli == "claude" then
+		d.agents["agent-a"].session = SID_A
+	end
+	return d
+end
+
+-- A claude or codex agent is typed into only once it has itself reported idle: while its pane only reads not busy,
+-- `o` holds the text. Then it gets the text alone, saved as sent first, and Enter as a second write 200 ms later into
+-- the same pane (written together, its prompt takes both as one paste). An omp agent still gets one write.
+do
+	for _, cli in { "claude", "codex" } do
+		local list, m = list_on(cli_deck(cli))
+		local c, cx = open(list, 101)
+		list.event(c, status_action(m, "win1", 1, { ["agent-a"] = { { s = "i", src = "pane" } } }), cx)
+		press(list, c, cx, "j")
+		press(list, c, cx, "o")
+		typed(list, c, cx, "hi")
+		press(list, c, cx, "enter")
+		check(#m.typed == 0, cli .. ": a pane that only reads not busy is not typed into")
+		check(
+			stored(m).queue["agent-a"] ~= nil and stored(m).queue["agent-a"].text == "hi",
+			cli .. ": the text is held"
+		)
+		check(list.frame(c, cx).ui.notice == "not idle yet — message queued", cli .. ": and the list says so")
+		list.event(c, status_action(m, "win1", 2, { ["agent-a"] = { { s = "i", src = "agents" } } }), cx)
+		check(#m.typed == 1 and m.typed[1].pane == 11 and m.typed[1].text == "hi", cli .. ": its idle types the text")
+		check(stored(m).queue["agent-a"] == nil, cli .. ": saved as sent before it went")
+		m.advance(199)
+		check(#m.typed == 1, cli .. ": no Enter with it")
+		m.advance(1)
+		check(#m.typed == 2 and m.typed[2].pane == 11 and m.typed[2].text == "\r", cli .. ": Enter 200 ms later")
+
+		press(list, c, cx, "o")
+		typed(list, c, cx, "more")
+		press(list, c, cx, "enter")
+		check(#m.typed == 3 and m.typed[3].text == "more", cli .. ": o on its reported idle types the text at once")
+		check(stored(m).agents["agent-a"].last_send_ms == Fake.wall(m.now), cli .. ": the send is recorded with it")
+		m.advance(200)
+		check(#m.typed == 4 and m.typed[4].pane == 11 and m.typed[4].text == "\r", cli .. ": then its Enter")
+
+		press(list, c, cx, "j")
+		press(list, c, cx, "o")
+		typed(list, c, cx, "ok")
+		press(list, c, cx, "enter")
+		m.advance(1000)
+		check(#m.typed == 5 and m.typed[5].pane == 12 and m.typed[5].text == "ok\r", "omp still gets one write")
+	end
+end
+
+-- The pane gone before the Enter (closed, or its program exited), or the Enter's write failing: no Enter is typed
+-- anywhere, and the message comes back as a failed `o` does: the send's stamp rolled back, the text held with why,
+-- and the list says so.
+do
+	-- Agent-a of kind `cli`, idle as it reported; `o` types "hi" into it, then `between` runs before the Enter is due.
+	local function sent_then(
+		cli: string,
+		between: (Runtime.Runtime, Fake.Machine) -> ()
+	): (Fake.Machine, string?, number)
+		local list, m = list_on(cli_deck(cli))
+		local c, cx, b = open(list, 101)
+		list.event(c, status_action(m, "win1", 1, { ["agent-a"] = { { s = "i", src = "agents" } } }), cx)
+		press(list, c, cx, "j")
+		press(list, c, cx, "o")
+		typed(list, c, cx, "hi")
+		press(list, c, cx, "enter")
+		check(#m.typed == 1 and m.typed[1].text == "hi", cli .. ": the text goes")
+		local renders = b.renders
+		between(list, m)
+		m.advance(200)
+		return m, list.frame(c, cx).ui.notice, b.renders - renders
+	end
+	local cases = {
+		{
+			name = "a closed pane",
+			cli = "claude",
+			why = "pane gone",
+			between = function(list: Runtime.Runtime, m: Fake.Machine)
+				m.panes[11] = nil
+				list.tick()
+			end,
+		},
+		{
+			name = "a pane whose program exited",
+			cli = "codex",
+			why = "pane gone",
+			between = function(list: Runtime.Runtime, _m: Fake.Machine)
+				list.pane_exited({ pane = 11, status = 0 })
+			end,
+		},
+		{
+			name = "a failed write",
+			cli = "claude",
+			why = "pane 11 is gone",
+			between = function(_list: Runtime.Runtime, m: Fake.Machine)
+				m.write_fails = true
+			end,
+		},
+	}
+	for _, case in cases do
+		local m, notice, renders = sent_then(case.cli, case.between)
+		check(#m.typed == 1, case.name .. ": no Enter is typed")
+		local held = stored(m).queue["agent-a"]
+		check(held ~= nil and held.text == "hi" and held.err == case.why, case.name .. ": the text is held with why")
+		check(stored(m).agents["agent-a"].last_send_ms == nil, case.name .. ": the send's stamp goes back")
+		local said = "message for agent-a not sent on devbox: " .. case.why
+		check(notice == said and renders > 0, case.name .. ": the list says so: " .. tostring(notice))
+	end
+end
+
+-- A reload between the text and its Enter never sends the message twice: the deck saved before the text holds no
+-- message, so the reloaded list types nothing again (the Enter went with the old timer).
+do
+	local list, m = list_on(cli_deck("codex"))
+	local c, cx = open(list, 101)
+	press(list, c, cx, "j")
+	press(list, c, cx, "q")
+	typed(list, c, cx, "later")
+	press(list, c, cx, "enter")
+	list.event(c, status_action(m, "win1", 1, { ["agent-a"] = { { s = "i", src = "agents" } } }), cx)
+	check(#m.typed == 1 and m.typed[1].text == "later", "the held message's text goes")
+	local again, m2 = list_on(stored(m))
+	local c2, cx2 = open(again, 101)
+	again.event(c2, status_action(m2, "win1", 1, { ["agent-a"] = { { s = "i", src = "agents" } } }), cx2)
+	again.tick()
+	m2.advance(1000)
+	check(#m2.typed == 0, "the reloaded list types nothing again")
+end
+
 -- The window pushes one agent's change to every copy, and a full snapshot to every copy every 30 s: a change
 -- renders each copy once, and a message that changes nothing the rows show renders none — not one render per copy
 -- per message, which with many copies cost more than the list could keep up with.
@@ -521,7 +689,7 @@ do
 	check(ok and reason == nil and #cfgs == 1, "a cfg request is opened")
 	check(
 		string.sub(b.opened[1], 1, 12) == "jumpr://cfg?"
-			and cfg.p == 3
+			and cfg.p == Protocol.P
 			and cfg.fields.op == "read"
 			and cfg.b == sender.b,
 		"the cfg URL carries the protocol, operation and settings sender"
@@ -970,35 +1138,41 @@ do
 	)
 end
 
--- The same duplicate guard covers ACP identities carried by JUMPR_ID: the first process binds and the second is
--- replaced, so only one pane runs the agent.
+-- The same duplicate guard covers every identity carried by JUMPR_ID: an ACP chat, Claude Code's line (its `sh -c`
+-- included) and the Codex CLI. The first process binds and a second spawn of that line for the running agent is
+-- replaced, so only one pane runs the agent and nothing it would start runs twice.
 do
-	local d = deck()
-	d.agents.abcdefgh = record(3, { state = "pending", cli = "claude" })
-	local list, m = list_on(d)
-	open(list, 101)
-	local function spawn(pane: number): any
-		m.panes[pane] = true
-		return list.spawn({
-			program = "/bin/fish",
-			args = { "-c", "env JUMPR_ID=abcdefgh tern acp claude" },
-			env = { TERN_PANE = tostring(pane) },
-		})
+	type Case = { cli: string, line: string, word: string }
+	local cases: { Case } = {
+		{ cli = "copilot", line = "env JUMPR_ID=abcdefgh tern acp copilot", word = "tern acp" },
+		{ cli = "claude", line = claude_line("abcdefgh", SID_A), word = "claude" },
+		{ cli = "codex", line = "env JUMPR_ID=abcdefgh codex", word = "codex" },
+	}
+	for _, case in cases do
+		local d = deck()
+		local session = if case.cli == "claude" then SID_A else nil
+		d.agents.abcdefgh = record(3, { state = "pending", cli = case.cli, session = session })
+		local list, m = list_on(d)
+		local c, cx = open(list, 101)
+		check(spawn_line(list, m, 21, case.line) == nil, "the first " .. case.cli .. " start runs as it is")
+		local instead = spawn_line(list, m, 22, case.line)
+		check(instead ~= nil, "a second " .. case.cli .. " start of the same agent is replaced")
+		local said = if instead ~= nil then table.concat(instead.args, " ") else ""
+		check(
+			string.find(said, "agent abcdefgh already runs in pane 21", 1, true) ~= nil
+				and string.find(said, case.word, 1, true) == nil,
+			"the replacement names the running pane and starts no " .. case.cli .. ": " .. said
+		)
+		m.panes[22] = nil
+		list.pane_exited({ pane = 22, status = 0 })
+		list.tick()
+		local r = stored(m).agents.abcdefgh
+		check(r.state == "live" and r.pane == 21, "only the first " .. case.cli .. " pane binds")
+		check(
+			list.frame(c, cx).ui.notice == "agent abcdefgh already runs in pane 21: a second start was stopped",
+			"the list says a second " .. case.cli .. " start was stopped"
+		)
 	end
-	check(spawn(21) == nil, "the first ACP start runs as it is")
-	local instead = spawn(22)
-	check(instead ~= nil, "the second ACP start of the same agent is replaced")
-	local said = if instead ~= nil then table.concat(instead.args, " ") else ""
-	check(
-		string.find(said, "agent abcdefgh already runs in pane 21", 1, true) ~= nil
-			and string.find(said, "tern acp", 1, true) == nil,
-		"the replacement names the running pane and starts no ACP process: " .. said
-	)
-	m.panes[22] = nil
-	list.pane_exited({ pane = 22, status = 0 })
-	list.tick()
-	local r = stored(m).agents.abcdefgh
-	check(r.state == "live" and r.pane == 21, "only the first ACP pane binds")
 end
 
 -- An agent whose pane exited is not running: restarting it spawns omp as it is.
@@ -1173,73 +1347,181 @@ do
 	check(f.ui.mode == "input" and f.ui.filter == "waiting", "in the search line a digit is typed, not a filter")
 end
 
--- A claude agent binds, the session file and a grep yes are reported, and within two ticks the record holds
--- that conversation. Enter after the pane exits asks to resume it.
+-- The pids whose environment grep was asked about, in order, comma-joined.
+local function pids_probed(m: Fake.Machine): string
+	local out: { string } = {}
+	for _, argv in m.probes do
+		table.insert(out, string.match(argv[6] or "", "^/proc/(%d+)/environ$") or "?")
+	end
+	return table.concat(out, ",")
+end
+
+-- A claude agent from before claude ran as its CLI (its record holds no conversation id, its pane runs the ACP chat)
+-- is still looked up. The chat's `claude` carries the agent's id under the ACP adapter (node) and `tern acp`, which
+-- carry it too, and no other `claude` is above it, so within two ticks the record holds its conversation. Enter
+-- after the pane exits resumes it in Claude Code.
 do
 	local id = "abcdefgh"
 	local list, m = list_on(claude_deck(id))
-	plant(m, "42", "sessA", "/work", true)
+	plant(m, "42", SID_A, "/work", false)
+	proc(m, SHELL_PID, "fish", "1", false)
+	proc(m, "8", "tern", SHELL_PID, true)
+	proc(m, "9", "node-MainThread", "8", true)
+	proc(m, "42", "claude", "9", true)
 	local c, cx, b = open(list, 101)
 	spawn_claude(list, m, 21, id)
 	list.tick()
 	list.tick()
-	check(stored(m).agents[id].session == "sessA", "within two ticks the record holds the proven session")
+	check(stored(m).agents[id].session == SID_A, "within two ticks the record holds the proven session")
+	check(pids_probed(m) == "42,9,8,7", "the claude, then each ancestor up to the pane shell: " .. pids_probed(m))
 	m.panes[21] = nil
 	list.pane_exited({ pane = 21, status = 0 })
 	local fields = restart_fields(list, c, cx, b, m)
-	check(fields ~= nil and fields.mode == "resume" and fields.sid == "sessA", "Enter after exit requests mode=resume")
+	check(fields ~= nil and fields.mode == "resume" and fields.sid == SID_A, "Enter after exit requests mode=resume")
+	check(
+		fields ~= nil and Agent.command(fields.cli, id, "resume", fields.sid) == claude_line(id, SID_A),
+		"which runs Claude Code on that conversation"
+	)
 end
 
 -- The same lookup runs while no list copy is open, and Enter after that still asks to resume.
 do
 	local id = "abcdefgh"
 	local list, m = list_on(claude_deck(id))
-	plant(m, "42", "sessA", "/work", true)
+	plant(m, "42", SID_A, "/work", true)
 	spawn_claude(list, m, 21, id)
 	list.tick()
 	list.tick()
-	check(stored(m).agents[id].session == "sessA", "a hidden list still stores the proven session")
+	check(stored(m).agents[id].session == SID_A, "a hidden list still stores the proven session")
 	local c, cx, b = open(list, 101)
 	m.panes[21] = nil
 	list.pane_exited({ pane = 21, status = 0 })
 	local fields = restart_fields(list, c, cx, b, m)
 	check(
-		fields ~= nil and fields.mode == "resume" and fields.sid == "sessA",
+		fields ~= nil and fields.mode == "resume" and fields.sid == SID_A,
 		"Enter after a hidden lookup still requests mode=resume"
 	)
 end
 
--- A proven session stops the lookup. Binding again while the fake proves a different id replaces the stored one.
+-- A claude agent from `n` starts on the conversation id drawn for it: the pane running that line binds it, and Enter
+-- after it exits runs the very same line, so whether or not the conversation ever had a message it comes back to it.
+do
+	local d = deck()
+	d.settings.agent = "claude"
+	local list, m = list_on(d)
+	m.dirs["/work"] = true
+	local c, cx, b = open(list, 101)
+	press(list, c, cx, "n")
+	local start = requests(b, "start")[1]
+	local sid = start.fields.sid
+	check(sid == "00000000-0000-4000-8000-000000000000", "the start carries the id drawn for it: " .. tostring(sid))
+	check(stored(m).agents.aaaaaaaa.session == sid, "and the record holds it")
+	local line = Agent.command(start.fields.cli, start.fields.id, start.fields.mode :: Agent.Mode, sid)
+	check(line == claude_line("aaaaaaaa", sid), "the window runs Claude Code on it: " .. tostring(line))
+	spawn_line(list, m, 21, line :: string)
+	list.tick()
+	check(stored(m).agents.aaaaaaaa.state == "live", "the pane running that line binds the agent")
+	m.panes[21] = nil
+	list.pane_exited({ pane = 21, status = 0 })
+	local fields = restart_fields(list, c, cx, b, m)
+	check(fields ~= nil and fields.mode == "resume" and fields.sid == sid, "Enter after exit resumes that id")
+	check(
+		fields ~= nil and Agent.command(fields.cli, fields.id, "resume", fields.sid) == line,
+		"with the very same line"
+	)
+end
+
+-- A proven claude is followed: its session file is read again every 3 s, with no grep and no listing, so `/clear`
+-- (which gives the live claude a new conversation id) moves the stored id, and Enter after the pane exits resumes the
+-- new conversation. This agent resumed its conversation, so its `claude` is a child of the line's `sh` (which
+-- carries the agent's id too), a grandchild of the pane shell.
 do
 	local id = "abcdefgh"
-	local list, m = list_on(claude_deck(id))
-	plant(m, "42", "sessA", "/work", true)
-	spawn_claude(list, m, 21, id)
+	local list, m = list_on(claude_deck(id, { session = SID_A }))
+	plant(m, "31", SID_A, "/work", false)
+	proc(m, SHELL_PID, "fish", "1", false)
+	proc(m, "30", "sh", SHELL_PID, true)
+	proc(m, "31", "claude", "30", true)
+	local c, cx, b = open(list, 101)
+	spawn_line(list, m, 21, claude_line(id, SID_A))
 	list.tick()
-	check(stored(m).agents[id].session == "sessA", "the first proof is stored")
-	local probes = #m.probes
+	check(stored(m).agents[id].state == "live", "the agent binds")
+	check(pids_probed(m) == "31,30,7", "a claude under the line's sh is the pane's own: " .. pids_probed(m))
+	check(stored(m).agents[id].session == SID_A, "and its conversation is the stored one")
+	local probes, lists = #m.probes, #m.lists
+	m.files[HOME .. "/.claude/sessions/31.json"] = m.json({ sessionId = SID_B, cwd = "/work" })
+	m.advance(2999)
+	list.tick()
+	check(stored(m).agents[id].session == SID_A, "the file is not read again before 3 s")
+	m.advance(1)
+	list.tick()
+	check(stored(m).agents[id].session == SID_B, "after /clear the stored id follows the live one")
+	check(#m.probes == probes and #m.lists == lists, "following reads that one file: no grep, no listing")
+	m.panes[21] = nil
+	list.pane_exited({ pane = 21, status = 0 })
+	local fields = restart_fields(list, c, cx, b, m)
+	check(
+		fields ~= nil and fields.mode == "resume" and fields.sid == SID_B,
+		"Enter resumes the conversation /clear began"
+	)
+end
+
+-- A followed claude that is gone sends its agent back to the lookup, which proves the claude now running for it: here
+-- the agent's line ran again at the shell prompt a retyped line leaves its pane at, so the pane stayed bound.
+do
+	local id = "abcdefgh"
+	local list, m = list_on(claude_deck(id, { session = SID_A }))
+	plant(m, "31", SID_A, "/work", true)
+	spawn_line(list, m, 21, claude_line(id, SID_A))
+	list.tick()
+	check(stored(m).agents[id].session == SID_A and #m.lists == 1, "the first claude is proven")
+	m.files[HOME .. "/.claude/sessions/31.json"] = nil
+	m.files["/proc/31/stat"] = nil
+	m.files["/proc/31/comm"] = nil
+	m.grep["31"] = nil
+	plant(m, "32", SID_C, "/work", true)
 	m.advance(3000)
 	list.tick()
-	check(#m.probes == probes and stored(m).agents[id].session == "sessA", "a proven session is not looked up again")
-	m.files[HOME .. "/.claude/sessions/42.json"] = nil
-	plant(m, "99", "sessB", "/work", true)
-	list.command_started({ pane = 21, line = "env JUMPR_ID=" .. id .. " tern acp claude" })
+	check(stored(m).agents[id].session == SID_A and #m.lists == 1, "a gone claude changes nothing by itself")
 	list.tick()
-	check(stored(m).agents[id].session == "sessB", "a later bind replaces a different proof")
+	check(#m.lists == 2, "the agent is looked up again on the next tick")
+	check(stored(m).agents[id].session == SID_C, "and the claude now running for it gives the stored id")
+end
+
+-- A claude the agent ran itself (its Bash tool running `claude`) carries the agent's id too, but the agent's own
+-- claude is above it, so it never gives its conversation and the stored id stays. The pane's own claude, once its
+-- session file shows (after a /clear here), moves it, though the nested claude's file is probed first.
+do
+	local id = "abcdefgh"
+	local list, m = list_on(claude_deck(id, { session = SID_A }))
+	m.home = HOME
+	proc(m, SHELL_PID, "fish", "1", false)
+	proc(m, "31", "claude", SHELL_PID, true)
+	proc(m, "40", "bash", "31", true)
+	proc(m, "120", "claude", "40", true)
+	m.files[HOME .. "/.claude/sessions/120.json"] = m.json({ sessionId = SID_C, cwd = "/work" })
+	spawn_line(list, m, 21, claude_line(id, SID_A))
+	list.tick()
+	check(pids_probed(m) == "120,40,31", "its ancestors are asked up to the agent's own claude: " .. pids_probed(m))
+	check(stored(m).agents[id].session == SID_A, "a nested claude never replaces the stored id")
+	m.files[HOME .. "/.claude/sessions/31.json"] = m.json({ sessionId = SID_B, cwd = "/work" })
+	m.advance(3000)
+	list.tick()
+	check(pids_probed(m) == "120,40,31,120,40,31,31,7", "the nested one is refused again: " .. pids_probed(m))
+	check(stored(m).agents[id].session == SID_B, "and the pane's own claude moves the stored id")
 end
 
 -- The record's own session is not treated as taken, so a re-proof of it still greps.
 do
-	local d = claude_deck("abcdefgh", { state = "live", pane = 21, session = "sessA", ran = true })
-	d.agents.bbbbbbbb = record(2, { cli = "claude", state = "live", pane = 22, session = "sessB", ran = true })
+	local d = claude_deck("abcdefgh", { state = "live", pane = 21, session = SID_A, ran = true })
+	d.agents.bbbbbbbb = record(2, { cli = "claude", state = "live", pane = 22, session = SID_B, ran = true })
 	local list, m = list_on(d)
 	m.panes[21] = true
 	m.panes[22] = true
-	plant(m, "42", "sessA", "/work", true)
+	plant(m, "42", SID_A, "/work", true)
 	list.tick()
-	check(#m.probes == 1, "the record's own session is still probed")
-	check(m.probes[1][6] == "/proc/42/environ", "the probe is the file that holds its own session")
-	check(stored(m).agents.abcdefgh.session == "sessA", "a matching proof leaves the stored session")
+	check(pids_probed(m) == "42,7", "the file that holds its own session is probed, then its parent")
+	check(stored(m).agents.abcdefgh.session == SID_A, "a matching proof leaves the stored session")
 end
 
 -- Two live claude agents: one lookup per tick, then the other on the next tick.
@@ -1247,8 +1529,8 @@ do
 	local d = claude_deck("abcdefgh")
 	d.agents.bbbbbbbb = record(2, { cli = "claude", state = "pending" })
 	local list, m = list_on(d)
-	plant(m, "11", "sessA", "/work", true)
-	plant(m, "22", "sessB", "/work", true)
+	plant(m, "11", SID_A, "/work", true)
+	plant(m, "22", SID_B, "/work", true)
 	spawn_claude(list, m, 21, "abcdefgh")
 	spawn_claude(list, m, 22, "bbbbbbbb")
 	list.tick()
@@ -1259,15 +1541,17 @@ do
 	if stored(m).agents.bbbbbbbb.session ~= nil then
 		first += 1
 	end
-	check(#m.probes == 1 and first == 1, "one lookup runs per tick")
+	check(#m.lists == 1 and first == 1, "one lookup runs per tick")
 	list.tick()
 	check(
-		#m.probes == 2 and stored(m).agents.abcdefgh.session ~= nil and stored(m).agents.bbbbbbbb.session ~= nil,
+		#m.lists == 2 and stored(m).agents.abcdefgh.session ~= nil and stored(m).agents.bbbbbbbb.session ~= nil,
 		"the other agent is looked up on the next tick"
 	)
+	check(stored(m).agents.abcdefgh.session ~= stored(m).agents.bbbbbbbb.session, "neither takes the other's")
 end
 
--- No session file: tries wait 3 s, stop after ten, and Enter then asks to continue because the real exit stamped it.
+-- No session file: tries wait 3 s and stop after ten. A claude agent with no conversation id never continues the
+-- folder's newest one (it may be another agent's), so Enter opens the picker, though the real exit stamped it.
 do
 	local id = "abcdefgh"
 	local list, m = list_on(claude_deck(id))
@@ -1292,11 +1576,220 @@ do
 	m.panes[21] = nil
 	list.pane_exited({ pane = 21, status = 0 })
 	local fields = restart_fields(list, c, cx, b, m)
-	check(
-		fields ~= nil and fields.mode == "continue" and fields.sid == nil,
-		"Enter after a missed lookup requests continue"
-	)
+	check(fields ~= nil and fields.mode == "pick" and fields.sid == nil, "Enter after a missed lookup opens the picker")
 	check(stored(m).closed[Store.closed_key("claude", "/work")] == id, "a real pane exit stamps closed")
+end
+
+-- Codex threads live in rollout files under the sessions folder, filed by date.
+local CODEX_SESSIONS = HOME .. "/.codex/sessions"
+local DAY_MS = 24 * 60 * 60 * 1000
+
+-- A Codex thread id: a UUID v7 for a thread that started at `ms`, told apart by `n`.
+local function thread_id(ms: number, n: number): string
+	local hex = string.format("%012x", ms)
+	return string.format("%s-%s-7%03x-8000-000000000000", string.sub(hex, 1, 8), string.sub(hex, 9, 12), n)
+end
+
+-- Plants the rollout of thread `id`, which started at `ms` in folder `cwd`, under its UTC date: line 1 as Codex writes
+-- it, cut short. Returns its path.
+local function plant_thread(m: Fake.Machine, id: string, ms: number, cwd: string): string
+	local seconds = ms // 1000
+	local stamp = os.date("!%Y-%m-%dT%H:%M:%S", seconds) .. string.format(".%03dZ", ms % 1000)
+	local name = "rollout-" .. os.date("!%Y-%m-%dT%H-%M-%S", seconds) .. "-" .. id .. ".jsonl"
+	local path = CODEX_SESSIONS .. "/" .. os.date("!%Y/%m/%d", seconds) .. "/" .. name
+	m.files[path] = '{"timestamp":"'
+		.. stamp
+		.. '","type":"session_meta","payload":{"id":"'
+		.. id
+		.. '","timestamp":"'
+		.. stamp
+		.. '","cwd":"'
+		.. cwd
+		.. '","base_instructions":{"text":"You are Codex."}}}'
+	return path
+end
+
+-- Answers codex reader `n` (the n-th output) as its script would here: each rollout it names with that file's line 1,
+-- or, for the picker's search (its first argument the sessions folder), each rollout in `written`, which maps a path to
+-- its modification time in epoch seconds.
+local function answer_reader(m: Fake.Machine, n: number, written: { [string]: number }?)
+	local run = m.outputs[n]
+	local out = ""
+	if run.argv[5] == CODEX_SESSIONS then
+		local times: { [string]: number } = written or {}
+		local paths: { string } = {}
+		for path in times do
+			table.insert(paths, path)
+		end
+		table.sort(paths)
+		for _, path in paths do
+			out ..= "\030" .. string.format("%d", times[path]) .. " " .. path .. "\n" .. (m.files[path] or "")
+		end
+	else
+		for i = 6, #run.argv do
+			out ..= "\030- " .. run.argv[i] .. "\n" .. (m.files[run.argv[i]] or "")
+		end
+	end
+	run.answer(out)
+end
+
+-- The line the window runs to start codex agent `id` in `mode`.
+local function codex_line(id: string, mode: Agent.Mode, sid: string?): string
+	return Agent.command("codex", id, mode, sid) :: string
+end
+
+-- A codex agent started new runs `codex`, and its thread's rollout appears at its first prompt. Each lookup lists the
+-- date folders its start can be filed under until the rollout is there; then that rollout's line 1 (a thread started in
+-- the window, in the agent's folder) proves the thread. The record holds it from then on and is not looked up again,
+-- and Enter after the pane exits resumes it.
+do
+	local id = "abcdefgh"
+	local list, m = list_on(claude_deck(id, { cli = "codex" }))
+	m.home = HOME
+	local c, cx, b = open(list, 101)
+	spawn_line(list, m, 21, codex_line(id, "new"))
+	list.tick()
+	check(stored(m).agents[id].state == "live", "the codex agent binds")
+	check(
+		table.concat(m.lists, ",") == CODEX_SESSIONS .. "/2027/01/14," .. CODEX_SESSIONS .. "/2027/01/15",
+		"its lookup lists the date folders its start can be filed under: " .. table.concat(m.lists, ",")
+	)
+	check(#m.outputs == 0, "with no rollout there yet nothing is read")
+	local tid = thread_id(Fake.wall(0) + 5000, 1)
+	local path = plant_thread(m, tid, Fake.wall(0) + 5000, "/work")
+	m.advance(3000)
+	list.tick()
+	check(#m.outputs == 1 and m.outputs[1].argv[6] == path, "the next lookup reads the new rollout's line 1")
+	answer_reader(m, 1)
+	check(stored(m).agents[id].session == tid, "which proves the thread, and the record holds it")
+	local lists = #m.lists
+	m.advance(3000)
+	list.tick()
+	m.advance(30000)
+	list.tick()
+	check(#m.lists == lists and #m.outputs == 1, "a codex agent that holds its thread is not looked up again")
+	m.panes[21] = nil
+	list.pane_exited({ pane = 21, status = 0 })
+	local fields = restart_fields(list, c, cx, b, m)
+	check(fields ~= nil and fields.mode == "resume" and fields.sid == tid, "Enter after the pane exits resumes it")
+	check(
+		fields ~= nil and codex_line(id, "resume", fields.sid) == "env JUMPR_ID=" .. id .. " codex resume " .. tid,
+		"with codex resume on that thread"
+	)
+end
+
+-- A codex agent with no thread that ran before restarts in Codex's resume picker. The thread picked there can be any
+-- age, so its lookup is one search of the whole sessions folder for the folder's rollouts written since the restart,
+-- and the one written proves the picked thread.
+do
+	local id = "abcdefgh"
+	local list, m = list_on(claude_deck(id, { cli = "codex", state = "exited", ran = true }))
+	m.home = HOME
+	local c, cx, b = open(list, 101)
+	m.advance(60000)
+	local fields = restart_fields(list, c, cx, b, m)
+	check(fields ~= nil and fields.mode == "pick" and fields.sid == nil, "it restarts in the picker")
+	local restarted = stored(m).agents[id].created_ms
+	spawn_line(list, m, 21, codex_line(id, "pick"))
+	list.tick()
+	check(
+		#m.lists == 0 and #m.outputs == 1 and m.outputs[1].argv[5] == CODEX_SESSIONS,
+		"its lookup is one search of the sessions folder"
+	)
+	local tid = thread_id(Fake.wall(0) - 20 * DAY_MS, 1)
+	local path = plant_thread(m, tid, Fake.wall(0) - 20 * DAY_MS, "/work")
+	answer_reader(m, 1, { [path] = restarted // 1000 + 30 })
+	check(
+		stored(m).agents[id].session == tid,
+		"the folder's rollout written since the restart proves the picked thread"
+	)
+end
+
+-- A codex agent's rollout appears only at its first prompt, which can come at any time: after ten tries 3 s apart its
+-- lookup goes on every 30 s for as long as it holds no thread, and proves the thread once it is there.
+do
+	local id = "abcdefgh"
+	local list, m = list_on(claude_deck(id, { cli = "codex" }))
+	m.home = HOME
+	spawn_line(list, m, 21, codex_line(id, "new"))
+	list.tick()
+	for _ = 2, 10 do
+		m.advance(3000)
+		list.tick()
+	end
+	check(#m.lists == 20, "ten tries 3 s apart, each listing two date folders: " .. #m.lists)
+	m.advance(29999)
+	list.tick()
+	check(#m.lists == 20, "then none for 30 s")
+	m.advance(1)
+	list.tick()
+	check(#m.lists == 22, "then one every 30 s")
+	local tid = thread_id(Fake.wall(0) + 5000, 1)
+	plant_thread(m, tid, Fake.wall(0) + 5000, "/work")
+	m.advance(30000)
+	list.tick()
+	check(#m.outputs == 1, "a rollout that appeared later is read")
+	answer_reader(m, 1)
+	check(stored(m).agents[id].session == tid, "and proves the thread")
+end
+
+-- Two codex agents started together in one folder: the one thread there started in both their windows, so it may be
+-- either agent's and is proven for neither (each restarts through the picker).
+do
+	local d = claude_deck("abcdefgh", { cli = "codex" })
+	d.agents.bcdefghi = record(2, { cli = "codex", state = "pending" })
+	local list, m = list_on(d)
+	m.home = HOME
+	plant_thread(m, thread_id(Fake.wall(0) + 5000, 1), Fake.wall(0) + 5000, "/work")
+	spawn_line(list, m, 21, codex_line("abcdefgh", "new"))
+	spawn_line(list, m, 22, codex_line("bcdefghi", "new"))
+	list.tick()
+	list.tick()
+	check(#m.outputs == 2, "each agent's lookup reads the rollout, one per tick")
+	answer_reader(m, 1)
+	answer_reader(m, 2)
+	check(
+		stored(m).agents.abcdefgh.session == nil and stored(m).agents.bcdefghi.session == nil,
+		"the thread is proven for neither"
+	)
+end
+
+-- A codex agent that holds its thread is never looked up: no folder is listed and nothing is read or probed.
+do
+	local d = claude_deck("abcdefgh", { cli = "codex", state = "live", pane = 21, ran = true, session = SID_C })
+	local list, m = list_on(d)
+	m.home = HOME
+	m.panes[21] = true
+	list.tick()
+	m.advance(3000)
+	list.tick()
+	check(#m.lists == 0 and #m.outputs == 0 and #m.probes == 0, "a codex agent holding its thread is not looked up")
+end
+
+-- After a Tern daemon restart the restored pane retypes the agent's line at a login shell: no spawn names the agent
+-- (Tern's agent block has no command then), and the typed line alone binds it, Claude Code's `sh -c` line included.
+do
+	local lines: { [string]: string } = {
+		claude = claude_line("abcdefgh", SID_A),
+		codex = "env JUMPR_ID=abcdefgh codex resume 019a7d6e-2f3b-7c41-9d2e-5b6a7c8d9e0f",
+	}
+	for cli, typed_line in lines do
+		local d = claude_deck("abcdefgh", { cli = cli, state = "live", pane = 21, ran = true })
+		local list, m = list_on(d)
+		local c, cx = open(list, 101)
+		m.panes[23] = true
+		list.command_started({ pane = 23, line = typed_line })
+		list.tick()
+		local r = stored(m).agents.abcdefgh
+		check(r.state == "live" and r.pane == 23, "the retyped " .. cli .. " line binds the agent to its pane")
+		local row: any = nil
+		for _, each in list.frame(c, cx).rows do
+			if each.id == "abcdefgh" then
+				row = each
+			end
+		end
+		check(row ~= nil and row.live and not row.dup, "its row is live and no duplicate")
+	end
 end
 
 -- A reconcile marks the record exited without a stamp, so Enter asks for the picker.
@@ -1346,7 +1839,7 @@ end
 -- lists its own deck folder, and nothing else: no probe, no listing under the Claude sessions.
 do
 	local list, m = list_on(deck())
-	plant(m, "42", "sessA", "/work", true)
+	plant(m, "42", SID_A, "/work", true)
 	open(list, 101)
 	list.tick()
 	m.advance(3000)

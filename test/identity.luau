@@ -59,6 +59,14 @@ matches("echo JUMPR_ID=acpid /.omp/deck/deckid", "deckid")
 matches("env JUMPR_ID=abc/def /.omp/deck/deckid", "deckid")
 check(select("#", Identity.match("JUMPR_ID=abc")) == 1, "match returns exactly one value")
 
+-- CLI agent launch lines carry the id in the same leading env assignment.
+local SESSION = "0f8e2a6c-4b1d-4c3e-9a7f-1234567890ab"
+matches("env JUMPR_ID=x sh -c 'claude --resume " .. SESSION .. " || claude --session-id " .. SESSION .. "'", "x")
+matches("env JUMPR_ID=x claude --resume", "x")
+matches("env JUMPR_ID=x codex resume 019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b", "x")
+matches("env JUMPR_ID=x codex", "x")
+matches("/bin/fish -c 'env JUMPR_ID=x codex resume 019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b'", "x")
+
 -- valid_id is anchored: `[%w_%-]+`, 1 to 64 characters.
 check(Identity.valid_id("k2x7abcd"), "a new-style id is valid")
 check(Identity.valid_id("s0test"), "a lowercase id with a digit is valid")
@@ -94,6 +102,94 @@ for _ = 1, 200 do
 	check(Identity.valid_id(random_id), "a random new_id is a valid id")
 end
 check(#ALPHABET == 32, "the test alphabet has 32 characters")
+
+-- new_uuid gives a lowercase v4 UUID: 8-4-4-4-12 hex, version nibble 4, variant 8, 9, a or b.
+local V4_SHAPE = "^[0-9a-f]+%-[0-9a-f]+%-4[0-9a-f]+%-[89ab][0-9a-f]+%-[0-9a-f]+$"
+local function check_v4(uuid: string, label: string)
+	check(#uuid == 36, label .. " is 36 characters")
+	check(string.find(uuid, V4_SHAPE) ~= nil, label .. " has the v4 shape: " .. uuid)
+	local groups = string.split(uuid, "-")
+	check(
+		#groups == 5
+			and #groups[1] == 8
+			and #groups[2] == 4
+			and #groups[3] == 4
+			and #groups[4] == 4
+			and #groups[5] == 12,
+		label .. " groups are 8-4-4-4-12"
+	)
+	check(Identity.valid_uuid(uuid), label .. " is a valid uuid")
+end
+
+-- A fixed rand gives a fixed uuid, and every index rand returns lands in the output.
+local function lowest(_n: number): number
+	return 1
+end
+local function highest(n: number): number
+	return n
+end
+check(Identity.new_uuid(lowest) == "00000000-0000-4000-8000-000000000000", "rand(1) picks 0 and variant 8")
+check(Identity.new_uuid(highest) == "ffffffff-ffff-4fff-bfff-ffffffffffff", "rand(n) picks f and variant b")
+check_v4(Identity.new_uuid(lowest), "the lowest uuid")
+check_v4(Identity.new_uuid(highest), "the highest uuid")
+local asks: { number } = {}
+local stepping = 0
+local function stepping_rand(n: number): number
+	table.insert(asks, n)
+	stepping += 1
+	return ((stepping - 1) % n) + 1
+end
+local stepped = Identity.new_uuid(stepping_rand)
+check(stepped == "01234567-89ab-4cde-b012-3456789abcde", "new_uuid uses each rand result in order: " .. stepped)
+local sixteens, fours = 0, 0
+for _, n in asks do
+	if n == 16 then
+		sixteens += 1
+	elseif n == 4 then
+		fours += 1
+	end
+end
+check(#asks == 31 and sixteens == 30 and fours == 1, "new_uuid asks rand(16) 30 times and rand(4) once")
+stepping = 0
+check(Identity.new_uuid(stepping_rand) == stepped, "the same rand sequence gives the same uuid")
+local distinct: { [string]: boolean } = {}
+for _ = 1, 200 do
+	local uuid = Identity.new_uuid(math.random)
+	check_v4(uuid, "a random uuid")
+	distinct[uuid] = true
+end
+local distinct_count = 0
+for _ in distinct do
+	distinct_count += 1
+end
+check(distinct_count == 200, "200 random uuids are distinct")
+
+-- valid_uuid takes the canonical lowercase shape of any version and nothing else.
+check(Identity.valid_uuid(SESSION), "a v4 uuid is valid")
+check(Identity.valid_uuid("019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b"), "a Codex v7 thread id is valid")
+check(Identity.valid_uuid("00000000-0000-0000-0000-000000000000"), "the nil uuid has the shape")
+local bad_uuids = {
+	"0F8E2A6C-4B1D-4C3E-9A7F-1234567890AB",
+	"0f8e2a6c-4b1d-4c3e-9a7f-1234567890aB",
+	"0f8e2a6c-4b1d-4c3e-9a7f-1234567890a",
+	"0f8e2a6c-4b1d-4c3e-9a7f-1234567890abc",
+	"0f8e2a6-c4b1d-4c3e-9a7f-1234567890ab",
+	"0f8e2a6c4b1d4c3e9a7f1234567890ab",
+	"{0f8e2a6c-4b1d-4c3e-9a7f-1234567890ab}",
+	" 0f8e2a6c-4b1d-4c3e-9a7f-1234567890ab",
+	"0f8e2a6c-4b1d-4c3e-9a7f-1234567890ab ",
+	"0f8e2a6c-4b1d 4c3e-9a7f-1234567890ab",
+	"0f8e2a6c-4b1d-4c3e-9a7f-1234567890ab;rm",
+	"0f8e2a6c-4b1d-4c3e-9a7f-1234567890a;",
+	"'0f8e2a6c-4b1d-4c3e-9a7f-1234567890ab'",
+	'"0f8e2a6c-4b1d-4c3e-9a7f-1234567890ab"',
+	"0f8e2a6c-4b1d-4c3e-9a7f-1234567890ab\n",
+	"0g8e2a6c-4b1d-4c3e-9a7f-1234567890ab",
+	"",
+}
+for _, bad in bad_uuids do
+	check(not Identity.valid_uuid(bad), string.format("valid_uuid rejects %q", bad))
+end
 
 -- valid_cwd: absolute, `[%w_%-./ ]`, no `..` segment.
 check(Identity.valid_cwd("/home/me/src/webapp"), "an absolute folder is valid")

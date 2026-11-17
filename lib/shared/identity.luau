@@ -9,6 +9,20 @@ local ID_LENGTH = 8
 local MAX_ID_LENGTH = 64
 local DECK_PATH = "/%.omp/deck/([%w_%-]+)"
 local ACP_ID = "JUMPR_ID=([%w_%-]+)"
+local HEX_DIGITS = "0123456789abcdef"
+local UUID_VARIANTS = "89ab"
+local UUID_GROUPS = { 8, 4, 4, 4, 12 }
+local UUID_PATTERN = "^"
+	.. string.rep("[0-9a-f]", 8)
+	.. "%-"
+	.. string.rep("[0-9a-f]", 4)
+	.. "%-"
+	.. string.rep("[0-9a-f]", 4)
+	.. "%-"
+	.. string.rep("[0-9a-f]", 4)
+	.. "%-"
+	.. string.rep("[0-9a-f]", 12)
+	.. "$"
 
 -- True when `path` has a `..` path segment.
 local function has_dotdot(path: string): boolean
@@ -147,6 +161,37 @@ end
 -- The whole string is `[%w_%-]+`, 1 to 64 characters.
 function M.valid_id(id: string): boolean
 	return #id >= 1 and #id <= MAX_ID_LENGTH and string.find(id, "^[%w_%-]+$") ~= nil
+end
+
+-- A new lowercase v4 UUID, the session id handed to `claude --session-id`. `rand(n)` returns an
+-- integer in [1, n], like `new_id`: 30 calls of rand(16) for the random digits, one rand(4) for the variant.
+function M.new_uuid(rand: (number) -> number): string
+	local digits = table.create(32)
+	for i = 1, 32 do
+		if i == 13 then
+			digits[i] = "4"
+		elseif i == 17 then
+			local k = rand(#UUID_VARIANTS)
+			digits[i] = string.sub(UUID_VARIANTS, k, k)
+		else
+			local k = rand(#HEX_DIGITS)
+			digits[i] = string.sub(HEX_DIGITS, k, k)
+		end
+	end
+	local hex = table.concat(digits)
+	local groups = table.create(#UUID_GROUPS)
+	local from = 1
+	for _, size in UUID_GROUPS do
+		table.insert(groups, string.sub(hex, from, from + size - 1))
+		from += size
+	end
+	return table.concat(groups, "-")
+end
+
+-- The whole string is a lowercase 8-4-4-4-12 hex UUID of any version, so Codex's v7 thread ids pass.
+-- Safe to put in a shell command unquoted: only hex digits and `-`.
+function M.valid_uuid(s: string): boolean
+	return string.find(s, UUID_PATTERN) ~= nil
 end
 
 -- A folder an agent may start in: absolute, only `[%w_%-./ ]` characters, no `..` segment.

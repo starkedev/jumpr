@@ -6,6 +6,7 @@
 
 local harness = require("../harness")
 local agent = require("../shared/agent")
+local identity = require("../shared/identity")
 local status = require("../shared/status")
 local store = require("./store")
 
@@ -28,9 +29,11 @@ export type Selection = { kind: string, id: string?, gid: string? }
 -- Header only: count (agents in the group), tally (how many of them have each status code), folded, deleting, stuck
 -- (deleting while one of its agents is `live`).
 -- Agent only: id, cwd, state, failed, cancel (a pending record that is being removed), src (the status entries'
--- sources, for the `i` overlay), asking (a status entry says `waiting_input`: typed text would answer it), hold
--- (why a held `q` message has not been sent; nil with none held), parked (its one running pane runs in no tab),
--- vibing (the row is running and one of its omp vibe workers has a turn running; nil otherwise).
+-- sources, for the `i` overlay), asking (a status entry says `waiting_input`: typed text would answer it), ready (its
+-- one fresh entry says the agent itself reported idle, `status.reported_idle`: a claude or codex agent takes typed
+-- text only then; nil otherwise), hold (why a held `q` message has not been sent; nil with none held), parked (its
+-- one running pane runs in no tab), vibing (the row is running and one of its omp vibe workers has a turn running;
+-- nil otherwise).
 export type Row = {
 	kind: string,
 	gid: string,
@@ -53,6 +56,7 @@ export type Row = {
 	cancel: boolean?,
 	src: string?,
 	asking: boolean?,
+	ready: boolean?,
 	hold: string?,
 	parked: boolean?,
 	vibing: boolean?,
@@ -190,7 +194,7 @@ end
 -- next turn).
 local function live_title(r: store.Record, set: { [number]: true }?, titles: { [number]: string }): string?
 	local pane = bound_pane(r, set)
-	return harness.clean_title(if pane ~= nil then titles[pane] else nil)
+	return harness.clean_title(if pane ~= nil then titles[pane] else nil, r.cli)
 end
 
 -- A row's label: the user's own label (`r`), else the usable title of the pane it reads now, else the title its
@@ -326,6 +330,7 @@ function M.rows(
 				cancel = r.cancel == true,
 				src = if #srcs > 0 then table.concat(srcs, ", ") else nil,
 				asking = asking,
+				ready = if fresh and #entries == 1 and status.reported_idle(entries[1]) then true else nil,
 				hold = M.hold(deck.queue[id], health, live, dup),
 				parked = if M.is_parked(r, entries, fresh, dup) then true else nil,
 				vibing = if vibing and code == "running" then true else nil,
@@ -557,14 +562,20 @@ function M.reconcile_states(deck: store.Deck, live_panes: { [number]: boolean },
 end
 
 -- How an exited agent should start again. Omp always starts new. A proven session resumes, even when this agent
--- also closed last. An agent that never bound starts new. The last of its kind to close in its folder continues.
--- Anything else opens the picker.
+-- also closed last; for claude that includes a never-prompted id, since its launch line starts that id fresh. A
+-- claude or codex agent with no session never continues (that could land in another live agent's conversation):
+-- a codex agent that never bound starts new, and any other opens the picker (claude has no new line without an
+-- id). Another kind that never bound starts new; the last of its kind to close in its folder continues. Anything
+-- else opens the picker. A claude or codex session that is not a valid uuid has no launch line, so it counts as none.
 function M.restart_mode(r: store.Record, id: string, deck: store.Deck): (agent.Mode, string?)
 	if r.cli == agent.OMP then
 		return "new", nil
 	end
-	if r.session ~= nil then
+	if r.session ~= nil and (not agent.is_cli(r.cli) or identity.valid_uuid(r.session)) then
 		return "resume", r.session
+	end
+	if agent.is_cli(r.cli) then
+		return if r.cli == agent.CODEX and r.ran ~= true then "new" else "pick", nil
 	end
 	if r.ran ~= true then
 		return "new", nil
@@ -575,11 +586,16 @@ function M.restart_mode(r: store.Record, id: string, deck: store.Deck): (agent.M
 	return "pick", nil
 end
 
--- Stores a proven conversation id on a live non-omp record that has none, or that holds a different one.
--- Any other record, and a record that already holds this id, comes back as the same deck.
-function M.set_session(deck: store.Deck, id: string, sid: string): store.Deck
+-- Stores a proven conversation id on a live non-omp record that has none, or that holds a different one. A claude
+-- record's stored id is replaced only when `own_process` says the id comes from the pane's own `claude` process
+-- (`/clear` changes the live id there), so a nested `claude` the agent ran can never take it over. Any other
+-- record, and a record that already holds this id, comes back as the same deck.
+function M.set_session(deck: store.Deck, id: string, sid: string, own_process: boolean?): store.Deck
 	local r = deck.agents[id]
 	if r == nil or r.state ~= "live" or r.cli == agent.OMP or r.session == sid then
+		return deck
+	end
+	if r.cli == agent.CLAUDE and r.session ~= nil and own_process ~= true then
 		return deck
 	end
 	local out = store.clone(deck)

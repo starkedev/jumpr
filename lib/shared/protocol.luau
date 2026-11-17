@@ -5,7 +5,9 @@
 
 local M = {}
 
-M.P = 3
+-- 4: the window builds each agent's launch command, and a `start` of kind claude or codex now
+-- means the real CLI in a terminal pane rather than an ACP chat, so an older peer must be refused.
+M.P = 4
 
 -- The request verbs a window knows.
 M.VERBS = table.freeze({
@@ -230,7 +232,7 @@ local function decode(s: string): string
 	)
 end
 
--- `jumpr://<verb>?p=3&b=..&r=..&host=..&sn=..&<fields>`, every key and value percent-encoded, fields in key order.
+-- `jumpr://<verb>?p=4&b=..&r=..&host=..&sn=..&<fields>`, every key and value percent-encoded, fields in key order.
 -- `sn` is the deck session of the list sending it, left out when `session` is nil or empty; a window that predates
 -- it reads it as a field no verb uses, so it needs no new protocol version.
 -- An unknown verb or a field named like a URL key (`p`, `b`, `r`, `host`, `sn`) or `dir` is a programming error.

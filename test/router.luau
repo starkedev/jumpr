@@ -137,32 +137,33 @@ do
 	)
 end
 
--- Every ACP launch mode is rebuilt from its validated fields and passed to the terminal unchanged.
+-- Every ACP launch mode is rebuilt from its validated fields and passed to the terminal unchanged. Copilot stands for
+-- every agent that still runs through Tern's ACP chat.
 do
 	local cases: { { id: string, mode: string, sid: string?, command: string } } = {
 		{
 			id = "acp-new",
 			mode = "new",
 			sid = nil,
-			command = "env JUMPR_ID=acp-new tern acp claude",
+			command = "env JUMPR_ID=acp-new tern acp copilot",
 		},
 		{
 			id = "acp-resume",
 			mode = "resume",
 			sid = "session-1",
-			command = "env JUMPR_ID=acp-resume tern acp claude --resume session-1",
+			command = "env JUMPR_ID=acp-resume tern acp copilot --resume session-1",
 		},
 		{
 			id = "acp-continue",
 			mode = "continue",
 			sid = nil,
-			command = "env JUMPR_ID=acp-continue tern acp claude --continue",
+			command = "env JUMPR_ID=acp-continue tern acp copilot --continue",
 		},
 		{
 			id = "acp-pick",
 			mode = "pick",
 			sid = nil,
-			command = "env JUMPR_ID=acp-pick tern acp claude --sessions",
+			command = "env JUMPR_ID=acp-pick tern acp copilot --sessions",
 		},
 	}
 	for i, case in cases do
@@ -170,7 +171,7 @@ do
 		local fields: { [string]: string } = {
 			id = case.id,
 			cwd = "/work",
-			cli = "claude",
+			cli = "copilot",
 			mode = case.mode,
 		}
 		if case.sid ~= nil then
@@ -180,6 +181,89 @@ do
 		check(Router.handle(cx, url, copy) == "start", case.mode .. " mode is acted on")
 		local tabs = Fake.world().sessions[deck].tabs
 		check(tab_has_command(tabs[#tabs], case.command), case.mode .. " mode uses the exact ACP command")
+	end
+end
+
+-- Claude Code and the Codex CLI run as themselves in the new tab, never through the ACP chat. A claude start, new or
+-- resumed, runs the one line on the record's conversation id (it resumes the conversation, or starts it under that id
+-- when it has no messages yet); pick opens Claude Code's picker. Codex starts new, resumes a thread by id, or opens its
+-- picker. Each start is answered ok.
+do
+	local uuid = "01234567-0123-4456-b012-345670123456"
+	local thread = "019a7d6e-2f3b-7c41-9d2e-5b6a7c8d9e0f"
+	local function claude(id: string): string
+		return "env JUMPR_ID=" .. id .. " sh -c 'claude --resume " .. uuid .. " || claude --session-id " .. uuid .. "'"
+	end
+	local cases: { { id: string, cli: string, mode: string, sid: string?, command: string } } = {
+		{ id = "claude-new", cli = "claude", mode = "new", sid = uuid, command = claude("claude-new") },
+		{ id = "claude-resume", cli = "claude", mode = "resume", sid = uuid, command = claude("claude-resume") },
+		{
+			id = "claude-pick",
+			cli = "claude",
+			mode = "pick",
+			sid = nil,
+			command = "env JUMPR_ID=claude-pick claude --resume",
+		},
+		{ id = "codex-new", cli = "codex", mode = "new", sid = nil, command = "env JUMPR_ID=codex-new codex" },
+		{
+			id = "codex-resume",
+			cli = "codex",
+			mode = "resume",
+			sid = thread,
+			command = "env JUMPR_ID=codex-resume codex resume " .. thread,
+		},
+		{
+			id = "codex-pick",
+			cli = "codex",
+			mode = "pick",
+			sid = nil,
+			command = "env JUMPR_ID=codex-pick codex resume",
+		},
+	}
+	for i, case in cases do
+		Fake.focus(copy)
+		local fields: { [string]: string } = { id = case.id, cwd = "/work", cli = case.cli, mode = case.mode }
+		if case.sid ~= nil then
+			fields.sid = case.sid
+		end
+		-- Their own sender: a sender's request numbers only grow, and the later cases here number theirs from 30.
+		local url = Protocol.request_url("start", "cli-blk", i, "devbox", fields, "deck")
+		local what = case.cli .. " " .. case.mode
+		check(Router.handle(cx, url, copy) == "start", what .. " is acted on")
+		local tabs = Fake.world().sessions[deck].tabs
+		check(tab_has_command(tabs[#tabs], case.command), what .. " runs exactly: " .. case.command)
+		local r = replies()
+		check(r[#r].b == "cli-blk" and r[#r].r == i and r[#r].ok == true, what .. " is answered ok")
+	end
+
+	-- Neither CLI has a continue mode, and a claude start needs a conversation id that is a uuid: each is refused in
+	-- one line and opens no pane.
+	local refused: { { cli: string, mode: string, sid: string? } } = {
+		{ cli = "claude", mode = "continue" },
+		{ cli = "codex", mode = "continue" },
+		{ cli = "claude", mode = "new" },
+		{ cli = "claude", mode = "new", sid = "session-1" },
+		{ cli = "claude", mode = "resume", sid = string.upper(uuid) },
+		{ cli = "codex", mode = "resume", sid = "session-1" },
+	}
+	for i, case in refused do
+		Fake.focus(copy)
+		local before = #Fake.world().sessions[deck].tabs
+		local fields: { [string]: string } =
+			{ id = "cli-bad-" .. tostring(i), cwd = "/work", cli = case.cli, mode = case.mode }
+		if case.sid ~= nil then
+			fields.sid = case.sid
+		end
+		local url = Protocol.request_url("start", "cli-blk", 10 + i, "devbox", fields, "deck")
+		local what = case.cli .. " " .. case.mode .. " with " .. tostring(case.sid)
+		check(Router.handle(cx, url, copy) == "start", what .. " is handled as a refusal")
+		check(#Fake.world().sessions[deck].tabs == before, what .. " opens no pane")
+		local r = replies()
+		local reply = r[#r]
+		check(
+			reply.r == 10 + i and reply.ok == false and string.find(reply.err, "\n", 1, true) == nil,
+			what .. " gets a one-line refusal"
+		)
 	end
 end
 
@@ -564,7 +648,14 @@ do
 	check(Fake.world().panes[chat] == nil and closed(chat), "then it is closed")
 	check(#answers() == before + 1 and last_answer().ok == true, "and only then is the stop answered ok")
 
-	local slow = Fake.agent(Fake.tab(deck), nil, "env JUMPR_ID=chat-slow tern acp claude")
+	-- A Claude Code pane, found by the id on its `sh -c` line, that exits by itself during the moment.
+	local uuid = "01234567-0123-4456-b012-345670123456"
+	local claude_line = "env JUMPR_ID=chat-slow sh -c 'claude --resume "
+		.. uuid
+		.. " || claude --session-id "
+		.. uuid
+		.. "'"
+	local slow = Fake.agent(Fake.tab(deck), nil, claude_line)
 	leaves_open[slow] = true
 	before = #answers()
 	stop("chat-slow")

@@ -6,7 +6,8 @@
 local M = {}
 
 -- One live pane's raw state. s: "w" working | "q" waiting_input | "i" idle | "x" exited. u: unseen finish
--- (PaneInfo.alert). f: last turn failed. e: delivery_error, PaneInfo.error or exit status ≠ 0. src: status source.
+-- (PaneInfo.alert). f: last turn failed. e: delivery_error, PaneInfo.error or exit status ≠ 0. src: where `s` came
+-- from, `SRC_AGENTS` or `SRC_PANE`.
 -- c: wall-clock ms when the sending window last saw this entry change; absent when it has seen no change since it
 -- first saw the pane, so another window that watched the change happen outranks it.
 -- k: the pane is parked (its program runs, in no tab); absent means it is in a tab, which is all an older window
@@ -23,6 +24,12 @@ export type Entry = {
 	k: boolean?,
 	v: boolean?,
 }
+
+-- Where an entry's state came from (`src`): Tern's agent state for the pane, which the agent itself reports (omp, and
+-- claude and codex through OSC 7501), or else the pane alone: its program exited, or it reads busy / not busy while
+-- Tern holds no agent state for it.
+M.SRC_AGENTS = "agents"
+M.SRC_PANE = "pane"
 
 -- "error" | "waiting" | "running" | "idle" | "stopped" | "unknown".
 export type Code = string
@@ -212,9 +219,17 @@ function M.asking(e: Entry): boolean
 	return e.s == "q"
 end
 
--- The agent is idle, its finish seen or unseen; a held message may be typed into it.
+-- The agent is idle, its finish seen or unseen; a held message may be typed into it (into a claude or codex agent
+-- only on `reported_idle`).
 function M.idle(e: Entry): boolean
 	return e.s == "i"
+end
+
+-- The agent itself reported idle (Tern's agent state, `SRC_AGENTS`), its finish seen or unseen. A claude or codex
+-- agent takes typed text only on this: its first screens report no idle, and a pane that only reads not busy may be at
+-- a shell prompt.
+function M.reported_idle(e: Entry): boolean
+	return e.s == "i" and e.src == M.SRC_AGENTS
 end
 
 -- The agent is working or idle while one of its vibe workers has a turn running: its row reads `vibing`.
@@ -261,8 +276,9 @@ function M.wire_key(list: { Entry }): string
 	return table.concat(parts, "\30")
 end
 
--- Whether two entry lists show the same on a row (change times aside): the block restarts a row's age only when they
--- differ.
+-- Whether two entry lists show the same on a row (change times and sources aside): the block restarts a row's age
+-- only when they differ. A source alone changes no status, so an agent's age runs on when Tern's agent state takes
+-- over from the pane's reading of the same state; the `i` overlay that names the source is redrawn by the timer.
 function M.same_display(a: { Entry }?, b: { Entry }?): boolean
 	if a == nil or b == nil then
 		return a == b
@@ -272,7 +288,7 @@ function M.same_display(a: { Entry }?, b: { Entry }?): boolean
 	end
 	for i, x in a do
 		local y = b[i]
-		if x.s ~= y.s or x.u ~= y.u or x.f ~= y.f or x.e ~= y.e or x.src ~= y.src or x.k ~= y.k then
+		if x.s ~= y.s or x.u ~= y.u or x.f ~= y.f or x.e ~= y.e or x.k ~= y.k then
 			return false
 		end
 	end

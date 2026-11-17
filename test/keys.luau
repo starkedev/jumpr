@@ -1,5 +1,7 @@
 --!strict
 
+local Agent = require("../lib/shared/agent")
+local Identity = require("../lib/shared/identity")
 local Keys = require("../lib/host/keys")
 local Keymap = require("../lib/host/keymap")
 local Model = require("../lib/host/model")
@@ -15,15 +17,20 @@ end
 local NOW = 1800000000000
 local DEFAULT_MAP = Keymap.resolve({})
 
--- A rand that walks a fixed list of draws (each in [1, 32]); new_id takes 8 draws.
+-- A rand that walks a fixed list of draws, each folded into [1, n] as `rand(n)` must be; new_id takes 8 draws from
+-- [1, 32], new_uuid 31 from [1, 16] and [1, 4].
 local function rand_from(draws: { number }): (number) -> number
 	local i = 0
-	return function(_n: number): number
+	return function(n: number): number
 		i += 1
-		return draws[(i - 1) % #draws + 1]
+		return (draws[(i - 1) % #draws + 1] - 1) % n + 1
 	end
 end
-local RAND = rand_from({ 1, 2, 3, 4, 5, 6, 7, 8 }) -- "abcdefgh"
+local DRAWS = { 1, 2, 3, 4, 5, 6, 7, 8 } -- "abcdefgh"
+-- Two conversation ids: the one a claude agent created with the default draws gets (its deck id takes the first 8,
+-- so its uuid starts the draws over), and a codex thread (v7).
+local UUID = "01234567-0123-4456-b012-345670123456"
+local THREAD = "019a7d6e-2f3b-7c41-9d2e-5b6a7c8d9e0f"
 
 local function group(deck: Store.Deck, gid: string, name: string, folded: boolean?)
 	table.insert(deck.groups, { gid = gid, name = name, cwd = "/home/a/" .. name, folded = folded == true })
@@ -86,10 +93,12 @@ local function rows(b: Block): { Model.Row }
 	return Model.rows(b.deck, {}, b.sets, b.status, b.ui, b.health)
 end
 
+-- One event through `Keys.reduce`. Without `rand` the draws start over at every call, so a new deck id is always
+-- "abcdefgh" and a claude agent's conversation id always UUID, whatever ran before.
 local function send(b: Block, event: Keys.Event, rand: ((number) -> number)?)
 	local rs = rows(b)
 	b.ui.selection = Model.clamp_selection(rs, b.ui.selection, b.deck)
-	b.ui, b.deck, b.effects = Keys.reduce(b.ui, b.deck, rs, event, NOW, rand or RAND)
+	b.ui, b.deck, b.effects = Keys.reduce(b.ui, b.deck, rs, event, NOW, rand or rand_from(DRAWS))
 end
 
 local function key(b: Block, name: string, text: string?, rand: ((number) -> number)?)
@@ -128,6 +137,19 @@ local function request_of(effects: { Keys.Effect }, verb: string): { [string]: s
 		end
 	end
 	return nil
+end
+
+-- The line the window runs for a start request (`Agent.command` on its fields), nil for none or a refused one.
+local function line_of(start: { [string]: string }?): string?
+	if start == nil then
+		return nil
+	end
+	return Agent.command(start.cli, start.id, start.mode :: Agent.Mode, start.sid)
+end
+
+-- The Claude Code line for agent `id` on conversation `sid`: it resumes `sid`, or starts it when it has no messages.
+local function claude_line(id: string, sid: string): string
+	return "env JUMPR_ID=" .. id .. " sh -c 'claude --resume " .. sid .. " || claude --session-id " .. sid .. "'"
 end
 
 -- The host's answer to the last `check_folder` effect, as the host gives it (`Keys.folder_checked`).
@@ -365,7 +387,8 @@ do
 	check(kinds(b.effects) == "request:jump", "jump changes no deck and no visible state")
 end
 
--- Enter on a failed pending row retries start with created_ms reset; a renamed agent's label rides along.
+-- Enter on a failed pending row retries start with created_ms reset; a renamed agent's label rides along. A claude
+-- agent whose first start failed retries on the conversation id it was created with.
 do
 	local deck = sample()
 	agent(deck, "p", "g1", 3, {
@@ -376,6 +399,7 @@ do
 		created_ms = NOW - 60000,
 		label = "flaky-fixer",
 		cli = "claude",
+		session = UUID,
 		cwd = "/home/a/webapp",
 	})
 	local b = block(deck)
@@ -390,8 +414,8 @@ do
 	check(start ~= nil and start.cwd == "/home/a/webapp", "the retry keeps the cwd")
 	check(start ~= nil and start.prompt == nil and start.label == "flaky-fixer", "no prompt; the label names the tab")
 	check(
-		start ~= nil and start.cli == "claude" and start.mode == "new" and start.sid == nil,
-		"a failed first Claude start retries new, with no session id"
+		start ~= nil and start.cli == "claude" and start.mode == "resume" and start.sid == UUID,
+		"a failed first Claude start retries on its own conversation id, never the picker"
 	)
 	local r = b.deck.agents.p
 	check(r.created_ms == NOW and r.failed == nil and r.ended_ms == nil, "the retry resets created_ms, clears failed")
@@ -488,7 +512,7 @@ do
 		ended_ms = NOW - 50,
 		created_ms = NOW - 600000,
 		cwd = "/home/a/webapp",
-		cli = "claude",
+		cli = "copilot",
 		ran = true,
 	})
 	local b = block(deck)
@@ -497,8 +521,8 @@ do
 	answer(b, true)
 	local start = request_of(b.effects, "start")
 	check(
-		start ~= nil and start.cli == "claude" and start.mode == "pick" and start.sid == nil,
-		"an exited Claude agent that ran, and was not last closed, picks"
+		start ~= nil and start.cli == "copilot" and start.mode == "pick" and start.sid == nil,
+		"an exited ACP agent that ran, and was not last closed, picks"
 	)
 	check(b.deck.agents.x.ran == true, "restart keeps the proof that the agent ran")
 
@@ -509,14 +533,15 @@ do
 	answer(b, true)
 	start = request_of(b.effects, "start")
 	check(
-		start ~= nil and start.cli == "claude" and start.mode == "pick" and start.sid == nil,
-		"a failed Claude restart retries pick, still with no session id"
+		start ~= nil and start.cli == "copilot" and start.mode == "pick" and start.sid == nil,
+		"a failed ACP restart retries pick, still with no session id"
 	)
 end
 
--- Restart follows the stored history. A proven session resumes with that id even when this agent also closed last.
--- The last closed agent of its kind continues. Another agent that has run opens the picker. A restart whose start
--- then fails retries with that same mode, and only a resume carries a session id.
+-- An ACP agent's restart follows the stored history. A proven session resumes with that id even when this agent also
+-- closed last. The last closed agent of its kind continues. Another agent that has run opens the picker, and one that
+-- never bound starts new. A restart whose start then fails retries with that same mode, and only a resume carries a
+-- session id.
 do
 	local function exited(deck: Store.Deck, id: string, pos: number, extra: { [string]: any }?)
 		agent(deck, id, "g1", pos, {
@@ -525,7 +550,7 @@ do
 			ended_ms = NOW - 50,
 			created_ms = NOW - 600000,
 			cwd = "/home/a/webapp",
-			cli = "claude",
+			cli = "copilot",
 			ran = true,
 		})
 		for k, v in (extra or {}) :: { [string]: any } do
@@ -544,7 +569,7 @@ do
 
 	local resumed = sample()
 	exited(resumed, "x", 3, { session = "sess-1", label = "fixer" })
-	resumed.closed[Store.closed_key("claude", "/home/a/webapp")] = "x"
+	resumed.closed[Store.closed_key("copilot", "/home/a/webapp")] = "x"
 	local b = block(resumed)
 	select(b, { kind = "agent", id = "x" })
 	key(b, "enter")
@@ -554,7 +579,7 @@ do
 		start ~= nil
 			and start.id == "x"
 			and start.cwd == "/home/a/webapp"
-			and start.cli == "claude"
+			and start.cli == "copilot"
 			and start.mode == "resume"
 			and start.sid == "sess-1"
 			and start.label == "fixer"
@@ -573,19 +598,19 @@ do
 
 	local continued = sample()
 	exited(continued, "x", 3)
-	continued.closed[Store.closed_key("claude", "/home/a/webapp")] = "x"
-	continued.closed[Store.closed_key("claude", "/home/a/other")] = "someone"
+	continued.closed[Store.closed_key("copilot", "/home/a/webapp")] = "x"
+	continued.closed[Store.closed_key("copilot", "/home/a/other")] = "someone"
 	local c = block(continued)
 	select(c, { kind = "agent", id = "x" })
 	key(c, "enter")
 	answer(c, true)
 	start = request_of(c.effects, "start")
 	check(
-		start ~= nil and start.mode == "continue" and start.sid == nil and start.cli == "claude" and start.land == "1",
+		start ~= nil and start.mode == "continue" and start.sid == nil and start.cli == "copilot" and start.land == "1",
 		"the last closed agent of its kind restarts with continue and no session id"
 	)
 	check(
-		c.deck.closed[Store.closed_key("claude", "/home/a/webapp")] == "x",
+		c.deck.closed[Store.closed_key("copilot", "/home/a/webapp")] == "x",
 		"restart leaves the closed stamp in place"
 	)
 	again = failed_retry(c, "x")
@@ -594,7 +619,7 @@ do
 	local picked = sample()
 	exited(picked, "x", 3)
 	exited(picked, "y", 4)
-	picked.closed[Store.closed_key("claude", "/home/a/webapp")] = "y"
+	picked.closed[Store.closed_key("copilot", "/home/a/webapp")] = "y"
 	local d = block(picked)
 	select(d, { kind = "agent", id = "x" })
 	key(d, "enter")
@@ -606,6 +631,18 @@ do
 	)
 	again = failed_retry(d, "x")
 	check(again ~= nil and again.mode == "pick" and again.sid == nil, "a failed picker restart retries pick")
+
+	local fresh = sample()
+	exited(fresh, "x", 3, { ran = false })
+	fresh.closed[Store.closed_key("copilot", "/home/a/webapp")] = "x"
+	local f = block(fresh)
+	select(f, { kind = "agent", id = "x" })
+	key(f, "enter")
+	answer(f, true)
+	start = request_of(f.effects, "start")
+	check(start ~= nil and start.mode == "new" and start.sid == nil, "an agent that never bound starts new")
+	again = failed_retry(f, "x")
+	check(again ~= nil and again.mode == "new" and again.sid == nil, "a failed first start retries new, with no sid")
 
 	local omp = sample()
 	exited(omp, "x", 3, { cli = "omp", session = "sess-omp" })
@@ -619,6 +656,118 @@ do
 		start ~= nil and start.cli == "omp" and start.mode == "new" and start.sid == nil,
 		"an omp agent with a stored session id still restarts new and carries no sid"
 	)
+end
+
+-- Claude and codex run as their own CLIs, and neither ever continues (the newest conversation in the folder may be
+-- another live agent's), even as the last of its kind to close there. A claude agent resumes the conversation id it
+-- holds, whether it never bound, ran but was never prompted (its line starts a never-prompted id fresh, so no
+-- transcript is checked) or holds an id the lookup followed; with none (a record from before claude ran as its CLI)
+-- it opens the picker. A codex agent resumes a proven thread, starts new when it never bound, and otherwise opens the
+-- picker. A restart whose start then fails retries the same line.
+do
+	local cleared = "fedcba98-7654-4321-8fed-cba987654321"
+	type Case = { name: string, cli: string, extra: { [string]: any }, mode: string, sid: string?, line: string }
+	local cases: { Case } = {
+		{
+			name = "a claude agent that never bound",
+			cli = "claude",
+			extra = { session = UUID },
+			mode = "resume",
+			sid = UUID,
+			line = claude_line("x", UUID),
+		},
+		{
+			name = "a claude agent that ran but was never prompted",
+			cli = "claude",
+			extra = { session = UUID, ran = true },
+			mode = "resume",
+			sid = UUID,
+			line = claude_line("x", UUID),
+		},
+		{
+			name = "a claude agent whose conversation moved (/clear)",
+			cli = "claude",
+			extra = { session = cleared, ran = true },
+			mode = "resume",
+			sid = cleared,
+			line = claude_line("x", cleared),
+		},
+		{
+			name = "a claude agent with no conversation id that ran",
+			cli = "claude",
+			extra = { ran = true },
+			mode = "pick",
+			sid = nil,
+			line = "env JUMPR_ID=x claude --resume",
+		},
+		{
+			name = "a claude agent with no conversation id that never bound",
+			cli = "claude",
+			extra = {},
+			mode = "pick",
+			sid = nil,
+			line = "env JUMPR_ID=x claude --resume",
+		},
+		{
+			name = "a codex agent that never bound",
+			cli = "codex",
+			extra = {},
+			mode = "new",
+			sid = nil,
+			line = "env JUMPR_ID=x codex",
+		},
+		{
+			name = "a codex agent that ran with no proven thread",
+			cli = "codex",
+			extra = { ran = true },
+			mode = "pick",
+			sid = nil,
+			line = "env JUMPR_ID=x codex resume",
+		},
+		{
+			name = "a codex agent with a proven thread",
+			cli = "codex",
+			extra = { session = THREAD, ran = true },
+			mode = "resume",
+			sid = THREAD,
+			line = "env JUMPR_ID=x codex resume " .. THREAD,
+		},
+	}
+	for _, case in cases do
+		local deck = sample()
+		agent(deck, "x", "g1", 3, {
+			state = "exited",
+			exit = 0,
+			ended_ms = NOW - 50,
+			created_ms = NOW - 600000,
+			cwd = "/home/a/webapp",
+			cli = case.cli,
+		})
+		for k, v in case.extra do
+			(deck.agents.x :: any)[k] = v
+		end
+		deck.closed[Store.closed_key(case.cli, "/home/a/webapp")] = "x"
+		local b = block(deck)
+		select(b, { kind = "agent", id = "x" })
+		key(b, "enter")
+		answer(b, true)
+		local start = request_of(b.effects, "start")
+		check(
+			start ~= nil and start.cli == case.cli and start.mode == case.mode and start.sid == case.sid,
+			case.name .. " restarts with " .. case.mode .. ": " .. tostring(start and start.mode)
+		)
+		check(line_of(start) == case.line, case.name .. " runs " .. case.line .. ": " .. tostring(line_of(start)))
+		b.deck = Store.clone(b.deck)
+		b.deck.agents.x.failed = true
+		b.deck.agents.x.ended_ms = NOW - 10
+		key(b, "enter")
+		answer(b, true)
+		local again = request_of(b.effects, "start")
+		check(
+			again ~= nil and again.mode == case.mode and again.sid == case.sid and line_of(again) == case.line,
+			case.name .. " retries the same line after its restart failed"
+		)
+	end
 end
 
 -- V picks an agent up and j/k reorder it within its group, saving every step; Enter or V drops it, Esc puts it
@@ -1331,7 +1480,7 @@ do
 			ended_ms = NOW - 50,
 			created_ms = NOW - 600000,
 			ran = true,
-			cli = "claude",
+			cli = "copilot",
 			cwd = "/home/a/webapp",
 		})
 		for k, v in (extra or {}) :: { [string]: any } do
@@ -1341,7 +1490,7 @@ do
 
 	local picked = sample()
 	exited(picked, "x")
-	picked.closed[Store.closed_key("claude", "/home/a/webapp")] = "someone"
+	picked.closed[Store.closed_key("copilot", "/home/a/webapp")] = "someone"
 	local b = block(picked)
 	select(b, { kind = "agent", id = "x" })
 	char(b, "o")
@@ -1372,7 +1521,7 @@ do
 
 	local continued = sample()
 	exited(continued, "x")
-	continued.closed[Store.closed_key("claude", "/home/a/webapp")] = "x"
+	continued.closed[Store.closed_key("copilot", "/home/a/webapp")] = "x"
 	local d = block(continued)
 	select(d, { kind = "agent", id = "x" })
 	char(d, "o")
@@ -1386,6 +1535,150 @@ do
 	local con = request_of(d.effects, "start")
 	check(con ~= nil and con.mode == "continue" and con.sid == nil, "with no session id")
 	check(d.deck.queue.x ~= nil and d.deck.queue.x.text == "hi", "and the message is held")
+end
+
+-- o and q on a claude or codex row, by its status. o types only into an agent that has itself reported idle (Tern's
+-- agent state), its finish seen or unseen. While it starts (no status yet, or busy on a first screen with no agent
+-- state), works, or its pane only reads not busy (a shell prompt), o holds the text as its queued message for the
+-- queue to send once it reports idle, and says so. An asking row refuses o, as an omp row does. An exited row holds
+-- the text and starts again as an exited omp or ACP row does: a claude agent resumes its conversation, and a codex
+-- agent with no proven thread waits for Enter to pick one. q queues on every row.
+do
+	type Cell = { name: string, entries: { Status.Entry }?, exited: boolean?, o: string }
+	local cells: { Cell } = {
+		{ name = "starting with no status yet", entries = nil, o = "held" },
+		{ name = "starting, busy on a first screen", entries = { { s = "w", src = "pane" } }, o = "held" },
+		{ name = "whose pane only reads not busy", entries = { { s = "i", src = "pane" } }, o = "held" },
+		{ name = "idle as it reported", entries = { { s = "i", src = "agents" } }, o = "typed" },
+		{ name = "with an unseen finish", entries = { { s = "i", u = true, src = "agents" } }, o = "typed" },
+		{ name = "working", entries = { { s = "w", src = "agents" } }, o = "held" },
+		{ name = "asking", entries = { { s = "q", src = "agents" } }, o = "refused" },
+		{ name = "exited", entries = { { s = "x", src = "pane" } }, exited = true, o = "restart" },
+	}
+	for _, cli in { "claude", "codex" } do
+		for _, cell in cells do
+			local what = "a " .. cli .. " row " .. cell.name
+			-- A fresh block with agent x of this kind in this state, selected.
+			local function on_row(): Block
+				local deck = sample()
+				agent(deck, "x", "g1", 3, {
+					cli = cli,
+					state = if cell.exited then "exited" else "live",
+					exit = if cell.exited then 0 else nil,
+					ended_ms = if cell.exited then NOW - 50 else nil,
+					ran = true,
+					session = if cli == "claude" then UUID else nil,
+					cwd = "/home/a/webapp",
+				})
+				local b = block(deck)
+				if cell.entries ~= nil then
+					b.status.x = cell.entries
+				end
+				select(b, { kind = "agent", id = "x" })
+				return b
+			end
+
+			local b = on_row()
+			char(b, "o")
+			if cell.o == "refused" then
+				check(b.ui.mode == "list" and b.ui.notice == Keys.ASKING, "o on " .. what .. " refuses")
+				check(kinds(b.effects) == "render" and b.deck.queue.x == nil, "and types or holds nothing")
+			else
+				check(b.ui.mode == "input" and b.ui.purpose == "send", "o on " .. what .. " opens")
+				type_text(b, "hi")
+				key(b, "enter")
+				local held = b.deck.queue.x
+				local done = kinds(b.effects)
+				if cell.o == "typed" then
+					local w = effect_of(b.effects, "write")
+					check(done == "write,render" and w ~= nil and w.text == "hi", "o on " .. what .. " types: " .. done)
+					check(held == nil and b.ui.notice == nil, "and holds nothing")
+				elseif cell.o == "held" then
+					check(done == "save_kv,render", "o on " .. what .. " types nothing: " .. done)
+					check(held ~= nil and held.text == "hi" and held.at_ms == NOW, "the text is held for the queue")
+					check(
+						b.ui.notice == "not idle yet — message queued",
+						"the list says so: " .. tostring(b.ui.notice)
+					)
+				elseif cli == "claude" then
+					check(done == "save_kv,check_folder,render", "o on " .. what .. " restarts it: " .. done)
+					check(held ~= nil and held.text == "hi" and b.ui.notice == Keys.RESTARTING, "the text is held")
+				else
+					check(done == "save_kv,render", "o on " .. what .. " starts nothing: " .. done)
+					check(held ~= nil and held.text == "hi" and b.ui.notice == Keys.PICK_QUEUED, "the text is held")
+				end
+			end
+
+			local q = on_row()
+			char(q, "q")
+			type_text(q, "later")
+			key(q, "enter")
+			local queued = q.deck.queue.x
+			check(queued ~= nil and queued.text == "later" and q.ui.notice == nil, "q on " .. what .. " queues")
+			check(kinds(q.effects) == "save_kv,render", "and saves it, typing nothing")
+		end
+	end
+end
+
+-- A claude or codex row is judged again at Enter: one that turned working while the line was open holds the text,
+-- one that reported idle meanwhile takes it, and one a filter now hides holds it. With a message already held, o
+-- refuses on a row that is not idle (q edits that one) and types on one that is, as on an omp row. The menu's send
+-- and queue open the same lines.
+do
+	local function on_claude(entries: { Status.Entry }): Block
+		local deck = sample()
+		agent(deck, "x", "g1", 3, { cli = "claude", session = UUID, ran = true })
+		local b = block(deck)
+		b.status.x = entries
+		select(b, { kind = "agent", id = "x" })
+		return b
+	end
+	local idle: Status.Entry = { s = "i", src = "agents" }
+	local working: Status.Entry = { s = "w", src = "agents" }
+
+	local turned = on_claude({ idle })
+	char(turned, "o")
+	type_text(turned, "hi")
+	turned.status.x = { working }
+	key(turned, "enter")
+	check(effect_of(turned.effects, "write") == nil, "a row that turned working meanwhile is not typed into")
+	check(turned.deck.queue.x ~= nil and turned.ui.notice == Keys.NOT_IDLE, "its text is held")
+
+	local ready = on_claude({ working })
+	char(ready, "o")
+	type_text(ready, "hi")
+	ready.status.x = { idle }
+	key(ready, "enter")
+	check(kinds(ready.effects) == "write,render", "a row that reported idle meanwhile takes it")
+
+	local hidden = on_claude({ idle })
+	char(hidden, "o")
+	type_text(hidden, "hi")
+	hidden.ui.filter = "running"
+	key(hidden, "enter")
+	check(effect_of(hidden.effects, "write") == nil, "a row a filter now hides is not typed into")
+	check(hidden.deck.queue.x ~= nil and hidden.ui.notice == Keys.NOT_IDLE, "its text is held")
+
+	local busy = on_claude({ working })
+	busy.deck.queue.x = { text = "first", at_ms = NOW - 9 }
+	char(busy, "o")
+	check(busy.ui.mode == "list" and busy.ui.notice == Keys.HELD(DEFAULT_MAP), "with a message held, o refuses")
+	check(busy.deck.queue.x.text == "first", "and keeps the held message")
+
+	local free = on_claude({ idle })
+	free.deck.queue.x = { text = "first", at_ms = NOW - 9 }
+	char(free, "o")
+	type_text(free, "now")
+	key(free, "enter")
+	local w = effect_of(free.effects, "write")
+	check(w ~= nil and w.text == "now" and free.deck.queue.x.text == "first", "an idle row takes o, held one kept")
+
+	for _, k in { "o", "q" } do
+		local menu = on_claude({ idle })
+		char(menu, "?")
+		char(menu, k)
+		check(menu.ui.mode == "input" and menu.ui.target_id == "x", "the menu's " .. k .. " opens on a claude row")
+	end
 end
 
 -- q: nothing held opens empty; Enter stores one message; a held one prefills, Esc keeps it, Enter replaces it,
@@ -1599,7 +1892,9 @@ do
 	check(kinds(b.effects) == "request:settings", "opening settings changes no deck or visible list state")
 end
 
--- n starts an agent at once: the group's folder is checked, then a pending record, save_kv, then start.
+-- n starts an agent at once: the group's folder is checked, then a pending record, save_kv, then start. A claude
+-- agent's conversation id is drawn with its deck id, stored as its session and sent with the start, and a first start
+-- that fails is retried on that id, by the same line.
 do
 	local b = block(sample())
 	b.deck.settings.agent = "claude"
@@ -1616,18 +1911,37 @@ do
 	check(r.cwd == "/home/a/webapp" and r.cli == "claude", "cwd comes from the group and cli from settings")
 	check((r :: any).dir == nil, "the new record has no legacy dir")
 	check(r.created_ms == NOW, "created now")
+	check(r.session == UUID and Identity.valid_uuid(r.session :: string), "its conversation id is drawn and stored")
 	check(kinds(b.effects) == "save_kv,request:start,render", "save_kv comes before the start request")
 	local start = request_of(b.effects, "start")
 	check(start ~= nil and start.id == "abcdefgh" and start.cwd == "/home/a/webapp", "start names id and cwd")
 	check(start ~= nil and start.cli == "claude" and start.mode == "new", "start names the configured cli and new mode")
+	check(start ~= nil and start.sid == UUID, "and the agent's conversation id")
+	check(line_of(start) == claude_line("abcdefgh", UUID), "the window runs Claude Code on that id")
 	check(start ~= nil and start.prompt == nil and start.dir == nil, "start carries no prompt, never dir")
 	check(b.ui.mode == "list", "focus stays in the list")
+
+	local failed = Store.clone(b.deck)
+	failed.agents.abcdefgh.failed = true
+	failed.agents.abcdefgh.ended_ms = NOW
+	local retried = block(failed)
+	select(retried, { kind = "agent", id = "abcdefgh" })
+	key(retried, "enter")
+	answer(retried, true)
+	local again = request_of(retried.effects, "start")
+	check(again ~= nil and again.sid == UUID, "a failed first start is retried on the same conversation id")
+	check(line_of(again) == line_of(start), "by the same line, never the picker: " .. tostring(line_of(again)))
 
 	-- A colliding id is drawn again.
 	select(b, { kind = "header", gid = "g2" })
 	char(b, "n")
 	answer(b, true, rand_from({ 1, 2, 3, 4, 5, 6, 7, 8, 2, 2, 2, 2, 2, 2, 2, 2 }))
 	check(b.deck.agents.bbbbbbbb ~= nil and b.deck.agents.bbbbbbbb.gid == "g2", "a taken id is drawn again")
+	local other = b.deck.agents.bbbbbbbb.session
+	check(
+		other ~= nil and Identity.valid_uuid(other) and other ~= UUID,
+		"and the new agent gets its own conversation id"
+	)
 end
 
 -- n with no group yet runs the g flow first, then continues into n.
@@ -1655,7 +1969,8 @@ do
 	local start = request_of(b.effects, "start")
 	check(start ~= nil and start.cwd == "/home/a/block", "the agent starts in the new group's folder")
 	check(start ~= nil and start.cli == "omp" and start.mode == "new", "the default omp agent starts in new mode")
-	check(b.deck.agents.abcdefgh ~= nil, "the record is stored")
+	check(start ~= nil and start.sid == nil, "with no conversation id")
+	check(b.deck.agents.abcdefgh ~= nil and b.deck.agents.abcdefgh.session == nil, "the record is stored, with none")
 end
 
 -- N opens the agent picker on the default agent; Enter starts the highlighted kind in the selected group, and the
@@ -1689,6 +2004,15 @@ do
 	local start = request_of(b.effects, "start")
 	check(start ~= nil and start.cli == "claude" and start.mode == "new", "and starts it in new mode")
 	check(b.deck.settings.agent == "codex", "the default agent is unchanged")
+	check(start ~= nil and start.sid == r.session and r.session ~= nil, "the picked claude agent starts on its own id")
+
+	-- n starts the default agent, codex, which picks its own thread id: none is stored or sent.
+	char(b, "n")
+	answer(b, true, rand_from({ 1, 2, 3, 4, 5, 6, 7, 8, 2, 2, 2, 2, 2, 2, 2, 2 }))
+	local codex = request_of(b.effects, "start")
+	check(codex ~= nil and codex.cli == "codex" and codex.mode == "new" and codex.sid == nil, "codex starts new, no id")
+	check(b.deck.agents.bbbbbbbb.session == nil, "a codex record holds no conversation id at its start")
+	check(line_of(codex) == "env JUMPR_ID=bbbbbbbb codex", "the window runs the Codex CLI")
 
 	-- Esc leaves without starting anything.
 	char(b, "N")
@@ -1716,6 +2040,7 @@ do
 	answer(b, true, rand_from({ 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8 }))
 	local start = request_of(b.effects, "start")
 	check(start ~= nil and start.cli == "claude", "the picked agent starts in the new group")
+	check(start ~= nil and start.sid ~= nil and Identity.valid_uuid(start.sid), "on a conversation id of its own")
 end
 
 -- g: the folder is prefilled from the selected agent; a git_root answer updates the untouched name.

@@ -63,8 +63,9 @@ export type State = {
 	arrived: number,
 	-- When each deck id's merged entries last changed (tern.now() ms), for the `i` overlay's per-row age.
 	changed: { [string]: number },
-	-- Deck ids a working status was seen for since their last send. Once per machine, in memory only: false
-	-- after a plugin reload, so the 30 s rule of `queue.due` applies then.
+	-- Deck ids a working status was seen for since their last send, from the same merged entries `due` reads (a
+	-- claude or codex agent's too). Once per machine, in memory only: false after a plugin reload, so the 30 s rule of
+	-- `queue.due` applies then.
 	seen_working: { [string]: boolean },
 	-- When the first status message arrived since the host half started (tern.now() ms): the stored host name is
 	-- kept until windows have had a minute to be heard.
@@ -156,10 +157,11 @@ function M.sent(state: State, id: string)
 	state.seen_working[id] = nil
 end
 
--- The held messages that are due now, from the machine's merged status. The host timer calls it every second so
--- `q` on an idle agent and the 30 s rule after a reload fire within a second; `on_action` does the same for each
--- status message. `sets` are the live panes per deck id; `now` is tern.now() and `wall` wall-clock ms; `skip` is the
--- agent whose `q` line is open (`keys.editing`), which is not swept.
+-- The held messages that are due now, from the machine's merged status: a claude or codex agent's only on an idle it
+-- reported itself (`queue.due`). The host timer calls it every second so `q` on an idle agent and the 30 s rule after
+-- a reload fire within a second; `on_action` does the same for each status message. `sets` are the live panes per
+-- deck id; `now` is tern.now() and `wall` wall-clock ms; `skip` is the agent whose `q` line is open (`keys.editing`),
+-- which is not swept.
 function M.due(
 	state: State,
 	deck: store.Deck,

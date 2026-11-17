@@ -10,7 +10,7 @@ local function check(condition: boolean, message: string)
 end
 
 local P = Protocol.P
-check(P == 3, "the protocol version is 3")
+check(P == 4, "the protocol version is 4")
 
 local function msg(w: string, seq: number, full: boolean): Protocol.StatusMsg
 	return Protocol.status_msg(w, seq, full, 1000, "connected", "deck", "devbox", false, "A", {})
@@ -136,12 +136,12 @@ end
 local percent = Protocol.request_url("name", "b", 1, "h", { label = "%41 %zz" })
 local percent_req = Protocol.parse_url(percent)
 check(percent_req ~= nil and percent_req.fields.label == "%41 %zz", "an encoded % is not decoded twice")
-check(Protocol.request_url("hello", "b", 2, "h", {}) == "jumpr://hello?p=3&b=b&r=2&host=h", "a verb with no fields")
+check(Protocol.request_url("hello", "b", 2, "h", {}) == "jumpr://hello?p=4&b=b&r=2&host=h", "a verb with no fields")
 
 -- Unknown verbs are rejected, by the parser and the builder.
-check(Protocol.parse_url("jumpr://launch?p=3&b=b&r=1&host=h") == nil, "an unknown verb is rejected")
-check(Protocol.parse_url("jumpr://Start?p=3&b=b&r=1&host=h") == nil, "verbs are case-sensitive")
-check(Protocol.parse_url("https://start?p=3&b=b&r=1&host=h") == nil, "a non-jumpr URL is rejected")
+check(Protocol.parse_url("jumpr://launch?p=4&b=b&r=1&host=h") == nil, "an unknown verb is rejected")
+check(Protocol.parse_url("jumpr://Start?p=4&b=b&r=1&host=h") == nil, "verbs are case-sensitive")
+check(Protocol.parse_url("https://start?p=4&b=b&r=1&host=h") == nil, "a non-jumpr URL is rejected")
 check(not pcall(Protocol.request_url, "launch", "b", 1, "h", {}), "request_url refuses an unknown verb")
 for verb in Protocol.VERBS do
 	check(Protocol.parse_url(Protocol.request_url(verb, "b", 1, "h", {})) ~= nil, "known verb parses: " .. verb)
@@ -176,7 +176,7 @@ do
 end
 
 -- A start URL carrying a dir field parses without dir; request_url never writes one.
-local with_dir = Protocol.parse_url("jumpr://start?p=3&b=b&r=1&host=h&id=ab&dir=%2Ftmp%2Fevil&cwd=%2Fx")
+local with_dir = Protocol.parse_url("jumpr://start?p=4&b=b&r=1&host=h&id=ab&dir=%2Ftmp%2Fevil&cwd=%2Fx")
 assert(with_dir ~= nil, "a start URL with dir still parses")
 check(with_dir.fields.dir == nil, "the dir field is dropped")
 check(with_dir.fields.id == "ab" and with_dir.fields.cwd == "/x", "the other fields stay")
@@ -184,11 +184,11 @@ check(not pcall(Protocol.request_url, "start", "b", 1, "h", { dir = "/tmp" }), "
 check(not pcall(Protocol.request_url, "start", "b", 1, "h", { host = "x" }), "request_url refuses a URL key as field")
 
 -- Missing b, r or host are rejected.
-check(Protocol.parse_url("jumpr://jump?p=3&b=b&r=1&id=ab") == nil, "a URL without host is rejected")
-check(Protocol.parse_url("jumpr://jump?p=3&b=b&r=1&host=&id=ab") == nil, "a URL with an empty host is rejected")
-check(Protocol.parse_url("jumpr://jump?p=3&r=1&host=h&id=ab") == nil, "a URL without b is rejected")
-check(Protocol.parse_url("jumpr://jump?p=3&b=b&host=h&id=ab") == nil, "a URL without r is rejected")
-check(Protocol.parse_url("jumpr://jump?p=3&b=b&r=x&host=h") == nil, "a URL with a non-number r is rejected")
+check(Protocol.parse_url("jumpr://jump?p=4&b=b&r=1&id=ab") == nil, "a URL without host is rejected")
+check(Protocol.parse_url("jumpr://jump?p=4&b=b&r=1&host=&id=ab") == nil, "a URL with an empty host is rejected")
+check(Protocol.parse_url("jumpr://jump?p=4&r=1&host=h&id=ab") == nil, "a URL without b is rejected")
+check(Protocol.parse_url("jumpr://jump?p=4&b=b&host=h&id=ab") == nil, "a URL without r is rejected")
+check(Protocol.parse_url("jumpr://jump?p=4&b=b&r=x&host=h") == nil, "a URL with a non-number r is rejected")
 check(Protocol.parse_url("jumpr://jump?b=b&r=1&host=h") == nil, "a URL without p is rejected")
 check(Protocol.parse_url("jumpr://jump") == nil, "a URL with no query is rejected")
 
@@ -213,11 +213,11 @@ local v_same, h_same = Protocol.check_url(url_with_p(P))
 check(v_same == "ok" and h_same == "h", "check_url on a same-version URL is ok and gives its host")
 check(Protocol.check_url(url_with_p(P + 1)) == "bad_p_newer", "check_url on a newer p gives bad_p_newer")
 check(Protocol.check_url(url_with_p(P - 1)) == "bad_p_older", "check_url on an older p gives bad_p_older")
-local v_verb, h_verb = Protocol.check_url("jumpr://launch?p=4&b=x&r=1&host=my%20box")
+local v_verb, h_verb = Protocol.check_url("jumpr://launch?p=5&b=x&r=1&host=my%20box")
 check(v_verb == "bad_p_newer" and h_verb == "my box", "check_url names a newer p on a verb this side does not know")
 local v_none, h_none = Protocol.check_url("jumpr://jump?b=b&r=1")
 check(v_none == "bad_p_older" and h_none == nil, "check_url reads a URL without p as older, with no host")
-check(Protocol.check_url("jumpr://jump?p=3&p=2&b=b&r=1&host=h") == "ok", "check_url: the first p wins")
+check(Protocol.check_url("jumpr://jump?p=4&p=2&b=b&r=1&host=h") == "ok", "check_url: the first p wins")
 check(Protocol.check_url("https://example.com/?p=1") == nil, "check_url: not a jumpr:// URL gives nil")
 check(Protocol.check_url("jumpr://jump") == nil, "check_url: a jumpr:// URL with no query gives nil")
 
@@ -344,7 +344,7 @@ end
 -- request URLs carry the sending list's deck session as `sn`, when the host has one.
 do
 	local with_sn = Protocol.request_url("jump", "b", 3, "devbox", { id = "ab" }, "main deck")
-	check(with_sn == "jumpr://jump?p=3&b=b&r=3&host=devbox&sn=main%20deck&id=ab", "sn follows host, encoded")
+	check(with_sn == "jumpr://jump?p=4&b=b&r=3&host=devbox&sn=main%20deck&id=ab", "sn follows host, encoded")
 	local req = Protocol.parse_url(with_sn)
 	assert(req ~= nil, "a URL with sn parses")
 	check(req.sn == "main deck" and req.fields.sn == nil and req.fields.id == "ab", "sn is read apart from the fields")

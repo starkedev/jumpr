@@ -65,9 +65,10 @@ local function known_host(cx: WindowCx, name: string): boolean
 	return false
 end
 
--- Sends a `res` to every deck block on the request's host; toasts when none could be sent.
-local function reply(cx: WindowCx, req: protocol.Request, ok: boolean, err: string?)
-	local value = compat.json_encode(protocol.reply(req.b, req.r, ok, err))
+-- Sends a `res` to every deck block on the request's host; toasts when none could be sent. `gone` marks a stop's
+-- error reply that found no pane for the agent (see `protocol.reply`).
+local function reply(cx: WindowCx, req: protocol.Request, ok: boolean, err: string?, gone: boolean?)
+	local value = compat.json_encode(protocol.reply(req.b, req.r, ok, err, gone))
 	local sent = 0
 	local last_err: string? = "no jumpr list on " .. req.host
 	for _, pane in pusher.blocks_for(req.host) do
@@ -321,10 +322,11 @@ end
 -- confirmation. `cx.agents:stop` first; when it refuses (an agent restored by a shell command
 -- line may not be an agent block), `cx.layout:close` instead. Tern's docs say `agents:stop` closes the block, yet a
 -- chat whose agent never started was seen to stay open after it, so a pane still open `STOP_GRACE_MS` after
--- `agents:stop` answered for it is closed with `cx.layout:close`, and the reply waits for that look. An agent the
--- window does not know, or a pane neither call closes, is answered with an error, so the block puts the record back
--- to `live`. Closing a tab's last agent lets `copies.tidy` close the lone copy left behind and move focus to the copy
--- in the tab Tern shows next.
+-- `agents:stop` answered for it is closed with `cx.layout:close`, and the reply waits for that look. A pane neither
+-- call closes is answered with an error, so the block puts the record back to `live`. An agent the window finds no
+-- pane for (its program no longer runs) has nothing to stop: that error is marked `gone`, so the block deletes the
+-- record as a finished stop. Closing a tab's last agent lets `copies.tidy` close the lone copy left behind and move
+-- focus to the copy in the tab Tern shows next.
 local function stop(cx: WindowCx, req: protocol.Request)
 	local id = req.fields.id or ""
 	if not identity.valid_id(id) then
@@ -337,7 +339,9 @@ local function stop(cx: WindowCx, req: protocol.Request)
 		panes = agents.panes_for(req.host, id)
 	end
 	if #panes == 0 then
-		fail(cx, req, "agent " .. id .. " is not running on " .. req.host)
+		local text = "agent " .. id .. " is not running on " .. req.host
+		diag.error("router", text)
+		reply(cx, req, false, text, true)
 		return
 	end
 	local failure: string? = nil

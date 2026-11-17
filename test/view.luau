@@ -38,29 +38,39 @@ local function same(a: { string }, b: { string }): boolean
 	return true
 end
 
--- The head's parts: host, connection, filter, search, status, each whole and in that order.
-check(same(View.head_parts(frame({ host = "me@devbox" })), { "me@devbox", "status 3s" }), "host and status alone")
+-- The head's parts: host, connection, filter, search, then the status health only when it is not fresh (a fresh
+-- status shows no ticking age), each whole and in that order.
+check(same(View.head_parts(frame({ host = "me@devbox" })), { "me@devbox" }), "a fresh status adds no age")
 check(
-	same(View.head_parts(frame({ host = "me@devbox", h = "connected" })), { "me@devbox", "connected", "status 3s" }),
+	same(View.head_parts(frame({ host = "me@devbox", h = "connected" })), { "me@devbox", "connected" }),
 	"the connection state follows the host"
 )
-check(
-	same(View.head_parts(frame({ host = "h", h = "" })), { "h", "status 3s" }),
-	"an empty connection state is left out"
-)
+check(same(View.head_parts(frame({ host = "h", h = "" })), { "h" }), "an empty connection state is left out")
 check(
 	same(
 		View.head_parts(frame({ host = "h", h = "connected" }, { mode = "list", filter = "waiting", search = "bra" })),
-		{ "h", "connected", "filter @ waiting", "/bra", "status 3s" }
+		{ "h", "connected", "filter @ waiting", "/bra" }
 	),
-	"filter then search, before the status; the filter says what its key keeps"
+	"filter then search; the filter says what its key keeps"
 )
 check(
-	same(View.head_parts(frame({ host = "h" }, { mode = "input", search = "bra" })), { "h", "status 3s" }),
+	same(View.head_parts(frame({ host = "h" }, { mode = "input", search = "bra" })), { "h" }),
 	"the search is not repeated while its input line is open"
 )
 check(View.head_parts(frame({}))[1] == "unknown host", "no host names it unknown")
 check(same(View.head_parts(frame({ host = "h", health = "stale" })), { "h", "status stale" }), "a stale status says so")
+check(
+	same(View.head_parts(frame({ host = "h", health = "unavailable" })), { "h", "status unavailable" }),
+	"an unavailable status says so"
+)
+do
+	local f = frame({ host = "h" })
+	f.age_ms = nil
+	check(same(View.head_parts(f), { "h", "status unavailable" }), "no status message yet says unavailable")
+end
+local last_ui: { [string]: any } = { mode = "list", filter = "idle" }
+local last = View.head_parts(frame({ host = "h", h = "connected", health = "stale" }, last_ui))
+check(same(last, { "h", "connected", "filter $ idle", "status stale" }), "the status health comes last")
 local long = View.head_parts(frame({ host = "a-very-long-host-name-that-overflows-a-narrow-pane", h = "connected" }))
 check(long[1] == "a-very-long-host-name-that-overflows-a-narrow-pane", "a part is never cut")
 check(View.head_parts(frame({ host = "h" }, { mode = "list", filter = "error" }))[2] == "filter ! error", "filter !")
@@ -69,7 +79,60 @@ check(
 	"filter #"
 )
 check(View.head_parts(frame({ host = "h" }, { mode = "list", filter = "idle" }))[2] == "filter $ idle", "filter $")
-check(#View.head_parts(frame({ host = "h" }, { mode = "list", filter = "!" })) == 2, "a key is no filter code")
+check(#View.head_parts(frame({ host = "h" }, { mode = "list", filter = "!" })) == 1, "a key is no filter code")
+
+-- Ages, on a row's meta line and with `i`: nothing finer than a minute, so the text changes at most once a minute;
+-- larger ages in one whole unit.
+do
+	local row: any = { kind = "agent", gid = "g1", id = "a", state = "live", code = "idle", src = "agents" }
+	local function age(ms: number): string
+		return View.meta_parts(frame({ row_age = { a = ms } }), row, nil)[1]
+	end
+	local cases: { { any } } = {
+		{ -5000, "<1m" },
+		{ 0, "<1m" },
+		{ 59000, "<1m" },
+		{ 59999, "<1m" },
+		{ 60000, "1m" },
+		{ 300000, "5m" },
+		{ 3599000, "59m" },
+		{ 3600000, "1h" },
+		{ 7200000, "2h" },
+		{ 86399000, "23h" },
+		{ 86400000, "1d" },
+		{ 172800000, "2d" },
+	}
+	for _, case in cases do
+		check(age(case[1]) == case[2], case[1] .. " ms reads " .. case[2] .. ": " .. age(case[1]))
+	end
+	local function overlay(ms: number): string
+		local parts = View.meta_parts(frame({ row_age = { a = ms } }, { mode = "list", show_src = true }), row, nil)
+		return parts[#parts]
+	end
+	check(overlay(11000) == "agents <1m", "with i, under a minute reads <1m: " .. overlay(11000))
+	check(overlay(300000) == "agents 5m", "with i, whole minutes: " .. overlay(300000))
+	check(overlay(3600000) == "agents 1h", "with i, whole hours: " .. overlay(3600000))
+end
+
+-- The clock key changes only when a shown text does: two frames a second apart within the same minute share it, and
+-- a minute boundary, with or without `i`, or a change of status health changes it.
+do
+	local clock_rows: { any } = { { kind = "agent", gid = "g1", id = "a", src = "agents" } }
+	local function key(row_ms: number, status_ms: number, ui: { [string]: any }?, health: string?): string
+		local fields: { [string]: any } = { rows = clock_rows, row_age = { a = row_ms }, age_ms = status_ms }
+		fields.health = health or "ok"
+		return View.clock_key(frame(fields, ui))
+	end
+	check(key(61000, 3000) == key(62000, 4000), "a second later within the same minute keeps the key")
+	check(key(1000, 1000) == key(2000, 2000), "a second later under a minute keeps the key")
+	check(key(59000, 3000) ~= key(60000, 4000), "a minute boundary changes the key")
+	check(key(3599000, 3000) ~= key(3600000, 4000), "an hour boundary changes the key")
+	local src: { [string]: any } = { mode = "list", show_src = true }
+	check(key(61000, 3000, src) == key(62000, 4000, src), "with i, a second later within the minute keeps the key")
+	check(key(119000, 3000, src) ~= key(120000, 4000, src), "with i, a minute boundary changes the key")
+	check(key(61000, 3000) ~= key(61000, 3000, nil, "stale"), "status going stale changes the key")
+	check(key(61000, 3000, nil, "stale") ~= key(61000, 3000, nil, "unavailable"), "stale to unavailable changes it")
+end
 
 -- The count tiles: each status's filter key with its count and its word, left to right in the one order (error,
 -- waiting, running, idle), and the tile whose filter is on marked.

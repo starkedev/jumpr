@@ -744,9 +744,9 @@ function M.agent_label(deck: store.Deck, id: string?): string
 	return id
 end
 
--- A `stop` that failed (an error reply, or none within 10 s): a `stopping` record goes back to `live`, with the
--- notice "stop failed on <host>". Its `stop_ms` stays, so a `pane_exited` within 60 s still deletes it (the stop
--- may have happened with the reply lost). Any other record is left alone (the same deck, no notice).
+-- A `stop` that failed (an error reply not marked `gone`, or none within 10 s): a `stopping` record goes back to
+-- `live`, with the notice "stop failed on <host>". Its `stop_ms` stays, so a `pane_exited` within 60 s still deletes
+-- it (the stop may have happened with the reply lost). Any other record is left alone (the same deck, no notice).
 function M.stop_failed(deck: store.Deck, id: string): (store.Deck, string?)
 	local r = deck.agents[id]
 	if r == nil or r.state ~= "stopping" then
@@ -755,6 +755,18 @@ function M.stop_failed(deck: store.Deck, id: string): (store.Deck, string?)
 	local out = store.clone(deck)
 	out.agents[id].state = "live"
 	return out, "stop failed on " .. M.host_label(deck)
+end
+
+-- A `stop` the window answered with no pane for the agent at all (`gone`: its program no longer runs, so there is
+-- nothing to stop): a `stopping` record is deleted as a finished stop whose pane then exited would be, with its held
+-- message, the closed stamp `apply_exit` writes and a `deleting` group it leaves empty. No notice: the stop did
+-- what `d` asked. Any other record is left alone (the same deck).
+function M.stop_gone(deck: store.Deck, id: string, now_ms: number): store.Deck
+	local r = deck.agents[id]
+	if r == nil or r.state ~= "stopping" then
+		return deck
+	end
+	return M.sweep_groups(M.apply_exit(deck, id, nil, now_ms))
 end
 
 -- A `cancel` record whose pane bound comes back `stopping` with no `stop_ms` (`on_bind`): stamps `stop_ms = now` on

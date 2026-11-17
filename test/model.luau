@@ -607,6 +607,28 @@ do
 	check(Model.on_exit(stopped.agents.a, NOW + 1000) == "delete", "a stopped record's pane_exited deletes it")
 end
 
+-- stop_gone: a stop the window found nothing to stop for deletes the stopping record as a finished stop would, with
+-- its closed stamp, and sweeps the deleting group it empties; any other record is left alone.
+do
+	local deck = Store.empty()
+	group(deck, "g1", "webapp")
+	group(deck, "g2", "notes")
+	local work = Store.closed_key("claude", "/work")
+	agent(deck, "a", "g1", 1, { cli = "claude", cwd = "/work", ran = true })
+	agent(deck, "k", "g2", 1)
+	local deleting, stops = Model.delete_group(deck, "g1", NOW)
+	check(#stops == 1 and deleting.agents.a.state == "stopping", "the group's live agent is stopping")
+	local gone = Model.stop_gone(deleting, "a", NOW + 500)
+	check(gone.agents.a == nil, "stop_gone deletes the stopping record")
+	check(gone.closed[work] == "a", "it stamps the closed key, as a stop whose pane exited does")
+	check(#gone.groups == 1 and gone.groups[1].gid == "g2", "and the deleting group it empties is swept")
+	check(deleting.agents.a ~= nil and deleting.agents.a.state == "stopping", "stop_gone leaves its input untouched")
+	check(Model.stop_gone(deleting, "k", NOW) == deleting, "a live record is left alone")
+	check(Model.stop_gone(deleting, "missing", NOW) == deleting, "an unknown id changes nothing")
+	local back = Model.stop_failed(deleting, "a")
+	check(Model.stop_gone(back, "a", NOW) == back, "a record already taken back to live is left alone")
+end
+
 -- A cancel row reads as removing.
 do
 	local deck = Store.empty()

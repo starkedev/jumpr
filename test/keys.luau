@@ -671,6 +671,129 @@ do
 	check(b.ui.mode == "list" and #b.effects == 1 and b.effects[1].kind == "render", "a gone agent ends the mode")
 end
 
+-- A held agent steps over its group's edges: down from the last place into the next group's top, up from the first
+-- place into the previous group's bottom, renumbering both groups' `pos` 1..n and saving, as `m` does. It stays put
+-- at the first group's top and the last group's bottom; Esc puts it back in the group and place it was picked up.
+do
+	local function order(b: Block, gid: string): string
+		return table.concat(Model.group_ids(b.deck, gid), ",")
+	end
+	local function positions(b: Block, gid: string): string
+		local out = {}
+		for _, id in Model.group_ids(b.deck, gid) do
+			table.insert(out, tostring(b.deck.agents[id].pos))
+		end
+		return table.concat(out, ",")
+	end
+	local deck = sample()
+	agent(deck, "d", "g2", 2)
+	group(deck, "g3", "misc")
+	agent(deck, "e", "g3", 1)
+	local b = block(deck)
+	select(b, { kind = "agent", id = "b" })
+	char(b, "V")
+	char(b, "j")
+	check(order(b, "g1") == "a" and order(b, "g2") == "b,c,d", "j from the last place enters the next group's top")
+	check(b.deck.agents.b.gid == "g2" and b.deck.agents.b.cwd == "/home/a/wt/b", "it changes group, not folder")
+	check(positions(b, "g1") == "1" and positions(b, "g2") == "1,2,3", "both groups keep pos 1..n")
+	check(kinds(b.effects) == "save_kv,render", "crossing saves")
+	check(
+		b.ui.mode == "order" and b.ui.target_id == "b" and b.ui.selection ~= nil and b.ui.selection.gid == "g2",
+		"it stays held, and the selection follows it into the group"
+	)
+	check(deck.agents.b.gid == "g1", "reduce leaves the input deck untouched")
+	char(b, "k")
+	check(order(b, "g1") == "a,b" and order(b, "g2") == "c,d", "k from the first place enters the previous group's end")
+	check(positions(b, "g1") == "1,2" and positions(b, "g2") == "1,2", "both groups keep pos 1..n again")
+	char(b, "k")
+	check(order(b, "g1") == "b,a" and b.deck.agents.b.gid == "g1", "within a group a step is unchanged")
+	char(b, "k")
+	check(order(b, "g1") == "b,a" and #b.effects == 0, "at the first group's top it stays, with nothing saved")
+	key(b, "enter")
+	check(b.ui.mode == "list" and order(b, "g1") == "b,a", "Enter drops it")
+
+	select(b, { kind = "agent", id = "e" })
+	char(b, "V")
+	key(b, "down")
+	check(order(b, "g3") == "e" and #b.effects == 0, "at the last group's bottom it stays, with nothing saved")
+	key(b, "escape")
+	check(b.ui.mode == "list" and order(b, "g3") == "e", "Esc with nothing moved changes nothing")
+
+	-- Esc after crossing: back to the group and place V picked it up in, both groups renumbered.
+	select(b, { kind = "agent", id = "c" })
+	char(b, "V")
+	key(b, "up")
+	check(order(b, "g1") == "b,a,c" and order(b, "g2") == "d", "↑ crosses too: " .. order(b, "g1"))
+	char(b, "k")
+	check(order(b, "g1") == "b,c,a", "and steps on within its new group")
+	key(b, "escape")
+	check(order(b, "g1") == "b,a" and order(b, "g2") == "c,d", "Esc after crossing restores its group and place")
+	check(b.deck.agents.c.gid == "g2" and positions(b, "g1") == "1,2" and positions(b, "g2") == "1,2", "renumbered")
+	check(kinds(b.effects) == "save_kv,render" and b.ui.mode == "list", "Esc saves and closes the mode")
+	check(b.ui.target_id == nil and b.ui.order_at == nil and b.ui.order_gid == nil, "the mode's fields are cleared")
+end
+
+-- Crossing passes over a group being deleted and opens a folded one; with no group left that way it stays put. A
+-- record being stopped or removed still steps within its group but refuses to cross, as `m` refuses it.
+do
+	local function order(b: Block, gid: string): string
+		return table.concat(Model.group_ids(b.deck, gid), ",")
+	end
+	local deck = Store.empty()
+	group(deck, "g1", "webapp")
+	group(deck, "g2", "notes")
+	group(deck, "g3", "misc", true)
+	deck.groups[2].deleting = true
+	agent(deck, "a", "g1", 1)
+	agent(deck, "c", "g2", 1, { state = "stopping" })
+	agent(deck, "e", "g3", 1)
+	local b = block(deck)
+	select(b, { kind = "agent", id = "a" })
+	char(b, "V")
+	char(b, "j")
+	check(order(b, "g3") == "a,e" and order(b, "g2") == "c", "a deleting group is passed over: " .. order(b, "g3"))
+	check(b.deck.groups[3].folded == false, "a folded target opens, so the held row stays drawn")
+	check(b.ui.selection ~= nil and b.ui.selection.id == "a", "the selection stays on the held agent")
+	char(b, "k")
+	check(order(b, "g1") == "a" and order(b, "g2") == "c", "back up, the deleting group is passed over again")
+	key(b, "escape")
+	check(b.ui.mode == "list" and order(b, "g1") == "a", "Esc leaves it where it was picked up")
+
+	local last = Store.empty()
+	group(last, "g1", "webapp")
+	group(last, "g2", "notes")
+	last.groups[2].deleting = true
+	agent(last, "a", "g1", 1)
+	local l = block(last)
+	select(l, { kind = "agent", id = "a" })
+	char(l, "V")
+	char(l, "j")
+	check(order(l, "g1") == "a" and #l.effects == 0, "with only a deleting group below, it stays put")
+
+	local held = sample()
+	agent(held, "s", "g1", 3, { state = "stopping" })
+	agent(held, "x", "g1", 4, { state = "pending", cancel = true })
+	local h = block(held)
+	select(h, { kind = "agent", id = "s" })
+	char(h, "V")
+	char(h, "j")
+	check(order(h, "g1") == "a,b,x,s", "a stopping record still steps within its group")
+	char(h, "j")
+	check(
+		order(h, "g1") == "a,b,x,s" and h.ui.notice == Keys.STOPPING and kinds(h.effects) == "render",
+		"but refuses to cross, with nothing saved: " .. tostring(h.ui.notice)
+	)
+	key(h, "escape")
+	select(h, { kind = "agent", id = "x" })
+	char(h, "V")
+	char(h, "G")
+	char(h, "j")
+	check(
+		order(h, "g2") == "c" and h.ui.notice == Keys.REMOVING and h.ui.mode == "order",
+		"a record being removed refuses to cross: " .. tostring(h.ui.notice)
+	)
+end
+
 -- V on a header reorders the groups the same way: j/k step it, G/Home send it to an end, Esc puts it back, Enter or
 -- V drops it. Its agents go with it, untouched; a group swept while held ends the mode.
 do

@@ -135,4 +135,51 @@ do
 	check(#Requests.pending(ledger) == 0, "every reply left the ledger")
 end
 
+-- A stop the window answers `gone` (no pane for the agent at all) deletes the record and says nothing; the same error
+-- without `gone` (an older window) and a failure with the mark on another verb keep their old handling.
+do
+	local ledger = Requests.new()
+	local d = deck()
+	d.agents.a.state = "stopping"
+	d.agents.a.stop_ms = WALL
+	local sender = Requests.new_sender(nil, d, false, new_uid)
+	local b = sender.b
+	local _, d2 = Requests.request(ledger, sender, d, false, "stop", { id = "a" }, NOW, new_uid)
+	local _, d3 = Requests.request(ledger, sender, d2, false, "stop", { id = "a" }, NOW, new_uid)
+	local _, d4 = Requests.request(ledger, sender, d3, false, "start", { id = "p", cwd = "/work" }, NOW, new_uid)
+	local not_running = "agent a is not running on devbox"
+	local gone, notice, line = Requests.reply(ledger, b, 5, false, not_running, d4, WALL, true)
+	check(gone.agents.a == nil, "a stop answered gone deletes the record")
+	check(notice == nil and line == nil, "with no notice and nothing logged")
+	check(d4.agents.a ~= nil, "the input deck is untouched")
+	local back, back_notice, back_line = Requests.reply(ledger, b, 6, false, not_running, d4, WALL)
+	check(back.agents.a.state == "live", "the same error without gone is taken back to live")
+	check(back_notice == "stop failed on devbox: " .. not_running, "and said: " .. tostring(back_notice))
+	check(back_line == "stop a failed: " .. not_running, "and logged")
+	local started = Requests.reply(ledger, b, 7, false, "no session", d4, WALL, true)
+	check(started.agents.p.failed == true, "gone on a start's reply still marks the start failed")
+	check(#Requests.pending(ledger) == 0, "every reply left the ledger")
+end
+
+-- `gone` is believed only while this machine has no running pane for the agent: with none it deletes, with one still
+-- in the set (a running program the window cannot see) the stop is taken back with the failure.
+do
+	local function stopping(): (any, any, string)
+		local ledger = Requests.new()
+		local d = deck()
+		d.agents.a.state = "stopping"
+		d.agents.a.stop_ms = WALL
+		local sender = Requests.new_sender(nil, d, false, new_uid)
+		local _, d2 = Requests.request(ledger, sender, d, false, "stop", { id = "a" }, NOW, new_uid)
+		return ledger, d2, sender.b
+	end
+	local l1, d1, b1 = stopping()
+	local gone = Requests.reply(l1, b1, 5, false, "not running", d1, WALL, true, { a = {} })
+	check(gone.agents.a == nil, "gone with no running pane deletes the record")
+	local l2, d2, b2 = stopping()
+	local kept, notice = Requests.reply(l2, b2, 5, false, "not running", d2, WALL, true, { a = { [7] = true } })
+	check(kept.agents.a ~= nil and kept.agents.a.state == "live", "gone with a running pane keeps the agent")
+	check(notice ~= nil and string.find(notice, "stop failed", 1, true) == 1, "and says the stop failed")
+end
+
 print("Requests: " .. checks .. " checks passed")

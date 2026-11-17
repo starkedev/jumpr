@@ -6,6 +6,14 @@ Update with `tern plugin install github.com/starkedev/jumpr --force` on each mac
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-11-17
+
+### Changed
+
+- `V` carries an agent past its group's edge into the next or previous group, so one key both reorders and regroups; Esc still puts it back where it was picked up.
+- The list no longer ticks every second: the head line leaves out the status age while the status is fresh, and ages read `<1m`, then minutes, hours and days. It redraws about once a minute instead of every second, which matters with many copies open.
+- `d` on an agent whose program has already gone removes it from the list, instead of putting it back with "stop failed". An agent still running where the window can't see it stays listed, with the stop reported as failed.
+
 ## [0.2.5] - 2026-11-17
 
 ### Fixed
@@ -208,7 +216,8 @@ Tested on Tern 0.9.10 and 0.9.11.
 - Every message between the halves carries a protocol version, and a mismatch shows a banner naming the machine to update.
 - `scripts/check.sh` runs stylua, the unit suites, a strict `luau-lsp` type check and design-rule checks.
 
-[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.2.6...HEAD
+[0.2.6]: https://github.com/starkedev/jumpr/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/starkedev/jumpr/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/starkedev/jumpr/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/starkedev/jumpr/compare/v0.2.2...v0.2.3

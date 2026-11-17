@@ -60,8 +60,9 @@ export type Selection = model.Selection
 -- target_gid (n, N, confirm group, V on a header), target_id (r, o, q, d, m, V on an agent). pick: the highlighted
 -- group's gid in the `m` picker (a gid, so a group swept while the picker is open cannot shift it onto another), or
 -- the highlighted agent in the `N` picker, whose choices are `kinds` (read once, as it opens). order_at: where the row
--- `V` picked up stood (in its group, or among the groups), for Esc to put it back. menu: the highlighted item's index
--- in the `?` menu (its items are always the same, in the same order, so an index stays on the same command).
+-- `V` picked up stood (in its group, or among the groups), for Esc to put it back; order_gid: the group a held agent
+-- was picked up in, since a step can carry it into another. menu: the highlighted item's index in the `?` menu (its
+-- items are always the same, in the same order, so an index stays on the same command).
 -- zen: zen mode, on every copy (one list state): the copy it was turned on in takes its whole tab, and moves show no
 -- agent's tab.
 export type UI = {
@@ -86,6 +87,7 @@ export type UI = {
 	pick: string?,
 	kinds: { string }?,
 	order_at: number?,
+	order_gid: string?,
 	menu: number?,
 	zen: boolean,
 }
@@ -186,6 +188,7 @@ function M.new_ui(saved: any?): UI
 		pick = nil,
 		kinds = nil,
 		order_at = nil,
+		order_gid = nil,
 		menu = nil,
 		zen = false,
 	}
@@ -291,6 +294,7 @@ local function close_mode(ui: UI)
 	ui.pick = nil
 	ui.kinds = nil
 	ui.order_at = nil
+	ui.order_gid = nil
 	ui.menu = nil
 end
 
@@ -741,9 +745,10 @@ local function kind_key(s: Step, row: model.Row?)
 	ui.target_gid = gid
 end
 
--- `V` picks the selected row up to reorder it (`order` mode): an agent within its group (`target_id`), or a group
--- header among the groups (`target_gid`). Refused while a search or filter hides rows (checked first, since the
--- filter may hide every row), since a step past a hidden row would look like nothing happened.
+-- `V` picks the selected row up to reorder it (`order` mode): an agent (`target_id`), which steps within its group
+-- and over its edges into the next or previous group, or a group header among the groups (`target_gid`). Refused
+-- while a search or filter hides rows (checked first, since the filter may hide every row), since a step past a
+-- hidden row would look like nothing happened.
 local function order_key(s: Step, row: model.Row?)
 	if s.ui.search ~= nil or s.ui.filter ~= nil then
 		s.ui.notice = M.ORDER_FILTERED
@@ -772,6 +777,7 @@ local function order_key(s: Step, row: model.Row?)
 	s.ui.title = "moving " .. row.label
 	s.ui.target_id = id
 	s.ui.order_at = table.find(model.group_ids(s.deck, r.gid), id)
+	s.ui.order_gid = r.gid
 end
 
 -- One command in the `?` menu. key: the key it stands for, as the chip shows it. label: what it does on the selected
@@ -1441,6 +1447,68 @@ local function place_agent(s: Step, id: string, to: number)
 	save(s)
 end
 
+-- Puts agent `id` at index `to` (clamped) among group `gid`'s agents. Within its own group this is `place_agent`.
+-- Into another group the record's gid changes as `m` changes it (its own folder stays), both groups' `pos` are
+-- renumbered 1..n, a folded target opens so the held row stays drawn, and the selection follows it. Saves when the
+-- order changed; nothing when either is gone.
+local function put_agent(s: Step, id: string, gid: string, to: number)
+	local r = s.deck.agents[id]
+	if r == nil or find_group(s.deck, gid) == nil then
+		return
+	end
+	if r.gid == gid then
+		place_agent(s, id, to)
+		return
+	end
+	local from = r.gid
+	local ids = model.group_ids(s.deck, gid)
+	table.insert(ids, math.clamp(to, 1, #ids + 1), id)
+	local out = store.clone(s.deck)
+	out.agents[id].gid = gid
+	for i, other in ids do
+		out.agents[other].pos = i
+	end
+	for i, other in model.group_ids(out, from) do
+		out.agents[other].pos = i
+	end
+	local g = find_group(out, gid)
+	if g ~= nil and g.folded then
+		g.folded = false
+	end
+	s.deck = out
+	s.ui.selection = { kind = "agent", id = id, gid = gid }
+	save(s)
+end
+
+-- Carries agent `id` over its group's edge into the neighbouring group `step` away: 1 the next group, at its top;
+-- -1 the previous group, at its bottom. A group being deleted is passed over, as the `m` picker refuses it, and with
+-- no group left that way it stays put. A record being stopped or removed refuses with `m`'s notices.
+local function cross_agent(s: Step, id: string, step: number)
+	local r = s.deck.agents[id]
+	local _, i = find_group(s.deck, if r ~= nil then r.gid else nil)
+	if r == nil or i == nil then
+		return
+	end
+	local groups = s.deck.groups
+	local j = i + step
+	while groups[j] ~= nil and groups[j].deleting == true do
+		j += step
+	end
+	local target = groups[j]
+	if target == nil then
+		return
+	end
+	if r.state == "stopping" then
+		s.ui.notice = M.STOPPING
+		return
+	end
+	if r.cancel == true then
+		s.ui.notice = M.REMOVING
+		return
+	end
+	put_agent(s, id, target.gid, if step > 0 then 1 else math.huge)
+end
+
 -- Puts group `gid` at index `to` among the groups (their array order is the list's). Saves when the order changed.
 local function place_group(s: Step, gid: string, to: number)
 	local _, from = find_group(s.deck, gid)
@@ -1457,14 +1525,17 @@ local function place_group(s: Step, gid: string, to: number)
 	save(s)
 end
 
--- A key in reorder mode: the mapped down/up actions and arrows step the held row one place (an agent within its
--- group, a group among the groups); the mapped last action, End and Home send it to an end. Enter or the mapped
--- reorder action drops it where it is; Esc puts it back where the action picked it up. Every step saves, as a move
--- does. A row that went away meanwhile ends the mode.
+-- A key in reorder mode: the mapped down/up actions and arrows step the held row one place (a group among the
+-- groups; an agent within its group, and from its group's last or first place into the next or previous group);
+-- the mapped last action, End and Home send it to an end (an agent to its current group's). Enter or the mapped
+-- reorder action drops it where it is; Esc puts it back where the action picked it up, an agent in its own group.
+-- Every step saves, as a move does. A row that went away meanwhile ends the mode.
 local function order_mode_key(s: Step, ev: Event)
 	local ui = s.ui
 	local at: number?, count: number
 	local place: (number) -> ()
+	local cross: ((number) -> ())? = nil
+	local back: () -> ()
 	local gid, id = ui.target_gid, ui.target_id
 	if gid ~= nil then
 		local _, i = find_group(s.deck, gid)
@@ -1475,6 +1546,9 @@ local function order_mode_key(s: Step, ev: Event)
 		at, count = i, #s.deck.groups
 		place = function(to: number)
 			place_group(s, gid, to)
+		end
+		back = function()
+			place_group(s, gid, ui.order_at or count)
 		end
 	else
 		local r = if id ~= nil then s.deck.agents[id] else nil
@@ -1487,17 +1561,26 @@ local function order_mode_key(s: Step, ev: Event)
 		place = function(to: number)
 			place_agent(s, id, to)
 		end
+		cross = function(step: number)
+			cross_agent(s, id, step)
+		end
+		local home, home_at = ui.order_gid or r.gid, ui.order_at or count
+		back = function()
+			put_agent(s, id, home, home_at)
+		end
 	end
 	local name = ev.name
 	local ch = char_of(ev)
 	local action = if ch ~= nil then s.map.action_of[ch] else nil
 	local to = moved(s.map, name, ch, at, count)
-	if to ~= nil then
+	if to ~= nil and cross ~= nil and (to < 1 or to > count) then
+		cross(if to < 1 then -1 else 1)
+	elseif to ~= nil then
 		place(to)
 	elseif name == "enter" or action == "reorder" then
 		close_mode(ui)
 	elseif name == "escape" then
-		place(ui.order_at or count)
+		back()
 		close_mode(ui)
 	end
 end

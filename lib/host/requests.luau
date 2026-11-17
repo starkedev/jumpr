@@ -97,9 +97,14 @@ function M.clear_start(ledger: Ledger, id: string)
 	end
 end
 
--- The reply to request `r` of block `b` (`ok`, with the window's `err`): a failed start is marked failed, a failed
--- stop is taken back, and a failed jump or show names its agent. Returns the deck (the same table when unchanged),
--- the notice for the list, and the line for the error ring; both nil when there is nothing to say.
+-- The reply to request `r` of block `b` (`ok`, with the window's `err`, and `gone` when a stop found no pane for its
+-- agent): a failed start is marked failed, and a stop answered `gone` deletes the record with nothing said (there was
+-- nothing left to stop) unless `sets` still holds a pane for that agent: a pane leaves the set when its program
+-- exits, so one still there runs where the window cannot see it, and deleting it would hide a running agent. That
+-- stop, like any other failed stop, is taken back; a failed jump or show names its agent. A window too old to send
+-- `gone` answers a stop with no pane as a plain error, which is taken back as before. Returns the deck (the same
+-- table when unchanged), the notice for the list, and the line for the error ring; both nil when there is nothing
+-- to say.
 function M.reply(
 	ledger: Ledger,
 	b: string,
@@ -107,7 +112,9 @@ function M.reply(
 	ok: boolean,
 	err: string?,
 	deck: store.Deck,
-	wall: number
+	wall: number,
+	gone: boolean?,
+	sets: model.PaneSets?
 ): (store.Deck, string?, string?)
 	local k = key(b, r)
 	local why = if err ~= nil and err ~= "" then err else "no reason given"
@@ -120,6 +127,10 @@ function M.reply(
 			return model.start_failed(deck, p.id, "res", wall),
 				"start " .. label .. " failed on " .. host .. ": " .. why,
 				"start " .. p.id .. " failed: " .. why
+		end
+		local running = p.id ~= nil and sets ~= nil and next(sets[p.id] or {}) ~= nil
+		if not ok and p.verb == "stop" and p.id ~= nil and gone == true and not running then
+			return model.stop_gone(deck, p.id, wall), nil, nil
 		end
 		if not ok and p.verb == "stop" and p.id ~= nil then
 			local failed, notice = model.stop_failed(deck, p.id)

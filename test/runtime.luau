@@ -809,9 +809,9 @@ do
 	check(row.parked == nil, "back in a tab, the row is an ordinary one")
 end
 
--- The safe removals. A stop the window answers "not running" while this machine still runs a pane for the agent
--- (parked or not, the host cannot tell) keeps the record; the same answer once no pane runs it here removes it, and
--- removing it touches no file. A start that never got a pane stays as a failed row.
+-- The safe removals. A stop an older window answers with a plain "not running" error (no `gone` mark) while this
+-- machine still runs a pane for the agent (parked or not, the host cannot tell) keeps the record; the same answer once
+-- no pane runs it here removes it, and removing it touches no file. A start that never got a pane stays, failed.
 do
 	local list, m = list_on(deck())
 	local c, cx, b = open(list, 101)
@@ -851,6 +851,63 @@ do
 	list.tick()
 	local r = stored(m).agents[id]
 	check(r ~= nil and r.state == "pending" and r.failed == true, "a start that never got a pane stays, failed")
+end
+
+-- `d` then `y` on an agent the window cannot find: the window answers the stop with an error marked `gone`. Here
+-- this machine still runs the agent's pane (its program has not exited), so the mark is not believed: the agent goes
+-- back to live and the list says the stop failed, rather than hiding a running agent. (With no running pane the mark
+-- deletes the record; test/requests.luau pins that.) A stop that fails with the pane there, and one that gets no
+-- answer, put the agent back to live and say the stop failed too.
+do
+	-- A fresh list stops agent-a, and the stop is answered as the window would: an error `err`, marked `gone` when
+	-- asked, or no answer at all when `err` is nil.
+	local function stop_agent_a(err: string?, gone: boolean?): (Fake.Machine, Runtime.Runtime, Runtime.Copy, BlockCx)
+		local list, m = list_on(deck())
+		local c, cx, b = open(list, 101)
+		press(list, c, cx, "j")
+		press(list, c, cx, "d")
+		press(list, c, cx, "y")
+		local stops = requests(b, "stop")
+		local stop = stops[#stops]
+		check(stop ~= nil and stop.fields.id == "agent-a", "d then y asks the window to stop agent-a")
+		if err ~= nil then
+			local reply = m.json({ p = Protocol.P, b = stop.b, r = stop.r, ok = false, err = err, gone = gone })
+			list.event(c, { ev = "action", act = "res", value = reply } :: any, cx)
+		end
+		return m, list, c, cx
+	end
+
+	local m, list, c, cx = stop_agent_a("agent agent-a is not running on devbox", true)
+	check(stored(m).agents["agent-a"].state == "live", "gone while this machine runs the pane keeps the agent")
+	local f = list.frame(c, cx)
+	check(f.ui.notice ~= nil and string.find(f.ui.notice, "stop failed", 1, true) == 1, "and says the stop failed")
+	check(stored(m).agents["agent-b"].state == "live", "the other agent is untouched")
+
+	local busy = "could not stop agent agent-a on devbox: the pane is busy"
+	local m2, list2, c2, cx2 = stop_agent_a(busy, nil)
+	check(stored(m2).agents["agent-a"].state == "live", "a stop that fails with its pane there puts it back")
+	local notice = list2.frame(c2, cx2).ui.notice
+	check(notice == "stop failed on devbox: " .. busy, "and says the stop failed: " .. tostring(notice))
+
+	local m3, list3, c3, cx3 = stop_agent_a(nil, nil)
+	m3.advance(Requests.REPLY_MS)
+	list3.tick()
+	check(stored(m3).agents["agent-a"].state == "live", "a stop with no answer puts the agent back")
+	notice = list3.frame(c3, cx3).ui.notice
+	check(notice == "stop failed on devbox", "and says the stop failed: " .. tostring(notice))
+end
+
+-- `d` then `y` on an exited agent takes it off the list with no stop sent.
+do
+	local d = deck()
+	d.agents["agent-a"] = record(1, { state = "exited", exit = 0, ended_ms = Fake.wall(0) - 500 })
+	local list, m = list_on(d)
+	local c, cx, b = open(list, 101)
+	press(list, c, cx, "j")
+	press(list, c, cx, "d")
+	press(list, c, cx, "y")
+	check(stored(m).agents["agent-a"] == nil, "an exited agent is removed")
+	check(#requests(b, "stop") == 0, "with no stop sent")
 end
 
 -- An agent whose pane closed by hand, with no stop asked (its tab closed): the row stays, as an exited agent Enter

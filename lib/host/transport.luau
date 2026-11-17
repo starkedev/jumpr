@@ -439,7 +439,8 @@ local function on_reply(state: State, st: Status, value: any, ctx: Ctx): Outcome
 		return none(deck, false)
 	end
 	local err = if type(msg.err) == "string" then msg.err else nil
-	local deck_after, notice, line = requests.reply(ctx.requests, ctx.b, msg.r, msg.ok == true, err, deck, ctx.wall)
+	local deck_after, notice, line =
+		requests.reply(ctx.requests, ctx.b, msg.r, msg.ok == true, err, deck, ctx.wall, msg.gone == true, ctx.sets)
 	if line ~= nil then
 		M.note_error(state, line)
 	end

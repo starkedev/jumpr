@@ -121,31 +121,41 @@ local function clickable(f: Frame, node: Node): Node
 	return node
 end
 
--- Whole seconds, so the text changes (and the block re-renders) at most once a second.
-local function seconds(ms: number): string
-	return string.format("%ds", math.floor(math.max(ms, 0) / 1000))
+-- An age as one short unit: <1m, 4m, 3h, 2d. Nothing finer than a minute, so the text (and the block, which the
+-- host re-renders when it changes) changes at most once a minute.
+local function short_age(ms: number): string
+	local s = math.floor(math.max(ms, 0) / 1000)
+	if s < 60 then
+		return "<1m"
+	elseif s < 3600 then
+		return string.format("%dm", math.floor(s / 60))
+	elseif s < 86400 then
+		return string.format("%dh", math.floor(s / 3600))
+	end
+	return string.format("%dd", math.floor(s / 86400))
 end
 
--- "status unavailable", "status stale" or "status <age>".
-function M.status_label(health: string, age_ms: number?): string
+-- "status unavailable" or "status stale" when status is not fresh; nil while it is, so the head shows no ticking age.
+function M.status_label(health: string, age_ms: number?): string?
 	if health == "unavailable" or age_ms == nil then
 		return "status unavailable"
 	elseif health == "stale" then
 		return "status stale"
 	end
-	return "status " .. seconds(age_ms)
+	return nil
 end
 
+-- With `i`: where the row's status comes from and how long ago it changed.
 local function row_age(f: Frame, row: model.Row): string
 	local age = if row.id ~= nil then f.row_age[row.id] else nil
 	if age == nil or f.health ~= "ok" then
 		return "no status"
 	end
-	return (row.src or "status") .. " " .. seconds(age)
+	return (row.src or "status") .. " " .. short_age(age)
 end
 
--- The head's parts in order: the host, its connection state, the filter (its key and what it means), the search and
--- the status age. The view draws each part whole and wraps between parts.
+-- The head's parts in order: the host, its connection state, the filter (its key and what it means), the search and,
+-- when status is not fresh, the status health. The view draws each part whole and wraps between parts.
 function M.head_parts(f: Frame): { string }
 	local parts: { string } = { f.host or "unknown host" }
 	if f.h ~= nil and f.h ~= "" then
@@ -166,7 +176,10 @@ function M.head_parts(f: Frame): { string }
 	if f.ui.zen then
 		table.insert(parts, "zen")
 	end
-	table.insert(parts, M.status_label(f.health, f.age_ms))
+	local label = M.status_label(f.health, f.age_ms)
+	if label ~= nil then
+		table.insert(parts, label)
+	end
 	return parts
 end
 
@@ -212,19 +225,6 @@ function M.tile_parts(tally: { [string]: number }, filter: string?): { Tile }
 	return out
 end
 
--- An age as one short unit: 12s, 4m, 3h, 2d.
-local function short_age(ms: number): string
-	local s = math.floor(math.max(ms, 0) / 1000)
-	if s < 60 then
-		return string.format("%ds", s)
-	elseif s < 3600 then
-		return string.format("%dm", math.floor(s / 60))
-	elseif s < 86400 then
-		return string.format("%dh", math.floor(s / 3600))
-	end
-	return string.format("%dd", math.floor(s / 86400))
-end
-
 -- How long the agent has been in its status, when the status is fresh.
 local function age_of(f: Frame, row: model.Row): string?
 	local age = if row.id ~= nil then f.row_age[row.id] else nil
@@ -234,10 +234,10 @@ local function age_of(f: Frame, row: model.Row): string?
 	return short_age(age)
 end
 
--- Every time-dependent text the view shows (the header's status age, each agent's age, and with `i` each row's
--- source age): the host re-renders on its timer only when this changes.
+-- Every time-dependent text the view shows (the header's status health, each agent's age, and with `i` each row's
+-- source age): the host re-renders on its timer only when this changes, which in steady state is about once a minute.
 function M.clock_key(f: Frame): string
-	local parts = { M.status_label(f.health, f.age_ms), f.version or "" }
+	local parts = { M.status_label(f.health, f.age_ms) or "", f.version or "" }
 	for _, row in f.rows do
 		if row.kind == "agent" then
 			table.insert(parts, age_of(f, row) or "")

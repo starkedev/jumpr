@@ -497,8 +497,9 @@ end
 
 -- Stop: `cx.agents:stop` closes the agent's pane and the stop is answered at once. A pane it answers for but leaves
 -- open, as Tern did for a chat whose agent never started, is closed a moment later and only then answered; a pane that
--- goes by itself meanwhile is not closed again, and one that cannot be closed is answered with an error, so the list
--- puts the agent back.
+-- goes by itself meanwhile is not closed again, and one that cannot be closed is answered with a plain error, so the
+-- list puts the agent back. An agent with no pane at all is answered with an error marked `gone`, so the list deletes
+-- it.
 do
 	Fake.view(deck)
 	Fake.focus(copy)
@@ -585,6 +586,20 @@ do
 			and answer.err == "could not stop agent chat-stuck on devbox: the pane is busy",
 		"a pane neither call closes is answered with an error, so the list puts the agent back"
 	)
+	check(answer.gone == nil, "that error is not marked gone: a pane was there")
+
+	before = #answers()
+	check(stop("agent-none") == "stop", "a stop of an agent with no pane is acted on")
+	answer = last_answer()
+	check(
+		#answers() == before + 1
+			and answer.ok == false
+			and answer.gone == true
+			and answer.err == "agent agent-none is not running on devbox",
+		"an agent with no pane is answered at once with an error marked gone, so the list deletes it"
+	)
+	Fake.advance(1000)
+	check(#answers() == before + 1, "and nothing more is answered after the wait")
 
 	fake_cx.agents.stop = real_stop
 	fake_cx.layout.close = real_close

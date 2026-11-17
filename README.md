@@ -121,8 +121,8 @@ Ctrl+J is a poor choice of your own: on Linux and Windows it is Tern's own join 
 | `g` | New group (asks for a folder first) |
 | `r` | Rename the agent; the name also becomes its tab's name |
 | `m` | Move the agent to another group |
-| `V` | Pick the row up to reorder it: an agent within its group, or a group header among the groups. `j` / `k` move it, `Enter` or `V` drops it, `Esc` puts it back |
-| `d` | Stop the agent, or delete the group (asks `y/n`) |
+| `V` | Pick the row up to reorder it: an agent, or a group header among the groups. `j` / `k` move it; an agent moved past its group's last or first place goes on into the next group's top or the previous group's bottom (passing over a group being deleted, and opening a folded one). `Enter` or `V` drops it, `Esc` puts it back where it was, in its own group |
+| `d` | Stop the agent and take it off the list, or delete the group (asks `y/n`). An agent that has exited, or whose program no longer runs, comes off the list with nothing to stop. If a running agent cannot be stopped, it stays and the list says the stop failed |
 | `o` | Send a message to the agent now. On an exited agent, or one whose start failed, start it again first; the message is sent once it is idle. When its conversation has to be picked, the message is held and Enter opens the picker; it is sent once a conversation is picked and the chat is idle |
 | `q` | Queue a message, sent once the agent is idle |
 | `z` | Zen mode: the list takes over the whole tab, centred, and moving through it shows no agent's tab. `z` leaves it, and so does Esc while Esc returns to your pane (the default); going to an agent with Enter leaves it too |
@@ -243,7 +243,9 @@ Restarting an exited agent with `Enter` brings back its own conversation: an omp
 
 Status comes from Tern's own agent tracking: running, waiting for you, idle, error or stopped.
 Each row shows its status, how long it has been in it, its folder when that is not the group's, and what is waiting on it.
-Press `i` to see where each row's status comes from.
+That age reads `<1m` for its first minute, then whole minutes, hours and days (`5m`, `2h`, `1d`), so the list redraws for it at most about once a minute.
+Press `i` to see where each row's status comes from, with how long ago it changed in the same units (`agents <1m`).
+While status is fresh the head line shows no age; it says `status stale` when the window has gone quiet, and `status unavailable` when no status has arrived, and the rows' ages are hidden until status is fresh again.
 An omp agent in `/vibe` mode hands its work to background workers.
 While one of those workers has a turn running, the agent's row counts as running and its pill says `vibing`, even when the agent itself sits idle at its prompt.
 A question or an error still shows first, and with no worker running the row reads as Tern reports it.

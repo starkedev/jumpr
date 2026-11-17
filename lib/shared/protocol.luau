@@ -82,8 +82,10 @@ export type Request = {
 	fields: { [string]: string },
 }
 
--- A reply (`act = "res"`) to the block that sent request `r`.
-export type Reply = { p: number, b: string, r: number, ok: boolean, err: string? }
+-- A reply (`act = "res"`) to the block that sent request `r`. `gone` is set only on a stop's error reply when the
+-- window found no pane for the agent at all (nothing to stop): the block then deletes the record as a finished stop.
+-- An older block ignores the field and puts the record back to `live`, as it always did; `p` is unchanged.
+export type Reply = { p: number, b: string, r: number, ok: boolean, err: string?, gone: boolean? }
 
 -- A window-settings reply (`act = "cfg"`).
 export type WindowCfg = {
@@ -386,8 +388,9 @@ function M.request_host(i: RouteIn): (string?, Route)
 	return nil, "elsewhere"
 end
 
-function M.reply(b: string, r: number, ok: boolean, err: string?): Reply
-	return { p = M.P, b = b, r = r, ok = ok, err = err }
+-- A reply; `gone` is written only when true, so every other reply keeps its old fields.
+function M.reply(b: string, r: number, ok: boolean, err: string?, gone: boolean?): Reply
+	return { p = M.P, b = b, r = r, ok = ok, err = err, gone = if gone == true then true else nil }
 end
 
 -- True only when the reply names this block's `b` (a duplicate block ignores the other's replies).

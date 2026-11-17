@@ -110,12 +110,12 @@
 	white-space: pre;
 }
 
-/* Zen mode: the list and its dock hold the middle of the zoomed pane, as wide as view.ZEN_COLS (96 cells). */
-[data-surface='plugin.jumpr.list'] [data-role~='deck.zen'] {
-	width: 100%;
-	max-width: 96ch;
-	margin-left: auto;
-	margin-right: auto;
+/* Zen mode: the list and its dock hold the middle of the zoomed pane, as wide as view.ZEN_COLS (96 cells). The role
+   sits on the region itself (`.sf-region`, which also carries the surface), not inside it, so the rule is compound;
+   the side padding centres the content while the region, and its scrolling, still span the whole pane. */
+.sf-region[data-surface='plugin.jumpr.list'][data-role~='deck.zen'] {
+	padding-left: max(8px, calc(50% - 48 * var(--sf-cw)));
+	padding-right: max(8px, calc(50% - 48 * var(--sf-cw)));
 }
 
 /* The layout: count tiles on top, one card per group, a key legend at the bottom. Each status rule

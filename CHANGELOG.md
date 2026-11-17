@@ -6,6 +6,12 @@ Update with `tern plugin install github.com/starkedev/jumpr --force` on each mac
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-11-17
+
+### Fixed
+
+- Zen mode (`z`) now draws the list down the middle of the window at a readable width, as it was meant to, instead of stretching it across the whole tab.
+
 ## [0.2.4] - 2026-11-17
 
 ### Added
@@ -202,7 +208,8 @@ Tested on Tern 0.9.10 and 0.9.11.
 - Every message between the halves carries a protocol version, and a mismatch shows a banner naming the machine to update.
 - `scripts/check.sh` runs stylua, the unit suites, a strict `luau-lsp` type check and design-rule checks.
 
-[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/starkedev/jumpr/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/starkedev/jumpr/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/starkedev/jumpr/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/starkedev/jumpr/compare/v0.2.1...v0.2.2

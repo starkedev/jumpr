@@ -18,8 +18,8 @@ export type Pane = { pane: number, cwd: string?, program: string?, title: string
 export type PaneSets = { [string]: { [number]: true } }
 -- The latest status entries per deck id (two or more = a duplicate).
 export type StatusById = { [string]: { status.Entry } }
--- What `rows` reads from the block's UI state.
-export type View = { search: string?, filter: string? }
+-- What `rows` reads from the block's UI state. priority: show only agents tagged priority (`%`).
+export type View = { search: string?, filter: string?, priority: boolean? }
 -- kind "agent" with id (and the gid it was last seen in), or kind "header" with gid.
 export type Selection = { kind: string, id: string?, gid: string? }
 
@@ -33,7 +33,7 @@ export type Selection = { kind: string, id: string?, gid: string? }
 -- one fresh entry says the agent itself reported idle, `status.reported_idle`: a claude or codex agent takes typed
 -- text only then; nil otherwise), hold (why a held `q` message has not been sent; nil with none held), parked (its
 -- one running pane runs in no tab), vibing (the row is running and one of its omp vibe workers has a turn running;
--- nil otherwise).
+-- nil otherwise), priority (the user tagged it with `p`; nil otherwise).
 export type Row = {
 	kind: string,
 	gid: string,
@@ -60,6 +60,7 @@ export type Row = {
 	hold: string?,
 	parked: boolean?,
 	vibing: boolean?,
+	priority: boolean?,
 }
 
 local STOP_WINDOW_MS = 60 * 1000
@@ -279,7 +280,8 @@ function M.rows(
 	local titles = titles_of(panes)
 	local search = if ui.search ~= nil and ui.search ~= "" then string.lower(ui.search) else nil
 	local filter = ui.filter
-	local active = filter ~= nil or search ~= nil
+	local only_priority = ui.priority == true
+	local active = filter ~= nil or search ~= nil or only_priority
 	local out: { Row } = {}
 	for _, group in deck.groups do
 		local agents: { Row } = {}
@@ -334,11 +336,13 @@ function M.rows(
 				hold = M.hold(deck.queue[id], health, live, dup),
 				parked = if M.is_parked(r, entries, fresh, dup) then true else nil,
 				vibing = if vibing and code == "running" then true else nil,
+				priority = if r.priority == true then true else nil,
 			}
 			table.insert(agents, row)
 			table.insert(codes, code)
 			if
 				status.matches(code, filter)
+				and (not only_priority or r.priority == true)
 				and (
 					search == nil
 					or contains(label, search)
@@ -352,7 +356,7 @@ function M.rows(
 
 		local header_shown = not active
 			or #shown > 0
-			or (filter == nil and search ~= nil and contains(group.name, search))
+			or (filter == nil and not only_priority and search ~= nil and contains(group.name, search))
 		if header_shown then
 			table.insert(out, {
 				kind = "header",

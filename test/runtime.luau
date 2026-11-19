@@ -257,9 +257,7 @@ do
 	local f = list.frame(c, cx)
 	check(f.ui.notice ~= nil and string.find(f.ui.notice, "failed on devbox: no session", 1, true) ~= nil, "named")
 	check(stored(m).agents.aaaaaaaa.failed == true, "a failed start is marked failed")
-	for _ = 1, 3 do
-		press(list, c, cx, "j")
-	end
+	press(list, c, cx, "G")
 	local sel = list.frame(c, cx).ui.selection
 	check(sel ~= nil and sel.id == "aaaaaaaa", "the failed row is selected")
 	m.dirs["/work"] = nil

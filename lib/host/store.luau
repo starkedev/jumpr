@@ -36,6 +36,9 @@ export type Record = {
 	-- The last usable title its pane showed (`model.remember_titles`), which its row shows while no pane shows one.
 	-- Kept here only: never sent to the window or used to name a tab.
 	title: string?,
+	-- Whether the user tagged this agent as priority (`p`); absent means untagged. Kept on the record, so it outlives
+	-- the agent's panes, restarts and the list reopening.
+	priority: boolean?,
 }
 
 export type QueueEntry = { text: string, at_ms: number, err: string? }
@@ -145,6 +148,7 @@ local function valid_record(r: any): boolean
 		and opt(r.session, "string")
 		and opt(r.ran, "boolean")
 		and opt(r.title, "string")
+		and opt(r.priority, "boolean")
 end
 
 local function valid_record_v1(r: any): boolean
@@ -272,6 +276,7 @@ local function record_from(raw_record: any, upgrade: boolean, now_ms: number): R
 		session = if upgrade then nil else raw_record.session,
 		ran = ran,
 		title = if upgrade then nil else raw_record.title,
+		priority = if upgrade then nil else raw_record.priority,
 	}
 end
 

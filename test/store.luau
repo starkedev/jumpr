@@ -213,6 +213,43 @@ do
 	check(Store.migrate(future, NOW) == future, "a record field this version does not know is ignored")
 end
 
+-- A record's priority tag is an optional schema 2 field like the title: a tagged deck loads as it is, keeps the tag
+-- through clone and a kv round trip, and a tag that is not a boolean makes the deck malformed. A newer schema's
+-- display shows the tag.
+do
+	local raw = sample()
+	raw.agents.a.priority = true
+	raw.agents.b = record("exited", { exit = 0, ended_ms = NOW })
+	local deck = Store.migrate(raw, NOW)
+	check(deck == raw and deck.schema == 2, "a tagged deck loads as it is, still schema 2")
+	check(Store.clone(deck).agents.a.priority == true, "clone keeps the tag")
+
+	local kv: { [string]: any } = {}
+	local compat: Store.Compat = {
+		kv_get = function(key: string): (any, string?)
+			return json_copy(kv[key]), nil
+		end,
+		kv_set = function(key: string, value: any): (any, string?)
+			kv[key] = json_copy(value)
+			return true, nil
+		end,
+	}
+	check(Store.save(compat, deck, false), "the tagged deck saves")
+	local loaded = Store.load(compat, NOW)
+	check(loaded ~= deck and loaded.agents.a.priority == true, "the kv round trip keeps the tag")
+	check(loaded.agents.b.priority == nil, "and leaves the untagged record untagged")
+
+	local mistyped: any = sample()
+	mistyped.agents.a.priority = "yes"
+	local empty, _, _, kept = Store.migrate(mistyped, NOW)
+	check(next(empty.agents) == nil and kept ~= nil, "a tag that is not a boolean makes the deck malformed")
+
+	local newer: any = sample()
+	newer.schema = 3
+	newer.agents.a.priority = true
+	check(Store.migrate(newer, NOW).agents.a.priority == true, "a newer schema's display shows the tag")
+end
+
 -- Schema 3 is read-only with the banner, shown from a detached copy, and never backed up.
 do
 	local raw: any = sample()

@@ -21,6 +21,7 @@ M.ACTIONS = table.freeze({
 	table.freeze({ id = "rename", key = "r", label = "rename" }),
 	table.freeze({ id = "move", key = "m", label = "move to another group" }),
 	table.freeze({ id = "reorder", key = "V", label = "reorder" }),
+	table.freeze({ id = "priority", key = "p", label = "priority tag" }),
 	table.freeze({ id = "stop", key = "d", label = "stop agent" }),
 	table.freeze({ id = "send", key = "o", label = "send a message" }),
 	table.freeze({ id = "queue", key = "q", label = "queue a message" }),
@@ -31,12 +32,13 @@ M.ACTIONS = table.freeze({
 	table.freeze({ id = "settings", key = ",", label = "settings" }),
 }) :: { Action }
 
--- Status filtering and confirmation keys stay structural and cannot be shadowed by a list action.
+-- Status and priority filtering and confirmation keys stay structural and cannot be shadowed by a list action.
 M.RESERVED = table.freeze({
 	["!"] = true,
 	["@"] = true,
 	["#"] = true,
 	["$"] = true,
+	["%"] = true,
 	["1"] = true,
 	["2"] = true,
 	["3"] = true,

@@ -154,8 +154,8 @@ local function row_age(f: Frame, row: model.Row): string
 	return (row.src or "status") .. " " .. short_age(age)
 end
 
--- The head's parts in order: the host, its connection state, the filter (its key and what it means), the search and,
--- when status is not fresh, the status health. The view draws each part whole and wraps between parts.
+-- The head's parts in order: the host, its connection state, the filter (its key and what it means), priority only,
+-- the search and, when status is not fresh, the status health. The view draws each part whole and wraps between parts.
 function M.head_parts(f: Frame): { string }
 	local parts: { string } = { f.host or "unknown host" }
 	if f.h ~= nil and f.h ~= "" then
@@ -169,6 +169,9 @@ function M.head_parts(f: Frame): { string }
 	end
 	if #named > 0 then
 		table.insert(parts, "filter " .. table.concat(named, " + "))
+	end
+	if f.ui.priority then
+		table.insert(parts, "★ priority only")
 	end
 	if f.ui.search ~= nil and f.ui.mode ~= "input" then
 		table.insert(parts, "/" .. f.ui.search)
@@ -409,7 +412,14 @@ local function card_head(f: Frame, row: model.Row, selected: boolean): Node
 	return clickable(f, div(state_words(f, row, selected, "deck.card-head"), children, HEAD_KEY))
 end
 
--- One agent in a card: status dot, label and pill on the first line, the dim meta line under it.
+-- An agent's label as its row draws it, cut to fit beside its dot and pill: a priority agent's starts with "★ ", which
+-- the cut always keeps, so the mark shows in the narrowest list.
+function M.item_label(row: model.Row, cols: number): string
+	return cut(if row.priority then "★ " .. row.label else row.label, math.max(cols - 14, 4))
+end
+
+-- One agent in a card: status dot, label (marked ★ when priority) and pill on the first line, the dim meta line under
+-- it.
 local function agent_item(f: Frame, row: model.Row, selected: boolean, group_cwd: string?): Node
 	local word, word_role = M.pill(row)
 	local dot_role = code_role(row.code)
@@ -422,7 +432,7 @@ local function agent_item(f: Frame, row: model.Row, selected: boolean, group_cwd
 	end
 	local first = div("deck.item-top", {
 		text_node("●", "deck.dot " .. dot_role),
-		text_node(cut(row.label, math.max(f.cols - 14, 4)), "deck.item-label"),
+		text_node(M.item_label(row, f.cols), "deck.item-label"),
 		text_node(word, "deck.pill " .. word_role),
 	})
 	local children = { first }
@@ -513,13 +523,15 @@ function M.clicked_tile(node: string?): string?
 	return if st ~= nil then st.key else nil
 end
 
--- What the list says when it has no row to draw: "nothing matches" under a filter (one status or several) or a
--- search, else how to add a group with its current binding; nil when there are rows.
+-- What the list says when it has no row to draw: "nothing matches" under a filter (one status or several, or
+-- priority only) or a search, else how to add a group with its current binding; nil when there are rows.
 function M.empty_text(f: Frame): string?
 	if #f.rows > 0 then
 		return nil
 	end
-	return if f.ui.filter ~= nil or f.ui.search ~= nil
+	return if f.ui.filter ~= nil
+			or f.ui.priority
+			or f.ui.search ~= nil
 		then "nothing matches"
 		else "no groups: " .. f.map.key_of.group .. " adds one"
 end

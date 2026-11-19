@@ -219,6 +219,36 @@ do
 	check(labels(stopped) == "#Webapp,Auth Fix", "the idle filter shows only idle, never a stopped row")
 end
 
+-- Priority only shows the tagged agents, inside a folded group too, and a group's header only while it holds a shown
+-- agent. It ANDs with the status filter and with the search, and a search that matches a group's name brings back no
+-- header whose agents are all untagged. A tagged agent's row is marked priority, whatever the view.
+do
+	local deck, sets, st = sample()
+	deck.groups[1].folded = true
+	deck.agents.b.priority = true
+	deck.agents.d.priority = true
+	-- g1 is folded, so b's row is drawn only under a search (or a filter).
+	local found = Model.rows(deck, PANES, sets, st, { search = "webapp" }, "ok")
+	check(find(found, "b").priority == true and find(found, "a").priority == nil, "b's row is marked, a's is not")
+	local all = Model.rows(deck, PANES, sets, st, NONE, "ok")
+	check(find(all, "d").priority == true and find(all, "c").priority == nil, "d's row is marked, c's is not")
+	local only = Model.rows(deck, PANES, sets, st, { priority = true }, "ok")
+	check(
+		labels(only) == "#Webapp,refactor parser,#notes,omp 2",
+		"priority only shows b under its folded header and d: " .. labels(only)
+	)
+	check(deck.groups[1].folded == true, "priority only does not unfold the group")
+	local waiting = Model.rows(deck, PANES, sets, st, { priority = true, filter = "waiting" }, "ok")
+	check(labels(waiting) == "#Webapp,refactor parser", "priority and waiting: b only, no notes: " .. labels(waiting))
+	local idle = Model.rows(deck, PANES, sets, st, { priority = true, filter = "idle" }, "ok")
+	check(#idle == 0, "a's idle status does not count untagged: " .. labels(idle))
+	local notes = Model.rows(deck, PANES, sets, st, { priority = true, search = "notes" }, "ok")
+	check(labels(notes) == "#notes,omp 2", "priority and a search on notes: d only: " .. labels(notes))
+	deck.agents.d.priority = nil
+	local named = Model.rows(deck, PANES, sets, st, { priority = true, search = "notes" }, "ok")
+	check(#named == 0, "a name match brings back no header without a tagged agent: " .. labels(named))
+end
+
 -- Each key's filter (`status.ORDER`) shows exactly the agents in its status, one agent per status here.
 do
 	local deck, sets, st = sample()

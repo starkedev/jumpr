@@ -23,6 +23,7 @@ local expected = {
 	{ id = "rename", key = "r", label = "rename" },
 	{ id = "move", key = "m", label = "move to another group" },
 	{ id = "reorder", key = "V", label = "reorder" },
+	{ id = "priority", key = "p", label = "priority tag" },
 	{ id = "stop", key = "d", label = "stop agent" },
 	{ id = "send", key = "o", label = "send a message" },
 	{ id = "queue", key = "q", label = "queue a message" },
@@ -71,15 +72,17 @@ do
 	check(Keymap.check(overrides, "new", "j") == "taken by next row", "a collision names the action holding the key")
 end
 
--- Reserved status and confirmation keys can never shadow their structural actions.
+-- Reserved status, priority and confirmation keys can never shadow their structural actions.
 do
-	local reserved = { "!", "@", "#", "$", "1", "2", "3", "4", "0", "y", "Y" }
+	local reserved = { "!", "@", "#", "$", "%", "1", "2", "3", "4", "0", "y", "Y" }
 	for _, key in reserved do
 		local map = Keymap.resolve({ new = key })
 		check(Keymap.RESERVED[key] == true, key .. " is declared reserved")
 		check(map.key_of.new == "n" and map.action_of[key] == nil, key .. " cannot override a list action")
 		check(Keymap.check({}, "new", key) == "reserved", key .. " is refused as reserved")
 	end
+	check(Keymap.check({}, "priority", "%") == "reserved", "the priority tag cannot take the priority filter's key")
+	check(Keymap.resolve({ priority = "%" }).key_of.priority == "p", "a remap of the priority tag to % is ignored")
 end
 
 -- Invalid keys are ignored and report the bounded refusal.

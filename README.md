@@ -115,7 +115,7 @@ Ctrl+J is a poor choice of your own: on Linux and Windows it is Tern's own join 
 
 | Key | Does |
 |---|---|
-| `j` / `k`, `↓` / `↑` | Move the selection by one |
+| `j` / `k`, `↓` / `↑` | Move the selection by one; past the last row back to the first, and above the first to the last |
 | `J` / `K` (Shift+j / Shift+k) | Move to the next or previous group's header; from an agent, `K` goes to its own group's header first |
 | `G` / `End`, `Home` | Move to the last or first row |
 | `Enter` | On an agent: focus its pane, or restart it, back into its own conversation, if it has exited. A parked agent (running in no tab) gets a tab of its own first. On a group: fold or unfold it |
@@ -127,12 +127,14 @@ Ctrl+J is a poor choice of your own: on Linux and Windows it is Tern's own join 
 | `r` | Rename the agent, and the name also becomes its tab's name; on a group header, rename the group |
 | `m` | Move the agent to another group |
 | `V` | Pick the row up to reorder it: an agent, or a group header among the groups. `j` / `k` move it; an agent moved past its group's last or first place goes on into the next group's top or the previous group's bottom (passing over a group being deleted, and opening a folded one). `Enter` or `V` drops it, `Esc` puts it back where it was, in its own group |
+| `p` | Tag the agent as priority, or untag it; a tagged agent shows ★ beside its name. The tag stays on the agent when it exits and restarts, and when Tern restarts |
 | `d` | Stop the agent and take it off the list, or delete the group (asks `y/n`). An agent that has exited, or whose program no longer runs, comes off the list with nothing to stop. If a running agent cannot be stopped, it stays and the list says the stop failed |
 | `o` | Send a message to the agent now. On an exited agent, or one whose start failed, start it again first; the message is sent once it is idle. When its conversation has to be picked, the message is held and Enter opens the picker; it is sent once a conversation is picked and the chat is idle. A Claude Code or Codex agent is typed into only while it reports itself idle; otherwise the message is held until it does |
 | `q` | Queue a message, sent once the agent is idle (for Claude Code and Codex, once the agent reports itself idle) |
 | `z` | Zen mode: the list takes over the whole tab, centred, and moving through it shows no agent's tab. `z` leaves it, and so does Esc while Esc returns to your pane (the default); going to an agent with Enter leaves it too |
 | `i` | Show where each row's status comes from |
 | `/` | Search labels, folders and group names |
+| `%` (Shift+5) | Show only priority agents, and only the groups that hold one, and the head line says `★ priority only`; press again to show every agent. It combines with a status filter and with the search (an agent must match both), and `Esc` clears it with the status filter |
 | `?` | Open the command menu |
 | `,` | Open the settings page (see [Settings](#settings)) |
 

@@ -1168,6 +1168,7 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 			selection = s.selection,
 			search = s.search,
 			filter = s.filter,
+			priority = s.priority,
 			show_src = s.show_src,
 		}
 	end

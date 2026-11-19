@@ -52,7 +52,7 @@ export type Selection = model.Selection
 -- mode: "list" | "input" | "confirm" | "pick" | "order" | "menu". purpose (input): "search" | "new" | "folder" |
 -- "group" | "label" | "group_name" | "send" | "queue"; (confirm): "stop" | "drop" | "group"; (pick): "move" | "kind".
 -- text: the open input line. title: its prompt (the question, in confirm). search, filter (a status code from
--- `status.ORDER`, never its key), show_src: list state.
+-- `status.ORDER`, never its key), priority (`%`: only agents tagged priority are shown), show_src: list state.
 -- notice: a one-line message, cleared by the next key. em: Esc mode from the latest status ("A" | "B").
 -- show_pending: the deck id a list-mode move rested on, waiting for the 120 ms pause; every other key clears it.
 -- block_cwd: the block's own folder (g prefill). folder, touched, then_n, n_cli: the g flow (the confirmed folder,
@@ -73,6 +73,7 @@ export type UI = {
 	selection: Selection?,
 	search: string?,
 	filter: string?,
+	priority: boolean,
 	show_src: boolean,
 	show_pending: string?,
 	notice: string?,
@@ -93,7 +94,7 @@ export type UI = {
 }
 
 -- The block's save() fields (the block uid is the host's).
-export type Saved = { selection: Selection?, search: string?, filter: string?, show_src: boolean }
+export type Saved = { selection: Selection?, search: string?, filter: string?, priority: boolean, show_src: boolean }
 
 export type Event = {
 	kind: string,
@@ -143,7 +144,7 @@ M.RESTARTING = "restarting — message queued"
 M.PICK_QUEUED = "queued — Enter picks its conversation"
 M.CHANGED = "nothing done: that row changed"
 M.GROUP_GONE = "group is gone"
-M.ORDER_FILTERED = "clear the search and filter to reorder"
+M.ORDER_FILTERED = "clear the search and filters to reorder"
 M.SELECT_GROUP = "select a group"
 M.SELECT_ROW = "select a row"
 -- `o` on a claude or codex agent that has not itself reported idle (`model.Row.ready`): the text is held, not typed.
@@ -176,6 +177,7 @@ function M.new_ui(saved: any?): UI
 		selection = valid_selection(s.selection),
 		search = if type(s.search) == "string" and s.search ~= "" then s.search else nil,
 		filter = status.filter_clean(s.filter),
+		priority = s.priority == true,
 		show_src = s.show_src == true,
 		show_pending = nil,
 		notice = nil,
@@ -197,7 +199,18 @@ function M.new_ui(saved: any?): UI
 end
 
 function M.saved_ui(ui: UI): Saved
-	return { selection = ui.selection, search = ui.search, filter = ui.filter, show_src = ui.show_src }
+	return {
+		selection = ui.selection,
+		search = ui.search,
+		filter = ui.filter,
+		priority = ui.priority,
+		show_src = ui.show_src,
+	}
+end
+
+-- Whether a filter hides rows: a status filter, or the priority-only filter. The search is checked on its own.
+local function filtered(ui: UI): boolean
+	return ui.filter ~= nil or ui.priority
 end
 
 -- The deck id whose `q` line is open. The queue sweep leaves that agent's message alone meanwhile, so a cancel or an
@@ -239,6 +252,7 @@ local function ui_changed(a: UI, b: UI): boolean
 		or not same_selection(a.selection, b.selection)
 		or a.search ~= b.search
 		or a.filter ~= b.filter
+		or a.priority ~= b.priority
 		or a.show_src ~= b.show_src
 		or a.notice ~= b.notice
 		or a.folder ~= b.folder
@@ -391,8 +405,8 @@ end
 
 -- Where the mapped next-group and previous-group actions take the selection at `at` among `rows`: next to the next
 -- group's header row, previous to the preceding one, and previous from an agent row to its own group's header first.
--- At the first or last group it stays put, as down/up stop at the list's ends; from nothing highlighted it goes to
--- the first row. Only rows in `rows` count, so folded and hidden agents are passed over. Nil for any other key.
+-- At the first or last group it stays put; from nothing highlighted it goes to the first row. Only rows in `rows`
+-- count, so folded and hidden agents are passed over. Nil for any other key.
 local function group_moved(map: keymap.Map, ch: string?, rows: { model.Row }, at: number?): number?
 	local action = if ch ~= nil then map.action_of[ch] else nil
 	if action ~= "next_group" and action ~= "prev_group" then
@@ -760,10 +774,10 @@ end
 
 -- `V` picks the selected row up to reorder it (`order` mode): an agent (`target_id`), which steps within its group
 -- and over its edges into the next or previous group, or a group header among the groups (`target_gid`). Refused
--- while a search or filter hides rows (checked first, since the filter may hide every row), since a step past a
--- hidden row would look like nothing happened.
+-- while a search or a filter (a status filter or priority only) hides rows (checked first, since a filter may hide
+-- every row), since a step past a hidden row would look like nothing happened.
 local function order_key(s: Step, row: model.Row?)
-	if s.ui.search ~= nil or s.ui.filter ~= nil then
+	if s.ui.search ~= nil or filtered(s.ui) then
 		s.ui.notice = M.ORDER_FILTERED
 		return
 	end
@@ -793,6 +807,22 @@ local function order_key(s: Step, row: model.Row?)
 	s.ui.order_gid = r.gid
 end
 
+-- `p` tags the selected agent as priority, or untags it: a flag on its record, so the tag outlives its panes,
+-- restarts and the list reopening. A header, or no row, does nothing.
+local function priority_key(s: Step, row: model.Row?)
+	if row == nil or row.kind ~= "agent" then
+		return
+	end
+	local id = row.id :: string
+	if s.deck.agents[id] == nil then
+		return
+	end
+	local out = store.clone(s.deck)
+	out.agents[id].priority = if out.agents[id].priority == true then nil else true
+	s.deck = out
+	save(s)
+end
+
 -- One command in the `?` menu. key: the key it stands for, as the chip shows it. label: what it does on the selected
 -- row; short: the one word the legend shows for it, where the legend shows it. enabled: whether the selected row
 -- suits it; refusal: the notice a pick of it gets when it does not. event: the key the menu sends to the list, so a
@@ -817,13 +847,15 @@ local MENU: { MenuSpec } = {
 	{ action = "rename", label = "rename", needs = "row" },
 	{ action = "move", label = "move to another group", needs = "agent" },
 	{ action = "reorder", label = "reorder", short = "move", needs = "row" },
+	{ action = "priority", label = "tag or untag as priority", needs = "agent" },
 	{ action = "stop", label = "", needs = "row" },
 	{ action = "new", label = "new agent", short = "new" },
 	{ action = "new_kind", label = "new agent, pick kind" },
 	{ action = "group", label = "new group", short = "group" },
 	{ action = "search", label = "search" },
 	-- (per `status.ORDER` entry a "<word> only" item, then per entry an "add or drop <word>" item, go here in its order)
-	{ key = "0", label = "every status" },
+	{ key = "0", label = "everything" },
+	{ key = "%", label = "priority only" },
 	{ action = "zen", label = "zen mode" },
 	{ action = "sources", label = "show status sources" },
 	{ action = "settings", label = "settings" },
@@ -835,7 +867,7 @@ local MENU: { MenuSpec } = {
 	{ action = "up", label = "up" },
 }
 
--- The status filters sit just before "every status": one "only" item per ranked status in the one priority order,
+-- The status filters sit just before "everything": one "only" item per ranked status in the one priority order,
 -- then the keys that add a status to a combined filter or drop it, in the same order.
 do
 	local at = #MENU + 1
@@ -912,14 +944,21 @@ local function list_key(s: Step, ev: Event)
 	local before = ui.selection
 	local at = model.index_of(s.rows, before)
 	local target = moved(s.map, name, ch, at, #s.rows) or group_moved(s.map, ch, s.rows, at)
+	-- Down from the last row wraps to the first, and up from the first to the last.
+	if target ~= nil and target > #s.rows then
+		target = 1
+	elseif target ~= nil and target < 1 then
+		target = #s.rows
+	end
 	if name == "escape" then
 		if ui.em == "B" then
 			return
 		end
 		if ui.search ~= nil then
 			ui.search = nil
-		elseif ui.filter ~= nil then
+		elseif filtered(ui) then
 			ui.filter = nil
+			ui.priority = false
 		elseif ui.zen then
 			set_zen(s, false)
 		else
@@ -948,6 +987,9 @@ local function list_key(s: Step, ev: Event)
 		ui.filter = status.filter_toggle(ui.filter, (status.by_add_key(ch) :: status.Status).code)
 	elseif ch == "0" then
 		ui.filter = nil
+		ui.priority = false
+	elseif ch == "%" then
+		ui.priority = not ui.priority
 	elseif action == "fold" or action == "unfold" then
 		if row ~= nil and row.kind == "header" then
 			set_folded(s, row.gid, action == "fold")
@@ -977,6 +1019,8 @@ local function list_key(s: Step, ev: Event)
 		move_key(s, row)
 	elseif action == "reorder" then
 		order_key(s, row)
+	elseif action == "priority" then
+		priority_key(s, row)
 	elseif action == "send" or action == "queue" then
 		message_key(s, row, action)
 	elseif action == "rename" then
@@ -1761,7 +1805,7 @@ end
 -- `follow`: the last-tab chord moved focus into agent `id`'s tab, so the highlight moves there too, without a `show`
 -- (the tab is already in front, so the window is never asked to switch again). A row drawn now is selected; an agent
 -- whose group is folded (no search or filter on) selects that group's header, as the selection of a folded-away agent
--- always does; an agent the search or filter hides, an unknown id and every mode but list leave the selection as it
+-- always does; an agent the search or a filter hides, an unknown id and every mode but list leave the selection as it
 -- is. A show still waiting for its pause is dropped either way: the chord is the newer move, and the show would
 -- switch the tab back.
 local function follow(s: Step, id: string)
@@ -1770,7 +1814,7 @@ local function follow(s: Step, id: string)
 	end
 	s.ui.show_pending = nil
 	local i = model.index_of(s.rows, { kind = "agent", id = id })
-	if i == nil and s.ui.search == nil and s.ui.filter == nil then
+	if i == nil and s.ui.search == nil and not filtered(s.ui) then
 		local r = s.deck.agents[id]
 		local g = if r ~= nil then find_group(s.deck, r.gid) else nil
 		if g ~= nil and g.folded then

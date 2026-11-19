@@ -196,6 +196,10 @@ do
 	check(b.ui.filter == nil, "0 clears the filter")
 	char(b, "0")
 	check(#b.effects == 0, "0 with no filter changes nothing and does not render")
+	char(b, "%")
+	key(b, "2", "@")
+	char(b, "0")
+	check(b.ui.filter == nil and b.ui.priority == false, "0 clears priority only along with the status filter")
 end
 
 -- Esc in mode A: input, then search, then filter, then back; never a hide.
@@ -253,6 +257,108 @@ do
 	check(#b.effects == 0, "mode B: Esc in the list gives no effect")
 end
 
+-- The rows a block draws: "#<gid>" for a header, the deck id for an agent.
+local function drawn(b: Block): string
+	local out: { string } = {}
+	for _, row in rows(b) do
+		table.insert(out, if row.kind == "header" then "#" .. row.gid else row.id :: string)
+	end
+	return table.concat(out, ",")
+end
+
+-- p tags the selected agent as priority on its record and saves; p again untags it. On a header, or with no row, it
+-- does nothing. The tag is the record's, so it outlives an exit and the restart Enter gives.
+do
+	local b = block(sample())
+	select(b, { kind = "agent", id = "b" })
+	char(b, "p")
+	check(b.deck.agents.b.priority == true and b.deck.agents.a.priority == nil, "p tags the selected agent only")
+	check(kinds(b.effects) == "save_kv,render", "a tag saves kv: " .. kinds(b.effects))
+	check(rows(b)[3].id == "b" and rows(b)[3].priority == true, "its row is marked priority")
+	char(b, "p")
+	check(b.deck.agents.b.priority == nil, "p again untags it")
+	check(kinds(b.effects) == "save_kv,render", "an untag saves kv too")
+
+	local h = block(sample())
+	select(h, { kind = "header", gid = "g1" })
+	local before = h.deck
+	char(h, "p")
+	check(h.deck == before and #h.effects == 0, "p on a header does nothing")
+	local none = block(Store.empty())
+	char(none, "p")
+	check(#none.effects == 0, "p with no row does nothing")
+
+	local deck = sample()
+	agent(deck, "d", "g2", 2, { state = "exited", exit = 0, ended_ms = NOW - 10, priority = true })
+	local r = block(deck)
+	select(r, { kind = "agent", id = "d" })
+	key(r, "enter")
+	answer(r, true)
+	check(request_of(r.effects, "start") ~= nil, "Enter restarts the exited agent")
+	check(r.deck.agents.d.state == "pending" and r.deck.agents.d.priority == true, "the restart keeps its tag")
+end
+
+-- % shows only priority agents, under the headers of the groups that hold one, and refuses a reorder; it ANDs with
+-- a status filter and with the search. Esc clears the search first, then the status filter and priority only
+-- together. The saved UI keeps it.
+do
+	local deck = sample()
+	deck.agents.b.priority = true
+	deck.agents.c.priority = true
+	local b = block(deck)
+	b.status = {
+		a = { { s = "q", src = "agents" } },
+		b = { { s = "q", src = "agents" } },
+		c = { { s = "w", src = "agents" } },
+	}
+	key(b, "5", "%")
+	check(b.ui.priority == true, "% turns priority only on")
+	check(kinds(b.effects) == "render", "priority only renders and does not save kv")
+	check(drawn(b) == "#g1,b,#g2,c", "only tagged agents and their groups: " .. drawn(b))
+	select(b, { kind = "agent", id = "b" })
+	char(b, "V")
+	check(b.ui.mode == "list" and b.ui.notice == Keys.ORDER_FILTERED, "V refuses under priority only")
+	key(b, "2", "@")
+	check(drawn(b) == "#g1,b", "% and @: a is untagged and c is running: " .. drawn(b))
+	key(b, "escape")
+	check(b.ui.filter == nil and b.ui.priority == false, "Esc clears the status filter and priority only together")
+	check(request_of(b.effects, "back") == nil, "and asks for no back")
+	check(drawn(b) == "#g1,a,b,#g2,c", "every row is back: " .. drawn(b))
+
+	key(b, "5", "%")
+	char(b, "/")
+	type_text(b, "webapp")
+	key(b, "enter")
+	check(drawn(b) == "#g1,b", "% and a search on webapp: a is untagged and c is elsewhere: " .. drawn(b))
+	key(b, "escape")
+	check(b.ui.search == nil and b.ui.priority == true, "Esc clears the search first")
+	key(b, "escape")
+	check(b.ui.priority == false and drawn(b) == "#g1,a,b,#g2,c", "then priority only")
+	key(b, "5", "%")
+	key(b, "5", "%")
+	check(b.ui.priority == false, "% again turns it off")
+
+	key(b, "5", "%")
+	local saved = Keys.saved_ui(b.ui)
+	check(saved.priority == true and Keys.new_ui(saved).priority == true, "the saved UI keeps priority only")
+	check(Keys.new_ui({}).priority == false, "a save without it restores it off")
+	check(Keys.new_ui({ priority = "yes" }).priority == false, "an invalid saved value restores it off")
+end
+
+-- The last-tab chord onto an agent priority only hides leaves the selection alone, as under a status filter, even
+-- when its folded group's header is drawn.
+do
+	local deck = sample()
+	deck.groups[1].folded = true
+	deck.agents.b.priority = true
+	deck.agents.c.priority = true
+	local b = block(deck)
+	key(b, "5", "%")
+	select(b, { kind = "agent", id = "c" })
+	send(b, { kind = "follow", id = "a" })
+	check((b.ui.selection :: any).id == "c", "follow onto a hidden untagged agent keeps the selection")
+end
+
 -- On a header, h folds, l unfolds, Tab and Enter toggle; every fold change saves kv.
 do
 	local b = block(sample())
@@ -284,13 +390,30 @@ do
 	key(b, "g", "G")
 	check(b.ui.selection ~= nil and b.ui.selection.id == "c", "G goes to the last row")
 	char(b, "j")
-	check(b.ui.selection ~= nil and b.ui.selection.id == "c" and #b.effects == 0, "j on the last row stays put")
+	check(
+		b.ui.selection ~= nil and b.ui.selection.kind == "header" and b.ui.selection.gid == "g1",
+		"j on the last row wraps to the first"
+	)
+	char(b, "k")
+	check(b.ui.selection ~= nil and b.ui.selection.id == "c", "k on the first row wraps to the last")
+	key(b, "down")
+	check(b.ui.selection ~= nil and b.ui.selection.gid == "g1" and b.ui.selection.kind == "header", "↓ wraps too")
+	key(b, "up")
+	check(b.ui.selection ~= nil and b.ui.selection.id == "c", "↑ wraps too")
 	key(b, "home")
 	check(b.ui.selection ~= nil and b.ui.selection.gid == "g1" and b.ui.selection.kind == "header", "Home: first")
 	key(b, "end")
 	check(b.ui.selection ~= nil and b.ui.selection.id == "c", "End goes to the last row")
 	key(b, "up")
 	check(b.ui.selection ~= nil and b.ui.selection.kind == "header" and b.ui.selection.gid == "g2", "↑ moves up")
+end
+
+-- An empty list has nothing to wrap to: j and k select nothing and change nothing.
+do
+	local b = block(Store.empty())
+	char(b, "j")
+	char(b, "k")
+	check(b.ui.selection == nil and #b.effects == 0, "j and k on an empty list do nothing")
 end
 
 -- Group movement: J to the next group's header, K to the previous one (from an agent, its own header first); both
@@ -2605,6 +2728,8 @@ do
 			b.ui.target_id or "",
 			b.ui.target_gid or "",
 			b.ui.filter or "",
+			tostring(b.ui.priority),
+			tostring(b.deck.agents.a.priority),
 			tostring(b.ui.show_src),
 			b.ui.notice or "",
 			if sel ~= nil then sel.kind .. ":" .. (sel.id or sel.gid or "") else "",
@@ -2646,7 +2771,7 @@ do
 	end
 	local agent_a: Model.Selection = { kind = "agent", id = "a" }
 	local header_g1: Model.Selection = { kind = "header", gid = "g1" }
-	for _, k in { "o", "q", "r", "m", "V", "d", "n", "g", "/", "!", "@", "#", "$", "0", "i", ",", "J", "K" } do
+	for _, k in { "o", "q", "r", "m", "V", "p", "d", "n", "g", "/", "!", "@", "#", "$", "0", "%", "i", ",", "J", "K" } do
 		local want = plain(k, agent_a)
 		check(by_key(k, agent_a) == want, "menu key " .. k .. " runs what " .. k .. " runs: " .. want)
 		check(by_enter(k, agent_a) == want, "Enter on " .. k .. " runs what " .. k .. " runs: " .. want)
@@ -2672,7 +2797,7 @@ do
 	select(b, { kind = "header", gid = "g1" })
 	local header_row = rows(b)[1]
 	for _, item in Keys.menu_items(header_row, DEFAULT_MAP) do
-		local agent_only = item.key == "o" or item.key == "q" or item.key == "m"
+		local agent_only = item.key == "o" or item.key == "q" or item.key == "m" or item.key == "p"
 		check(item.enabled == not agent_only, "on a header " .. item.key .. " enabled is " .. tostring(not agent_only))
 	end
 	question(b)
@@ -2750,6 +2875,9 @@ do
 		"the filters are adjacent"
 	)
 	check(menu_index(",") == menu_index("i") + 1, "settings follows status sources in the menu")
+	check(item(nil, "p").label == "tag or untag as priority", "p tags or untags the agent")
+	check(item(nil, "%").label == "priority only", "% keeps priority agents")
+	check(menu_index("%") == menu_index("0") + 1, "priority only follows everything in the menu")
 	local seen: { [string]: boolean } = {}
 	for _, it in Keys.menu_items(nil, DEFAULT_MAP) do
 		check(not seen[it.key], "menu key " .. it.key .. " appears once")

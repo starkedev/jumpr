@@ -81,6 +81,29 @@ check(
 check(View.head_parts(frame({ host = "h" }, { mode = "list", filter = "idle" }))[2] == "filter $ idle", "filter $")
 check(#View.head_parts(frame({ host = "h" }, { mode = "list", filter = "!" })) == 1, "a key is no filter code")
 
+-- Priority only shows in the head after the status filter and before the search, with the mark tagged rows carry.
+check(
+	same(
+		View.head_parts(frame({ host = "h" }, { mode = "list", filter = "waiting", priority = true, search = "bra" })),
+		{ "h", "filter @ waiting", "★ priority only", "/bra" }
+	),
+	"priority only sits between the filter and the search"
+)
+check(
+	same(View.head_parts(frame({ host = "h" }, { mode = "list", priority = true })), { "h", "★ priority only" }),
+	"priority only shows on its own"
+)
+
+-- A tagged agent's label starts with ★, which a narrow list's cut keeps; an untagged label is drawn as it is.
+do
+	local tagged: any = { kind = "agent", gid = "g1", id = "a", label = "fix parser", priority = true }
+	local plain: any = { kind = "agent", gid = "g1", id = "b", label = "fix parser" }
+	check(View.item_label(tagged, 40) == "★ fix parser", "a tagged row shows ★ before its label")
+	check(View.item_label(plain, 40) == "fix parser", "an untagged row shows no mark")
+	check(View.item_label(tagged, 10) == "★ f…", "a narrow list cuts the label and keeps the ★")
+	check(View.item_label(plain, 10) == "fix…", "and cuts an untagged label to the same width")
+end
+
 -- Ages, on a row's meta line and with `i`: nothing finer than a minute, so the text changes at most once a minute;
 -- larger ages in one whole unit.
 do
@@ -218,6 +241,10 @@ check(View.empty_text(frame({ rows = {} })) == "no groups: g adds one", "the def
 check(
 	View.empty_text(frame({ rows = {} }, { mode = "list", filter = "waiting" })) == "nothing matches",
 	"an empty filtered list still says nothing matches"
+)
+check(
+	View.empty_text(frame({ rows = {} }, { mode = "list", priority = true })) == "nothing matches",
+	"an empty list under priority only says nothing matches"
 )
 
 do

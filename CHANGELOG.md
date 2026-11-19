@@ -6,6 +6,20 @@ Update with `tern plugin install github.com/starkedev/jumpr --force` on each mac
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-11-20
+
+### Added
+
+- `p` tags the selected agent as priority, or untags it, and a tagged agent shows ★ beside its name.
+  The tag stays on the agent when it exits and restarts, and when Tern restarts.
+  `p` can be remapped on the settings page.
+- `%` shows only priority agents, and only the groups that hold one; the head line says `★ priority only`.
+  It combines with a status filter and with the search, `0` and `Esc` clear it with the status filter, and both commands are in the `?` menu.
+
+### Changed
+
+- `j` / `↓` on the last row goes back to the first, and `k` / `↑` on the first row goes to the last, instead of stopping at the list's ends.
+
 ## [0.3.3] - 2026-11-19
 
 ### Added
@@ -260,7 +274,8 @@ Tested on Tern 0.9.10 and 0.9.11.
 - Every message between the halves carries a protocol version, and a mismatch shows a banner naming the machine to update.
 - `scripts/check.sh` runs stylua, the unit suites, a strict `luau-lsp` type check and design-rule checks.
 
-[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/starkedev/jumpr/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/starkedev/jumpr/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/starkedev/jumpr/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/starkedev/jumpr/compare/v0.3.0...v0.3.1

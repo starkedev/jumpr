@@ -61,7 +61,16 @@ check(select("#", Identity.match("JUMPR_ID=abc")) == 1, "match returns exactly o
 
 -- CLI agent launch lines carry the id in the same leading env assignment.
 local SESSION = "0f8e2a6c-4b1d-4c3e-9a7f-1234567890ab"
-matches("env JUMPR_ID=x sh -c 'claude --resume " .. SESSION .. " || claude --session-id " .. SESSION .. "'", "x")
+matches(
+	"env JUMPR_ID=x sh -c 'if ls ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*/"
+		.. SESSION
+		.. ".jsonl >/dev/null 2>&1; then exec claude --resume "
+		.. SESSION
+		.. "; else exec claude --session-id "
+		.. SESSION
+		.. "; fi'",
+	"x"
+)
 matches("env JUMPR_ID=x claude --resume", "x")
 matches("env JUMPR_ID=x codex resume 019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b", "x")
 matches("env JUMPR_ID=x codex", "x")

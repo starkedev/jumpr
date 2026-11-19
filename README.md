@@ -237,11 +237,14 @@ omp --continue --session-dir ~/.omp/deck/<id>
 A Claude Code agent runs the real `claude` CLI, on a conversation id Jumpr draws when it makes the agent:
 
 ```sh
-env JUMPR_ID=<id> sh -c 'claude --resume <uuid> || claude --session-id <uuid>'
+env JUMPR_ID=<id> sh -c 'if ls ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*/<uuid>.jsonl >/dev/null 2>&1; then exec claude --resume <uuid>; else exec claude --session-id <uuid>; fi'
 ```
 
 The same line starts the agent and restarts it.
-`claude --resume` opens that conversation once it has messages; before its first message it refuses, and `claude --session-id` starts it fresh under that id.
+Claude Code writes a conversation's file, `~/.claude/projects/<folder>/<uuid>.jsonl`, at its first message, so the line looks for that file before it runs anything.
+When `CLAUDE_CONFIG_DIR` is set, Claude keeps its files there instead, and the line looks in `$CLAUDE_CONFIG_DIR/projects/` to match.
+If the file is there, `claude --resume` opens the conversation; if not, `claude --session-id` starts it fresh under that id.
+A new agent therefore never tries to resume a conversation that does not exist yet.
 
 A Codex agent runs the real `codex` CLI:
 
@@ -303,7 +306,8 @@ At any other time the message is held (`not idle yet — message queued`) and ty
 It runs:
 
 - `omp --continue --session-dir ~/.omp/deck/<id>`, in a terminal tab, to start or restart an omp agent.
-- `env JUMPR_ID=<id> sh -c 'claude --resume <uuid> || claude --session-id <uuid>'`, in a terminal tab, to start or restart a Claude Code agent on its conversation, and `env JUMPR_ID=<id> claude --resume` to restart one whose conversation Jumpr does not know, in Claude's own picker.
+- `env JUMPR_ID=<id> sh -c 'if ls ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*/<uuid>.jsonl >/dev/null 2>&1; then exec claude --resume <uuid>; else exec claude --session-id <uuid>; fi'`, in a terminal tab, to start or restart a Claude Code agent on its conversation, and `env JUMPR_ID=<id> claude --resume` to restart one whose conversation Jumpr does not know, in Claude's own picker.
+  The `ls` only answers whether that conversation's file exists; its output is thrown away and no file is read.
 - `env JUMPR_ID=<id> codex`, in a terminal tab, to start a Codex agent; `env JUMPR_ID=<id> codex resume <thread id>` to restart one whose conversation Jumpr has found, and `env JUMPR_ID=<id> codex resume` to restart one whose conversation it has not, in Codex's own picker.
 - `env JUMPR_ID=<id> tern acp <agent>`, in a terminal tab, to start or restart any other agent through Tern's ACP chat.
   A restart adds `--continue` or `--sessions` to that command.
@@ -355,6 +359,7 @@ Delete that folder by hand to start fresh.
 - Claude Code's `/clear` is followed on Linux only: on macOS, which has no `/proc`, a restart after `/clear` returns to the conversation the agent had before it.
 - Codex's `/new` is not followed: a restart returns to the conversation Jumpr found first.
 - Jumpr reads Codex's files under `~/.codex/sessions` only, so with `CODEX_HOME` set elsewhere it never finds a Codex agent's conversation, and every restart goes through Codex's picker.
+- Jumpr follows a Claude agent's `/clear` by reading `~/.claude/sessions` only, so with `CLAUDE_CONFIG_DIR` set elsewhere a `/clear` is not followed, and a restart returns to the conversation the agent had before it.
 - A Codex you start by hand in the same folder within about ten minutes of a Codex agent's start can be taken for that agent's conversation, when the agent has not written its own yet.
   Two Codex agents Jumpr starts in one folder at about the same time cannot be told apart: neither conversation is found, and both restart through Codex's picker.
 - On macOS, the Codex search after a picker restart reads file times with BSD `stat`, which is untested.

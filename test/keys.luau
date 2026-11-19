@@ -147,9 +147,17 @@ local function line_of(start: { [string]: string }?): string?
 	return Agent.command(start.cli, start.id, start.mode :: Agent.Mode, start.sid)
 end
 
--- The Claude Code line for agent `id` on conversation `sid`: it resumes `sid`, or starts it when it has no messages.
+-- The Claude Code line for agent `id` on conversation `sid`: it resumes `sid` if its transcript exists, else starts it.
 local function claude_line(id: string, sid: string): string
-	return "env JUMPR_ID=" .. id .. " sh -c 'claude --resume " .. sid .. " || claude --session-id " .. sid .. "'"
+	return "env JUMPR_ID="
+		.. id
+		.. " sh -c 'if ls ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*/"
+		.. sid
+		.. ".jsonl >/dev/null 2>&1; then exec claude --resume "
+		.. sid
+		.. "; else exec claude --session-id "
+		.. sid
+		.. "; fi'"
 end
 
 -- The host's answer to the last `check_folder` effect, as the host gives it (`Keys.folder_checked`).

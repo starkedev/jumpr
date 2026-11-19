@@ -273,8 +273,9 @@ check(not Sessions.has("copilot"), "a kind without a recipe is not looked up")
 check(not Sessions.has("Claude") and not Sessions.has("Codex"), "kind lookup is case-sensitive")
 check(not Sessions.has(""), "an empty kind is not looked up")
 
--- The conversation whose grep exits 0 is returned, and later files are not probed. Its parent, the pane shell (`sh`
--- exec'd `claude` on a fresh start), does not carry the agent's id, so one more grep proves it the pane's own.
+-- The conversation whose grep exits 0 is returned, and later files are not probed. Its parent, the pane shell (the
+-- launch line's `sh` exec'd `claude`, to start or resume), does not carry the agent's id, so one more grep proves it
+-- the pane's own.
 do
 	local world = new_world()
 	add(world, "101", uuid(101), CWD, 1)
@@ -608,8 +609,8 @@ do
 	check(world.reads[1] == SESSIONS .. "/5001.json", "a trailing slash does not change the read path")
 end
 
--- On a resume `claude` is a child of the launch line's `sh`, which carries the agent's id: the walk reads its name,
--- passes it and stops at the pane shell, which does not carry the id.
+-- Under a line an older Jumpr started, a resume left `claude` a child of that line's `sh`, which carries the agent's
+-- id: the walk reads its name, passes it and stops at the pane shell, which does not carry the id.
 do
 	local world = new_world()
 	spawn(world, "30", "sh", SHELL, true)

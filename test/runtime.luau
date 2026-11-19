@@ -108,7 +108,7 @@ local function proc(m: Fake.Machine, pid: string, name: string, parent: string, 
 end
 
 -- Plants one Claude session file and, when `yes`, its `claude` carrying the agent's id as the pane shell's child, as
--- `sh` leaves it on a fresh start.
+-- the launch line's `sh` leaves it by exec, on a fresh start and on a resume alike.
 local function plant(m: Fake.Machine, pid: string, sid: string, cwd: string, yes: boolean)
 	m.home = HOME
 	m.files[HOME .. "/.claude/sessions/" .. pid .. ".json"] = m.json({ sessionId = sid, cwd = cwd })
@@ -1433,20 +1433,17 @@ end
 
 -- A proven claude is followed: its session file is read again every 3 s, with no grep and no listing, so `/clear`
 -- (which gives the live claude a new conversation id) moves the stored id, and Enter after the pane exits resumes the
--- new conversation. This agent resumed its conversation, so its `claude` is a child of the line's `sh` (which
--- carries the agent's id too), a grandchild of the pane shell.
+-- new conversation. This agent resumed its conversation, and the line's `sh` exec'd `claude` for that too, so its
+-- `claude` is the pane shell's direct child.
 do
 	local id = "abcdefgh"
 	local list, m = list_on(claude_deck(id, { session = SID_A }))
-	plant(m, "31", SID_A, "/work", false)
-	proc(m, SHELL_PID, "fish", "1", false)
-	proc(m, "30", "sh", SHELL_PID, true)
-	proc(m, "31", "claude", "30", true)
+	plant(m, "31", SID_A, "/work", true)
 	local c, cx, b = open(list, 101)
 	spawn_line(list, m, 21, claude_line(id, SID_A))
 	list.tick()
 	check(stored(m).agents[id].state == "live", "the agent binds")
-	check(pids_probed(m) == "31,30,7", "a claude under the line's sh is the pane's own: " .. pids_probed(m))
+	check(pids_probed(m) == "31,7", "a claude the line's sh exec'd is the pane's own: " .. pids_probed(m))
 	check(stored(m).agents[id].session == SID_A, "and its conversation is the stored one")
 	local probes, lists = #m.probes, #m.lists
 	m.files[HOME .. "/.claude/sessions/31.json"] = m.json({ sessionId = SID_B, cwd = "/work" })

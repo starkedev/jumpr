@@ -13,8 +13,9 @@ local MAX_PROBES = 30
 -- `/proc/<pid>/stat` is one line of a few hundred bytes, `/proc/<pid>/comm` at most 16.
 local STAT_BYTES = 4096
 local COMM_BYTES = 64
--- How many ancestors of a `claude` are walked to prove it is the pane's own. Its launch line puts at most `sh` between
--- it and the pane shell, so a longer chain of processes carrying the agent's id proves nothing.
+-- How many ancestors of a `claude` are walked to prove it is the pane's own. Its launch line's `sh` execs it, so it
+-- is the pane shell's child; a line an older Jumpr started puts at most `sh` between them, so a longer chain of
+-- processes carrying the agent's id proves nothing.
 local MAX_ANCESTORS = 8
 local WARN_LIST = "cannot list sessions"
 local WARN_MISSING = "no sessions folder"
@@ -252,9 +253,10 @@ local function carries(compat: Compat, id: string, pid: string, cb: (status: num
 end
 
 -- Proves that `pid`, a process carrying the agent's `JUMPR_ID`, is the pane's own `claude`: no other process named
--- `claude` is among its ancestors up to the first one without that `JUMPR_ID`. On a resume its parent is the launch
--- line's `sh`; on a fresh start `sh` has exec'd it, so its parent is the pane shell. A `claude` the agent started
--- itself (claude → bash → claude) has the agent's `claude` above it, so it never counts. `cb` gets the process's
+-- `claude` is among its ancestors up to the first one without that `JUMPR_ID`. The launch line's `sh` execs it, so
+-- its parent is the pane shell; under a line an older Jumpr started (`claude --resume … || …`) a resume left it a
+-- child of that `sh`, which carries the id too, and is still proven. A `claude` the agent started itself
+-- (claude → bash → claude) has the agent's `claude` above it, so it never counts. `cb` gets the process's
 -- start time when it is proven, else nil: also when a process on the way cannot be read, or the walk passes
 -- MAX_ANCESTORS. Nil also when grep cannot start, which is warned.
 local function own_claude(compat: Compat, id: string, pid: string, cb: (start: string?) -> ())

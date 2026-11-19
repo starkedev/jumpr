@@ -446,7 +446,7 @@ end
 
 -- ACP-era records cut over without a migration: an exited claude record with a session, one without, and a codex
 -- record that ran without one load through schema 2 (and a newer schema's display copy) field for field, and restart
--- as the CLI agents. Claude resumes its stored id with the composite line (the CLI opens ACP-created conversations),
+-- as the CLI agents. Claude resumes its stored id with the checked line (the CLI opens ACP-created conversations),
 -- claude without one opens the CLI's own picker, and codex that ran opens `codex resume`'s picker.
 do
 	local SID = "0b6c4f2e-8a1d-4c3e-9f7a-2d5e6b7c8a9f"
@@ -481,8 +481,14 @@ do
 	check(mode == "resume" and sid == SID, "an ACP-era claude record with a session resumes it")
 	check(
 		Agent.command("claude", "c1", mode :: Agent.Mode, sid)
-			== "env JUMPR_ID=c1 sh -c 'claude --resume " .. SID .. " || claude --session-id " .. SID .. "'",
-		"it restarts on the composite line with its stored id"
+			== "env JUMPR_ID=c1 sh -c 'if ls ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*/"
+				.. SID
+				.. ".jsonl >/dev/null 2>&1; then exec claude --resume "
+				.. SID
+				.. "; else exec claude --session-id "
+				.. SID
+				.. "; fi'",
+		"it restarts on the checked line with its stored id"
 	)
 	local mode2, sid2 = Model.restart_mode(deck.agents.c2, "c2", deck)
 	check(mode2 == "pick" and sid2 == nil, "an ACP-era claude record without a session picks")

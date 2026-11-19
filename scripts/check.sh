@@ -161,6 +161,64 @@ if [ "$got" != 31 ]; then
 	codex_fail "picker search (cap)" 31 "$got"
 fi
 
+echo "==> claude launch check"
+# The real launch line comes from lib/shared/agent.luau; its quoted script runs unmodified under sh, with a fake
+# `claude` first on PATH that prints its id and arguments, against a fixture home and config folder.
+claude_fail() {
+	echo "check: the claude launch line chose wrong $1:" >&2
+	printf 'want: %q\ngot:  %q\n' "$2" "$3" >&2
+	exit 1
+}
+claude_sid="0f8e2a6c-4b1d-4c3e-9a7f-1234567890ab"
+mkdir -p "$tmp/claude/bin" "$tmp/claude/lib"
+cp -R lib/. "$tmp/claude/lib"
+printf 'print(require("./lib/shared/agent").command("claude", "x1", "new", "%s"))\n' "$claude_sid" >"$tmp/claude/line.luau"
+claude_line="$(luau "$tmp/claude/line.luau")"
+claude_prefix="env JUMPR_ID=x1 sh -c '"
+if [ "${claude_line:0:${#claude_prefix}}" != "$claude_prefix" ] || [ "${claude_line: -1}" != "'" ]; then
+	claude_fail "(no quoted sh script in the line)" "$claude_prefix...'" "$claude_line"
+fi
+claude_script="${claude_line:${#claude_prefix}}"
+claude_script="${claude_script%\'}"
+printf '#!/bin/sh\nprintf "%%s|%%s\\n" "${JUMPR_ID:-}" "$*"\n' >"$tmp/claude/bin/claude"
+chmod +x "$tmp/claude/bin/claude"
+claude_home="$tmp/claude/home"
+claude_alt="$tmp/claude/alt"
+mkdir -p "$claude_home/.claude/projects/-x" "$claude_alt/projects/-y"
+claude_resume="|--resume $claude_sid"
+claude_create="|--session-id $claude_sid"
+claude_run() {
+	env -u CLAUDE_CONFIG_DIR HOME="$claude_home" PATH="$tmp/claude/bin:$PATH" "$@"
+}
+claude_expect() {
+	local what="$1" want="$2" got
+	shift 2
+	got="$(claude_run "$@")" || got="exit $? after: $got"
+	if [ "$got" != "$want" ]; then
+		claude_fail "$what" "$want" "$got"
+	fi
+}
+
+touch "$claude_home/.claude/projects/-x/$claude_sid.jsonl"
+claude_expect "with the transcript under ~/.claude" "$claude_resume" sh -c "$claude_script"
+claude_expect "with CLAUDE_CONFIG_DIR set and the transcript only under ~/.claude" "$claude_create" \
+	CLAUDE_CONFIG_DIR="$claude_alt" sh -c "$claude_script"
+rm "$claude_home/.claude/projects/-x/$claude_sid.jsonl"
+claude_expect "with no transcript" "$claude_create" sh -c "$claude_script"
+touch "$claude_alt/projects/-y/$claude_sid.jsonl"
+claude_expect "with the transcript under CLAUDE_CONFIG_DIR" "$claude_resume" \
+	CLAUDE_CONFIG_DIR="$claude_alt" sh -c "$claude_script"
+claude_expect "with the transcript only under CLAUDE_CONFIG_DIR, which is unset" "$claude_create" sh -c "$claude_script"
+
+# The pane shell is fish: the whole line must reach sh with its expansion intact.
+if command -v fish >/dev/null 2>&1; then
+	claude_expect "through fish with the transcript under CLAUDE_CONFIG_DIR" "x1$claude_resume" \
+		CLAUDE_CONFIG_DIR="$claude_alt" fish --no-config -c "$claude_line"
+	claude_expect "through fish with CLAUDE_CONFIG_DIR unset" "x1$claude_create" fish --no-config -c "$claude_line"
+else
+	echo "note: fish is not on PATH, so the line was not run through fish"
+fi
+
 echo "==> types"
 if [ ! -f tern.d.luau ]; then
 	if ! command -v tern >/dev/null 2>&1; then

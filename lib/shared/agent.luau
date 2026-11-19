@@ -76,14 +76,26 @@ function M.options(current: string): { string }
 	return options
 end
 
--- The Claude Code CLI line. `new` and `resume` both resume the Jumpr-owned session uuid, or create it under that
--- uuid when it does not exist yet; the quoted part holds only constant words and the validated uuid.
+-- The Claude Code CLI line. `new` and `resume` both open the Jumpr-owned session uuid: the line checks for that
+-- conversation's transcript (`<config>/projects/<folder>/<uuid>.jsonl`, written at its first prompt, in any folder)
+-- before running anything, then resumes it if it exists or creates it under that uuid if not. `<config>` is Claude's
+-- own config folder, `$CLAUDE_CONFIG_DIR` when set and `~/.claude` otherwise, expanded by the line's `sh` so the check
+-- looks where the `claude` it runs writes. Deciding first means a fresh agent never runs a resume that must fail
+-- (Claude prints "No conversation found" for one), and `exec` keeps `claude` the pane shell's direct child. The quoted
+-- part holds only constant words and the validated uuid.
 local function claude_command(prefix: string, mode: Mode, sid: string?): string?
 	if mode == "new" or mode == "resume" then
 		if sid == nil or not Identity.valid_uuid(sid) then
 			return nil
 		end
-		return prefix .. "sh -c 'claude --resume " .. sid .. " || claude --session-id " .. sid .. "'"
+		return prefix
+			.. "sh -c 'if ls ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*/"
+			.. sid
+			.. ".jsonl >/dev/null 2>&1; then exec claude --resume "
+			.. sid
+			.. "; else exec claude --session-id "
+			.. sid
+			.. "; fi'"
 	elseif mode == "pick" then
 		return prefix .. "claude --resume"
 	end

@@ -6,6 +6,14 @@ Update with `tern plugin install github.com/starkedev/jumpr --force` on each mac
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-19
+
+### Fixed
+
+- A new Claude agent no longer shows a red "No conversation found with session ID" line when it starts.
+  Jumpr now checks whether the agent's conversation exists before it runs `claude`, and resumes it only when it does.
+  It looks where Claude keeps its files: in `CLAUDE_CONFIG_DIR` when you set it, and in `~/.claude` otherwise.
+
 ## [0.3.0] - 2026-11-18
 
 ### Changed
@@ -237,7 +245,8 @@ Tested on Tern 0.9.10 and 0.9.11.
 - Every message between the halves carries a protocol version, and a mismatch shows a banner naming the machine to update.
 - `scripts/check.sh` runs stylua, the unit suites, a strict `luau-lsp` type check and design-rule checks.
 
-[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/starkedev/jumpr/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/starkedev/jumpr/compare/v0.2.6...v0.3.0
 [0.2.6]: https://github.com/starkedev/jumpr/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/starkedev/jumpr/compare/v0.2.4...v0.2.5

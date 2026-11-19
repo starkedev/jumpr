@@ -71,20 +71,50 @@ check(
 )
 check(Agent.command("copilot", "agent-1", "resume") == nil, "resume without a session id is refused")
 
--- Claude runs its CLI: new and resume share one line that resumes the owned uuid or creates it, pick opens its
--- picker, and continue is refused because it could open another agent's session.
+-- Claude runs its CLI: new and resume share one line that checks for the owned uuid's transcript first, then resumes
+-- it or creates it; pick opens its picker, and continue is refused because it could open another agent's session.
+-- The transcript is looked for in Claude's own config folder: $CLAUDE_CONFIG_DIR when set, ~/.claude otherwise.
 local UUID_V4 = "123e4567-e89b-42d3-a456-426614174000"
 local UUID_V7 = "01928f3a-6b7c-7def-8a12-3456789abcde"
-local CLAUDE_OWNED = "env JUMPR_ID=agent-1 sh -c 'claude --resume "
+local CLAUDE_CONFIG = "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+local CLAUDE_TRANSCRIPT = CLAUDE_CONFIG .. "/projects/*/" .. UUID_V4 .. ".jsonl"
+local CLAUDE_OWNED = "env JUMPR_ID=agent-1 sh -c 'if ls "
+	.. CLAUDE_TRANSCRIPT
+	.. " >/dev/null 2>&1; then exec claude --resume "
 	.. UUID_V4
-	.. " || claude --session-id "
+	.. "; else exec claude --session-id "
 	.. UUID_V4
-	.. "'"
+	.. "; fi'"
 check(Agent.command("claude", "agent-1", "new", UUID_V4) == CLAUDE_OWNED, "claude new resumes-or-creates its uuid")
 check(
 	Agent.command("claude", "agent-1", "resume", UUID_V4) == CLAUDE_OWNED,
 	"claude resume resumes-or-creates its uuid"
 )
+
+-- A fresh agent never runs a resume that must fail: the line decides on the transcript before running claude at all,
+-- never falls back after a failed command (`||`), and its only resume is the `then` branch of that check.
+for _, mode: Agent.Mode in { "new", "resume" } :: { Agent.Mode } do
+	local line = Agent.command("claude", "agent-1", mode, UUID_V4) :: string
+	check(string.find(line, "||", 1, true) == nil, "claude " .. mode .. " never falls back after a failure")
+	local check_at = string.find(line, "if ls " .. CLAUDE_TRANSCRIPT .. " ", 1, true)
+	local resume_at = string.find(line, "claude --resume", 1, true)
+	local then_at = string.find(line, "; then exec claude --resume " .. UUID_V4 .. ";", 1, true)
+	check(
+		check_at ~= nil and resume_at ~= nil and check_at < resume_at,
+		"claude " .. mode .. " checks for the transcript before any resume"
+	)
+	check(
+		then_at ~= nil and resume_at == then_at + #"; then exec ",
+		"claude " .. mode .. " resumes only when the transcript exists"
+	)
+	local _, resumes = string.gsub(line, "claude %-%-resume", "")
+	check(resumes == 1, "claude " .. mode .. " has exactly one resume")
+	check(
+		string.find(line, "; else exec claude --session-id " .. UUID_V4 .. "; fi'", 1, true) ~= nil,
+		"claude " .. mode .. " creates the conversation when there is no transcript"
+	)
+end
+
 check(Agent.command("claude", "agent-1", "continue", UUID_V4) == nil, "claude continue is refused")
 check(Agent.command("claude", "agent-1", "continue") == nil, "claude continue without a session is refused")
 check(
@@ -148,6 +178,8 @@ check(Agent.command("copilot", "agent1", "resume", "-h") == nil, "a short flag i
 
 -- Every kind on offer, in every mode, with or without a uuid, builds nil or a line made only of fixed words, offered
 -- kinds, the validated id and the validated uuid; quotes appear only as the one pair around the composite claude part.
+-- The composite part's shell words are listed exactly: its transcript path is constants around the validated uuid,
+-- and `;` only ever follows `2>&1` or the uuid.
 local VOCABULARY: { [string]: boolean } = {
 	env = true,
 	sh = true,
@@ -163,12 +195,21 @@ local VOCABULARY: { [string]: boolean } = {
 	["--continue"] = true,
 	["--sessions"] = true,
 	["--session-dir"] = true,
-	["||"] = true,
+	["if"] = true,
+	ls = true,
+	[">/dev/null"] = true,
+	["2>&1;"] = true,
+	["then"] = true,
+	exec = true,
+	["else"] = true,
+	fi = true,
 	["JUMPR_ID=agent-1"] = true,
 	["~/.omp/deck/agent-1"] = true,
+	[CLAUDE_TRANSCRIPT] = true,
 	-- The validated ACP session id, which only ACP kinds may carry.
 	session_2 = true,
 	[UUID_V4] = true,
+	[UUID_V4 .. ";"] = true,
 }
 local offered = Agent.options("x")
 for _, kind in offered do
@@ -191,8 +232,18 @@ for _, kind in offered do
 					"a CLI kind never carries a non-uuid session id: " .. line
 				)
 				local _, quotes = string.gsub(line, "'", "")
-				local composite = string.find(line, " sh -c 'claude ", 1, true) ~= nil
+				local composite = string.find(line, " sh -c 'if ls ", 1, true) ~= nil
 				check(quotes == (if composite then 2 else 0), "only the composite claude part is quoted: " .. line)
+				-- The only expansion is the config folder's, inside the quotes, so the pane shell never expands it.
+				local _, dollars = string.gsub(line, "%$", "")
+				check(
+					dollars == (if composite then 2 else 0)
+						and (
+							not composite
+							or string.find(line, "'if ls " .. CLAUDE_CONFIG .. "/projects/*/", 1, true) ~= nil
+						),
+					"only the composite claude part expands, and only the config folder: " .. line
+				)
 				check(
 					not composite or string.sub(line, -1) == "'",
 					"the composite claude part closes its quotes at the end: " .. line

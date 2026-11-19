@@ -192,7 +192,15 @@ do
 	local uuid = "01234567-0123-4456-b012-345670123456"
 	local thread = "019a7d6e-2f3b-7c41-9d2e-5b6a7c8d9e0f"
 	local function claude(id: string): string
-		return "env JUMPR_ID=" .. id .. " sh -c 'claude --resume " .. uuid .. " || claude --session-id " .. uuid .. "'"
+		return "env JUMPR_ID="
+			.. id
+			.. " sh -c 'if ls ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*/"
+			.. uuid
+			.. ".jsonl >/dev/null 2>&1; then exec claude --resume "
+			.. uuid
+			.. "; else exec claude --session-id "
+			.. uuid
+			.. "; fi'"
 	end
 	local cases: { { id: string, cli: string, mode: string, sid: string?, command: string } } = {
 		{ id = "claude-new", cli = "claude", mode = "new", sid = uuid, command = claude("claude-new") },
@@ -650,11 +658,13 @@ do
 
 	-- A Claude Code pane, found by the id on its `sh -c` line, that exits by itself during the moment.
 	local uuid = "01234567-0123-4456-b012-345670123456"
-	local claude_line = "env JUMPR_ID=chat-slow sh -c 'claude --resume "
+	local claude_line = "env JUMPR_ID=chat-slow sh -c 'if ls ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*/"
 		.. uuid
-		.. " || claude --session-id "
+		.. ".jsonl >/dev/null 2>&1; then exec claude --resume "
 		.. uuid
-		.. "'"
+		.. "; else exec claude --session-id "
+		.. uuid
+		.. "; fi'"
 	local slow = Fake.agent(Fake.tab(deck), nil, claude_line)
 	leaves_open[slow] = true
 	before = #answers()

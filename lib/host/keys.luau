@@ -50,14 +50,14 @@ local M = {}
 export type Selection = model.Selection
 
 -- mode: "list" | "input" | "confirm" | "pick" | "order" | "menu". purpose (input): "search" | "new" | "folder" |
--- "group" | "label" | "send" | "queue"; (confirm): "stop" | "drop" | "group"; (pick): "move" | "kind".
+-- "group" | "label" | "group_name" | "send" | "queue"; (confirm): "stop" | "drop" | "group"; (pick): "move" | "kind".
 -- text: the open input line. title: its prompt (the question, in confirm). search, filter (a status code from
 -- `status.ORDER`, never its key), show_src: list state.
 -- notice: a one-line message, cleared by the next key. em: Esc mode from the latest status ("A" | "B").
 -- show_pending: the deck id a list-mode move rested on, waiting for the 120 ms pause; every other key clears it.
 -- block_cwd: the block's own folder (g prefill). folder, touched, then_n, n_cli: the g flow (the confirmed folder,
 -- whether the name line was edited, whether n continues after it, and the agent the `N` picker chose for it).
--- target_gid (n, N, confirm group, V on a header), target_id (r, o, q, d, m, V on an agent). pick: the highlighted
+-- target_gid (n, N, confirm group, r and V on a header), target_id (r, o, q, d, m, V on an agent). pick: the highlighted
 -- group's gid in the `m` picker (a gid, so a group swept while the picker is open cannot shift it onto another), or
 -- the highlighted agent in the `N` picker, whose choices are `kinds` (read once, as it opens). order_at: where the row
 -- `V` picked up stood (in its group, or among the groups), for Esc to put it back; order_gid: the group a held agent
@@ -814,7 +814,7 @@ local MENU: { MenuSpec } = {
 	{ key = "⏎", label = "", needs = "row" },
 	{ action = "send", label = "send a message", short = "send", needs = "agent" },
 	{ action = "queue", label = "queue a message", needs = "agent" },
-	{ action = "rename", label = "rename", needs = "agent" },
+	{ action = "rename", label = "rename", needs = "row" },
 	{ action = "move", label = "move to another group", needs = "agent" },
 	{ action = "reorder", label = "reorder", short = "move", needs = "row" },
 	{ action = "stop", label = "", needs = "row" },
@@ -981,6 +981,15 @@ local function list_key(s: Step, ev: Event)
 		message_key(s, row, action)
 	elseif action == "rename" then
 		if row == nil then
+			return
+		end
+		if row.kind == "header" then
+			local g = find_group(s.deck, row.gid)
+			if g == nil then
+				return
+			end
+			open_input(ui, "group_name", "group name", g.name)
+			ui.target_gid = g.gid
 			return
 		end
 		if row.kind ~= "agent" then
@@ -1208,6 +1217,41 @@ local function submit_label(s: Step)
 	if r.state == "live" then
 		request(s, "name", { id = id, label = label or "" })
 	end
+end
+
+-- Enter on the r line of a group heading: renames the group. An empty name, or one another group already has (group
+-- names are unique, as `g` keeps them), is refused with the line left open; an unchanged name or a group that went
+-- away meanwhile just closes it.
+local function submit_group_name(s: Step)
+	local ui = s.ui
+	local name = trim(ui.text)
+	if name == "" then
+		ui.notice = "type a group name"
+		return
+	end
+	local gid = ui.target_gid
+	local g = if gid ~= nil then find_group(s.deck, gid) else nil
+	if gid == nil or g == nil or g.name == name then
+		close_mode(ui)
+		return
+	end
+	for _, other in s.deck.groups do
+		if other.gid ~= gid and other.name == name then
+			ui.notice = "group " .. name .. " already exists"
+			return
+		end
+	end
+	local out = store.clone(s.deck)
+	local copy = find_group(out, gid)
+	if copy == nil then
+		close_mode(ui)
+		return
+	end
+	copy.name = name
+	s.deck = out
+	close_mode(ui)
+	ui.selection = { kind = "header", gid = gid }
+	save(s)
 end
 
 -- The row of agent `id` among the shown rows (nil when a filter or search hides it now).
@@ -1649,6 +1693,8 @@ local function input_key(s: Step, ev: Event)
 			submit_group(s)
 		elseif purpose == "label" then
 			submit_label(s)
+		elseif purpose == "group_name" then
+			submit_group_name(s)
 		elseif purpose == "send" then
 			submit_send(s)
 		elseif purpose == "queue" then

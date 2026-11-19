@@ -1029,12 +1029,41 @@ do
 	check(kinds(b.effects) == "render", "the duplicate refusal has no request")
 end
 
--- r on a header refuses; on an agent it sets the label, and an empty label clears it.
+-- r on a group heading opens its name, prefilled; Enter renames the group and keeps it selected. An empty name or
+-- another group's name is refused with the line left open; an unchanged name and Esc change nothing.
 do
 	local b = block(sample())
 	select(b, { kind = "header", gid = "g1" })
 	char(b, "r")
-	check(b.ui.mode == "list" and b.ui.notice == "select an agent", "r on a header refuses")
+	check(b.ui.mode == "input" and b.ui.purpose == "group_name", "r on a header opens the group name line")
+	check(b.ui.text == "webapp", "the line is prefilled with the group's name")
+	send(b, { kind = "edit", text = "" })
+	key(b, "enter")
+	check(b.ui.mode == "input" and b.ui.notice == "type a group name", "an empty name is refused, the line stays open")
+	send(b, { kind = "edit", text = "notes" })
+	key(b, "enter")
+	check(b.ui.mode == "input" and b.ui.notice == "group notes already exists", "another group's name is refused")
+	check(b.deck.groups[1].name == "webapp" and b.deck.groups[2].name == "notes", "a refusal renames nothing")
+	send(b, { kind = "edit", text = "  frontend  " })
+	key(b, "enter")
+	check(b.ui.mode == "list", "Enter on a new name closes the line")
+	check(b.deck.groups[1].name == "frontend", "the group is renamed, trimmed")
+	check(b.deck.groups[1].gid == "g1" and b.deck.groups[2].name == "notes", "only that group changes, gid kept")
+	check(b.deck.agents.a.gid == "g1" and b.deck.agents.b.gid == "g1", "its agents stay in it")
+	check(kinds(b.effects) == "save_kv,render", "the rename is saved, with no request")
+	check(b.ui.selection ~= nil and b.ui.selection.gid == "g1", "the renamed group stays selected")
+	char(b, "r")
+	key(b, "enter")
+	check(b.ui.mode == "list" and kinds(b.effects) == "render", "Enter on the unchanged name saves nothing")
+	char(b, "r")
+	send(b, { kind = "edit", text = "other" })
+	key(b, "escape")
+	check(b.ui.mode == "list" and b.deck.groups[1].name == "frontend", "Esc leaves the name as it was")
+end
+
+-- r on an agent sets the label, and an empty label clears it.
+do
+	local b = block(sample())
 	select(b, { kind = "agent", id = "a" })
 	char(b, "r")
 	check(b.ui.mode == "input" and b.ui.text == "", "r opens the label input with the stored (empty) label")
@@ -1222,11 +1251,11 @@ do
 	check(kinds(b.effects) == "render", "the refusal is a notice only")
 end
 
--- r, o, q, m and d: a header refuses r, o, q and m with "select an agent".
+-- o, q and m: a header refuses them with "select an agent" (r on a header renames the group, tested above).
 do
 	local b = block(sample())
 	select(b, { kind = "header", gid = "g1" })
-	for _, c in { "r", "o", "q", "m" } do
+	for _, c in { "o", "q", "m" } do
 		char(b, c)
 		check(b.ui.mode == "list" and b.ui.notice == "select an agent", c .. " on a header refuses")
 		check(kinds(b.effects):find("save_kv") == nil and next(b.deck.queue) == nil, c .. " on a header stores nothing")
@@ -2631,7 +2660,7 @@ do
 		local want = plain(k, header_g1)
 		check(by_enter(k, header_g1) == want, "Enter on " .. k .. " on a header runs what " .. k .. " runs")
 	end
-	for _, k in { "h", "l", "d", "n" } do
+	for _, k in { "h", "l", "d", "n", "r" } do
 		check(by_key(k, header_g1) == plain(k, header_g1), "menu key " .. k .. " on a header runs what it runs")
 	end
 end
@@ -2643,7 +2672,7 @@ do
 	select(b, { kind = "header", gid = "g1" })
 	local header_row = rows(b)[1]
 	for _, item in Keys.menu_items(header_row, DEFAULT_MAP) do
-		local agent_only = item.key == "o" or item.key == "q" or item.key == "r" or item.key == "m"
+		local agent_only = item.key == "o" or item.key == "q" or item.key == "m"
 		check(item.enabled == not agent_only, "on a header " .. item.key .. " enabled is " .. tostring(not agent_only))
 	end
 	question(b)

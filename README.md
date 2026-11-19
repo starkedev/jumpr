@@ -124,7 +124,7 @@ Ctrl+J is a poor choice of your own: on Linux and Windows it is Tern's own join 
 | `n` | Start a new agent in the selected group |
 | `N` | Pick an agent from a list, then start it in the selected group |
 | `g` | New group (asks for a folder first) |
-| `r` | Rename the agent; the name also becomes its tab's name |
+| `r` | Rename the agent, and the name also becomes its tab's name; on a group header, rename the group |
 | `m` | Move the agent to another group |
 | `V` | Pick the row up to reorder it: an agent, or a group header among the groups. `j` / `k` move it; an agent moved past its group's last or first place goes on into the next group's top or the previous group's bottom (passing over a group being deleted, and opening a folded one). `Enter` or `V` drops it, `Esc` puts it back where it was, in its own group |
 | `d` | Stop the agent and take it off the list, or delete the group (asks `y/n`). An agent that has exited, or whose program no longer runs, comes off the list with nothing to stop. If a running agent cannot be stopped, it stays and the list says the stop failed |

@@ -6,6 +6,13 @@ Update with `tern plugin install github.com/starkedev/jumpr --force` on each mac
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-19
+
+### Added
+
+- `r` on a group header renames the group: the line opens with its current name, and Enter saves the new one.
+  A name another group already has is refused, as when you make a group with `g`.
+
 ## [0.3.2] - 2026-11-19
 
 ### Fixed
@@ -253,7 +260,8 @@ Tested on Tern 0.9.10 and 0.9.11.
 - Every message between the halves carries a protocol version, and a mismatch shows a banner naming the machine to update.
 - `scripts/check.sh` runs stylua, the unit suites, a strict `luau-lsp` type check and design-rule checks.
 
-[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/starkedev/jumpr/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/starkedev/jumpr/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/starkedev/jumpr/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/starkedev/jumpr/compare/v0.2.6...v0.3.0

@@ -150,4 +150,15 @@ function M.command(kind: string, id: string, mode: Mode, sid: string?): string?
 	return command .. " --sessions"
 end
 
+-- The command a reopened omp agent runs before Tern adds `--restore`, `--resume` or `--fork` and its session file:
+-- Jumpr's own launch line without `--continue`, which omp refuses beside a named session. Nil for any other command,
+-- so a line Jumpr did not write reaches omp as it was.
+function M.reopen_command(command: string): string?
+	local id = string.match(command, "^omp %-%-continue %-%-session%-dir ~/%.omp/deck/([%w_%-]+)$")
+	if id == nil or M.command(M.OMP, id, "new") ~= command then
+		return nil
+	end
+	return "omp --session-dir ~/.omp/deck/" .. id
+end
+
 return M

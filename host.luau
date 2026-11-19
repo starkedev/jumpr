@@ -3,6 +3,7 @@
 -- hooks, then forwards their inputs to lib/host modules that own the state and logic and reach the machine through
 -- compat.
 
+local Agent = require("./lib/shared/agent")
 local compat = require("./lib/compat")
 local runtime = require("./lib/host/runtime")
 local view = require("./lib/host/view")
@@ -83,6 +84,14 @@ tern.on("spawn", function(spec: SpawnSpec): SpawnSpec?
 		return nil
 	end
 	return { program = instead.program, args = instead.args, cwd = spec.cwd, env = spec.env }
+end)
+
+-- A reopened omp agent (after a restart, or in a fork) names its own session file, so it runs without `--continue`.
+tern.on("reopen", function(ev: ReopenEvent): string?
+	if ev.agent ~= "omp" then
+		return nil
+	end
+	return Agent.reopen_command(ev.command)
 end)
 
 tern.on("command_started", function(ev: CommandStartedEvent, _cx: EffectCx)

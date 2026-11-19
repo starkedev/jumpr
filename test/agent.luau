@@ -162,6 +162,13 @@ check(Agent.command("omp", "agent-1", "resume") == OMP_COMMAND, "omp ignores res
 check(Agent.command("omp", "agent-1", "continue") == OMP_COMMAND, "omp ignores continue mode")
 check(Agent.command("omp", "agent-1", "pick") == OMP_COMMAND, "omp ignores pick mode")
 
+-- A reopened omp agent drops `--continue`, which omp refuses beside the session Tern names; other lines pass as they are.
+check(Agent.reopen_command(OMP_COMMAND) == "omp --session-dir ~/.omp/deck/agent-1", "a reopened omp drops --continue")
+check(Agent.reopen_command("omp") == nil, "a plain omp line is left alone")
+check(Agent.reopen_command("sandbox -k " .. OMP_COMMAND) == nil, "a wrapped omp line is left alone")
+check(Agent.reopen_command(OMP_COMMAND .. " --model x") == nil, "an omp line with more flags is left alone")
+check(Agent.reopen_command("omp --continue --session-dir ~/.omp/deck/a b") == nil, "an unsafe deck id is left alone")
+
 -- Kind, id and resumed-session shell syntax is refused instead of entering a command.
 local UNSAFE = { "a b", "a;b", "a$b", "a/b" }
 for _, value in UNSAFE do

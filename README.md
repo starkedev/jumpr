@@ -306,6 +306,7 @@ At any other time the message is held (`not idle yet — message queued`) and ty
 It runs:
 
 - `omp --continue --session-dir ~/.omp/deck/<id>`, in a terminal tab, to start or restart an omp agent.
+- `omp --session-dir ~/.omp/deck/<id>`, in place of that line when Tern reopens an omp agent's pane (after Tern's session service restarts, or in a fork): Tern adds `--restore`, `--resume` or `--fork` and the session file, which omp refuses beside `--continue`.
 - `env JUMPR_ID=<id> sh -c 'if ls ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*/<uuid>.jsonl >/dev/null 2>&1; then exec claude --resume <uuid>; else exec claude --session-id <uuid>; fi'`, in a terminal tab, to start or restart a Claude Code agent on its conversation, and `env JUMPR_ID=<id> claude --resume` to restart one whose conversation Jumpr does not know, in Claude's own picker.
   The `ls` only answers whether that conversation's file exists; its output is thrown away and no file is read.
 - `env JUMPR_ID=<id> codex`, in a terminal tab, to start a Codex agent; `env JUMPR_ID=<id> codex resume <thread id>` to restart one whose conversation Jumpr has found, and `env JUMPR_ID=<id> codex resume` to restart one whose conversation it has not, in Codex's own picker.

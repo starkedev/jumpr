@@ -16,11 +16,13 @@ local MAC_DEFAULTS: Defaults = {
 	toggle_focus = "cmd+j",
 	hide_list = "cmd+shift+j",
 	last_tab = "cmd+\\",
+	other_panes = "cmd+`",
 }
 local OTHER_DEFAULTS: Defaults = {
 	toggle_focus = "ctrl+alt+j",
 	hide_list = "ctrl+alt+shift+j",
 	last_tab = "ctrl+alt+;",
+	other_panes = "super+`",
 }
 
 -- The modifiers Tern's keybinds parser knows, spelled as its docs spell them: `alt` and `opt` name one key, as do

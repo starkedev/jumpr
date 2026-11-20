@@ -2,8 +2,9 @@
 -- Jumpr, window half: runs in each Tern window. Wiring only; the logic lives in lib/window/.
 -- Events feed the binding (agents), the status pusher, the copies of the list (one per tab of
 -- the deck session) and the last-tab history, which also puts focus back where it was when a settings page closes;
--- jumpr:// links go to the router; the palette commands, the chords (the jumpr key toggles), and
--- the tab-title formatter that names a tab after its agent while focus is in the list. `startup.ensure` opens every
+-- a tab that closes forgets the panes hidden in it (others). jumpr:// links go to the router; the palette commands,
+-- the chords (the jumpr key toggles), and the tab-title formatter that names a tab after its agent while focus is in
+-- the list. `startup.ensure` opens every
 -- handler: `window_start` does not fire on a plugin reload into an open window, so the heartbeats start on load or
 -- on the first event instead.
 
@@ -14,6 +15,7 @@ local chords = require("./lib/window/chords")
 local copies = require("./lib/window/copies")
 local diag = require("./lib/window/diag")
 local leader = require("./lib/window/leader")
+local others = require("./lib/window/others")
 local pusher = require("./lib/window/pusher")
 local router = require("./lib/window/router")
 local startup = require("./lib/window/startup")
@@ -24,15 +26,17 @@ if not ok_title then
 	diag.error("window", "tab-title formatter: " .. tostring(title_err))
 end
 
--- Three default chords, chosen by the window's OS so none clashes with Tern's own defaults (a plugin bind on a chord
--- Tern already binds is left out). On macOS: ⌘J, ⌘⇧J, ⌘\. On a PC keyboard Tern gives Win/Super+J to the editor's
--- join lines and tiling window managers take Super chords, so Linux and Windows get Ctrl+Alt chords Tern leaves free.
+-- Four default chords, chosen by the window's OS so none clashes with Tern's own defaults (a plugin bind on a chord
+-- Tern already binds is left out). On macOS: ⌘J, ⌘⇧J, ⌘\, ⌘`. On a PC keyboard Tern gives Win/Super+J to the editor's
+-- join lines and tiling window managers take Super chords, so Linux and Windows get Ctrl+Alt chords Tern leaves free,
+-- except Super+` for the other panes, which is ⌘` on a Mac and free in Tern on a PC.
 local DEFAULT_CHORDS = chords.defaults(tern.runtime.os)
 -- Tern drops the plugin binding layer after a settings write, so the router reuses this registration function.
 local function bind_default_chords()
 	tern.bind(DEFAULT_CHORDS.toggle_focus, "plugin.jumpr.toggle_focus")
 	tern.bind(DEFAULT_CHORDS.hide_list, "plugin.jumpr.hide_list")
 	tern.bind(DEFAULT_CHORDS.last_tab, "plugin.jumpr.last_tab")
+	tern.bind(DEFAULT_CHORDS.other_panes, "plugin.jumpr.other_panes")
 end
 local JUMPR_SCHEME = "jumpr://"
 router.set_defaults(DEFAULT_CHORDS, bind_default_chords)
@@ -75,6 +79,11 @@ end)
 tern.on("tab_created", function(_ev: TabEvent, cx: WindowCx)
 	startup.ensure(cx)
 	copies.ensure(cx)
+end)
+
+tern.on("tab_closed", function(ev: TabEvent, cx: WindowCx)
+	startup.ensure(cx)
+	others.tab_closed(cx, ev.tab)
 end)
 
 tern.on("agent_state", function(ev: AgentStateEvent, cx: WindowCx)
@@ -168,7 +177,18 @@ tern.command({
 		end
 	end,
 })
--- The jumpr key toggles the list; the hide chord hides it from anywhere; the last-tab chord toggles the last tab.
+-- The other-panes chord's action: in the focused tab, hide every tiled pane but its core (the copy of the list and the
+-- tab's agent), or bring back the panes it hid there, where they were.
+tern.command({
+	id = "other_panes",
+	title = "Jumpr: hide or show other panes",
+	run = function(cx: WindowCx)
+		startup.ensure(cx)
+		others.toggle(cx)
+	end,
+})
+-- The jumpr key toggles the list; the hide chord hides it from anywhere; the last-tab chord toggles the last tab; the
+-- other-panes chord hides or shows the rest of the focused tab.
 bind_default_chords()
 
 tern.route.link(function(link: LinkRequest, cx: WindowCx): RouteDecision?

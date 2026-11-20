@@ -41,22 +41,32 @@ do
 	local linux = Chords.defaults("linux")
 	local windows = Chords.defaults("windows")
 	check(
-		mac.toggle_focus == "cmd+j" and mac.hide_list == "cmd+shift+j" and mac.last_tab == "cmd+\\",
-		"macOS gets the three Command chords"
+		mac.toggle_focus == "cmd+j"
+			and mac.hide_list == "cmd+shift+j"
+			and mac.last_tab == "cmd+\\"
+			and mac.other_panes == "cmd+`",
+		"macOS gets the four Command chords"
 	)
 	check(
-		ios.toggle_focus == "cmd+j" and ios.hide_list == "cmd+shift+j" and ios.last_tab == "cmd+\\",
-		"iOS gets the three Command chords"
+		ios.toggle_focus == "cmd+j"
+			and ios.hide_list == "cmd+shift+j"
+			and ios.last_tab == "cmd+\\"
+			and ios.other_panes == "cmd+`",
+		"iOS gets the four Command chords"
 	)
 	check(
-		linux.toggle_focus == "ctrl+alt+j" and linux.hide_list == "ctrl+alt+shift+j" and linux.last_tab == "ctrl+alt+;",
-		"Linux gets the three Ctrl+Alt chords"
+		linux.toggle_focus == "ctrl+alt+j"
+			and linux.hide_list == "ctrl+alt+shift+j"
+			and linux.last_tab == "ctrl+alt+;"
+			and linux.other_panes == "super+`",
+		"Linux gets the three Ctrl+Alt chords and Super+`"
 	)
 	check(
 		windows.toggle_focus == "ctrl+alt+j"
 			and windows.hide_list == "ctrl+alt+shift+j"
-			and windows.last_tab == "ctrl+alt+;",
-		"Windows gets the three Ctrl+Alt chords"
+			and windows.last_tab == "ctrl+alt+;"
+			and windows.other_panes == "super+`",
+		"Windows gets the three Ctrl+Alt chords and Super+`"
 	)
 	check(count(mac) == #Protocol.CHORD_ACTIONS, "defaults contain one chord for every declared global action")
 end

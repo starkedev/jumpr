@@ -79,6 +79,12 @@ function M.back(cx: WindowCx, host: string): (boolean, string?)
 	return compat.focus(cx, rec.pane)
 end
 
+-- The pane `back` goes to on `host` (the last non-deck pane focused in its deck session), nil when none is recorded.
+function M.back_pane(host: string): number?
+	local rec = last_pane[host]
+	return if rec ~= nil then rec.pane else nil
+end
+
 -- "Jumpr: focus list", and the toggle's outside-the-list path: show the copies first if hidden, then focus
 -- the copy in the tab in view (opened first if the tab has none), or a copy in another tab of the deck session,
 -- which switches the view to it (compat.focus switches to a session another is shown). Under Esc mode B, pressed

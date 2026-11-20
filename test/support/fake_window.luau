@@ -2,6 +2,8 @@
 -- An in-memory Tern window for the window half's tests: the second adapter behind lib/compat.luau.
 -- It gives a fake `WindowCx` (hosts, sessions, tabs, panes, agents, focus and the layout calls the plugin makes), and
 -- replaces compat's clock, timers, log, data folder, files, JSON and tab-strip calls with ones a test steps.
+-- Each tab holds a split tree, as Tern's do: parking a pane collapses its split, moving one splits the target's leaf,
+-- and a resize moves a divider by cells of a tab `world.cols` × `world.rows` cells big.
 -- The real compat wrappers still run between the plugin and the fake cx, so their normalisation is exercised too.
 -- JSON crosses unchanged: what the plugin encodes is the table itself, so a test reads a sent message as a table.
 -- Each test file runs in its own process, so the window modules' state starts fresh in every file.
@@ -35,7 +37,14 @@ export type Pane = {
 	exited: number?,
 	-- In no host's pane list (`cx.hosts:list()`), as a pane the window cannot place on a machine.
 	unhosted: boolean?,
+	-- A floating block (a picture in picture) in its tab, over tiled pane `over`, in no split.
+	floating: boolean?,
+	over: number?,
 }
+
+-- A tab's split tree: a pane at a leaf; at a split, its orientation ("right" or "down"), its first side's share and
+-- its two sides ([1] left or top, [2] right or bottom), as `cx.session:layout` reports it.
+export type Node = { pane: number?, split: string?, ratio: number?, [number]: Node }
 
 export type Host = { id: number, name: string, kind: string, state: string, sessions: { number } }
 export type Session = { id: number, name: string, host: number, tabs: { number } }
@@ -49,8 +58,12 @@ export type World = {
 	hosts: { Host },
 	sessions: { [number]: Session },
 	panes: { [number]: Pane },
-	-- Each tab's panes, left to right.
+	-- Each tab's split tree, and its panes in reading order (left and top first), kept from the tree.
+	trees: { [number]: Node },
 	order: { [number]: { number } },
+	-- Every tab's size in cells, for resizes.
+	cols: number,
+	rows: number,
 	current_host: number?,
 	current_session: number?,
 	-- A session generation shown but no longer listed (see `view_stale`).
@@ -89,6 +102,18 @@ export type World = {
 	-- The tabs zoomed onto their focused block, and every palette action the plugin ran, in order.
 	zoomed: { [number]: boolean },
 	actions_run: { string },
+	-- The panes the plugin dealt back from the parked pile, and every pane it asked Tern to move or to resize, in order
+	-- (refused calls included).
+	unparked: { number },
+	moved: { number },
+	resized: { number },
+	-- Knob: `cx.layout:unpark` gives the dealt pane the focus even when asked not to.
+	unpark_takes_focus: boolean,
+	-- Knobs for the layout calls: `refuse(call, pane)` gives the reason Tern refuses `cx.layout:<call>` ("park",
+	-- "unpark", "move" or "resize") on `pane`, nil to let it run (a refused move or resize answers false alone, as
+	-- Tern's do); `move_noop` makes a move answer true and move nothing.
+	refuse: ((call: string, pane: number) -> string?)?,
+	move_noop: boolean,
 }
 
 local world: World
@@ -116,7 +141,10 @@ local function fresh_world(): World
 		hosts = {},
 		sessions = {},
 		panes = {},
+		trees = {},
 		order = {},
+		cols = 200,
+		rows = 60,
 		current_host = nil,
 		current_session = nil,
 		stale = nil,
@@ -142,6 +170,12 @@ local function fresh_world(): World
 		plugin_keybinds = default_plugin_keybinds(),
 		zoomed = {},
 		actions_run = {},
+		unparked = {},
+		moved = {},
+		resized = {},
+		unpark_takes_focus = false,
+		refuse = nil,
+		move_noop = false,
 	}
 end
 
@@ -161,7 +195,7 @@ local function host_by_id(hid: number): Host?
 	return nil
 end
 
--- The panes of a tab, left to right.
+-- The tiled panes of a tab in reading order (left and top first).
 local function tab_panes(tab: number): { number }
 	return table.clone(world.order[tab] or {})
 end
@@ -175,6 +209,110 @@ local function session_of_tab(tab: number): Session?
 		end
 	end
 	return nil
+end
+
+-- The panes of a split tree in reading order, added to `out`.
+local function tree_panes(node: Node?, out: { number }): { number }
+	if node == nil then
+		return out
+	end
+	local pane = node.pane
+	if pane ~= nil then
+		table.insert(out, pane)
+	else
+		tree_panes(node[1], out)
+		tree_panes(node[2], out)
+	end
+	return out
+end
+
+-- Rewrites a tab's reading order from its tree.
+local function sync(tab: number)
+	world.order[tab] = tree_panes(world.trees[tab], {})
+end
+
+-- The leaf of `pane` in `node`, and the split above it (nil at the root).
+local function find_leaf(node: Node, pane: number, parent: Node?): (Node?, Node?)
+	if node.pane ~= nil then
+		if node.pane == pane then
+			return node, parent
+		end
+		return nil, nil
+	end
+	local leaf, above = find_leaf(node[1], pane, node)
+	if leaf ~= nil then
+		return leaf, above
+	end
+	return find_leaf(node[2], pane, node)
+end
+
+-- Takes `pane`'s leaf out of `tab`'s tree: the split above it collapses into its other side, as Tern's does.
+local function unlink(tab: number, pane: number)
+	local root = world.trees[tab]
+	if root == nil then
+		return
+	end
+	local leaf, parent = find_leaf(root, pane, nil)
+	if leaf == nil then
+		return
+	end
+	if parent == nil then
+		world.trees[tab] = nil
+	else
+		local other = if parent[1] == leaf then parent[2] else parent[1]
+		parent.pane, parent.split, parent.ratio = other.pane, other.split, other.ratio
+		parent[1], parent[2] = other[1], other[2]
+	end
+	sync(tab)
+end
+
+-- Splits `target`'s leaf in `tab`, putting `pane` on its `dir` side with `share` of the split (default a half).
+local function link_beside(tab: number, target: number, pane: number, dir: string, share: number?)
+	local root = world.trees[tab]
+	local leaf = if root ~= nil then find_leaf(root, target, nil) else nil
+	assert(leaf ~= nil, "the target is tiled in the tab")
+	local first = dir == "left" or dir == "up"
+	local s = share or 0.5
+	local new: Node = { pane = pane }
+	local old: Node = { pane = target }
+	leaf.pane = nil
+	leaf.split = if dir == "down" or dir == "up" then "down" else "right"
+	leaf.ratio = if first then s else 1 - s
+	leaf[1] = if first then new else old
+	leaf[2] = if first then old else new
+	sync(tab)
+end
+
+-- Puts `pane` at the left (or right) edge of `tab`, beside its whole tree, half each.
+local function link_edge(tab: number, pane: number, left: boolean)
+	local root = world.trees[tab]
+	local new: Node = { pane = pane }
+	if root == nil then
+		world.trees[tab] = new
+	else
+		local top: Node = { split = "right", ratio = 0.5 }
+		top[1] = if left then new else root
+		top[2] = if left then root else new
+		world.trees[tab] = top
+	end
+	sync(tab)
+end
+
+-- A copy of a split tree, as `cx.session:layout` hands one out.
+local function clone_tree(node: Node): any
+	if node.pane ~= nil then
+		return { pane = node.pane }
+	end
+	return { split = node.split, ratio = node.ratio, clone_tree(node[1]), clone_tree(node[2]) }
+end
+
+-- Takes an emptied tab out of its session.
+local function drop_tab(tab: number)
+	local s = session_of_tab(tab)
+	local index = if s ~= nil then table.find(s.tabs, tab) else nil
+	if s ~= nil and index ~= nil then
+		table.remove(s.tabs, index)
+	end
 end
 
 -- Removes `pane`. When it had focus, focus moves as Tern moves it: to the pane left in its tab, else (the tab
@@ -194,12 +332,8 @@ local function remove_pane(pane: number)
 	if tab == nil then
 		return
 	end
-	local in_tab = world.order[tab]
-	if in_tab ~= nil then
-		local at = table.find(in_tab, pane)
-		if at ~= nil then
-			table.remove(in_tab, at)
-		end
+	if not p.floating then
+		unlink(tab, pane)
 	end
 	local left = tab_panes(tab)
 	if #left > 0 then
@@ -236,7 +370,7 @@ local function pane_info(p: Pane): any
 		kind = p.kind,
 		tab = p.tab,
 		focused = world.focused == p.pane,
-		floating = false,
+		floating = p.floating == true,
 		parked = p.tab == nil,
 		busy = p.busy,
 		running = if p.line ~= nil then { line = p.line } else nil,
@@ -313,6 +447,71 @@ local function view_session(session: number)
 		world.stale = nil
 		world.current_host = s.host
 	end
+end
+
+-- A new pane in `tab` with options `o`, not yet in the tab's tree; returns its id.
+local function add_pane(tab: number, o: PaneOpts): number
+	local s = session_of_tab(tab)
+	assert(s ~= nil, "unknown tab")
+	local pane = id()
+	world.panes[pane] = {
+		pane = pane,
+		host = s.host,
+		session = s.id,
+		tab = tab,
+		title = o.title or "zsh",
+		kind = o.kind or "terminal",
+		block = o.block,
+		line = o.line,
+		command = o.command,
+		state = nil,
+		alert = false,
+		busy = false,
+		exited = nil,
+		unhosted = o.unhosted,
+	}
+	return pane
+end
+
+-- The reason the `refuse` knob gives Tern for refusing `cx.layout:<call>` on `pane`, nil when the call runs.
+local function refused(call: string, pane: number): string?
+	local refuse = world.refuse
+	return if refuse ~= nil then refuse(call, pane) else nil
+end
+
+-- Parks tiled `pane` as Tern does: its program runs on in no tab, its split collapses, its tab closes when it was the
+-- tab's only pane, and focus moves as a close would move it.
+local function park_pane(pane: number)
+	local p = world.panes[pane]
+	assert(p ~= nil and p.tab ~= nil and not p.floating, "park a tiled pane")
+	remove_pane(pane)
+	p.tab = nil
+	world.panes[pane] = p
+end
+
+-- Deals parked `pane` into the tab in view, beside its focused block, as Tern's unpark and Parked panes do; focus moves
+-- to it unless `reveal.focus` is false. False and why when it is not parked or no tiled pane has focus.
+local function deal(pane: number, reveal: any?): (boolean, string?)
+	local p = world.panes[pane]
+	if p == nil then
+		return false, "no pane " .. tostring(pane)
+	end
+	if p.tab ~= nil then
+		return false, "the pane is not parked"
+	end
+	local at = if world.focused ~= nil then world.panes[world.focused] else nil
+	if at == nil or at.tab == nil or at.floating then
+		return false, "no tab in view"
+	end
+	local tab = at.tab :: number
+	p.tab = tab
+	p.session = at.session
+	link_beside(tab, at.pane, pane, "right", nil)
+	if reveal == nil or reveal.focus ~= false or world.unpark_takes_focus then
+		world.focused = pane
+		world.tab_focus[tab] = pane
+	end
+	return true, nil
 end
 
 local fake_cx: any = {
@@ -464,17 +663,25 @@ local fake_cx: any = {
 			end
 			return out
 		end,
+		-- The tab's split tree, its floating blocks, whether it is zoomed and its focused block.
 		layout = function(_self: any, tab: number): any
-			local panes = tab_panes(tab)
-			if #panes == 0 then
+			local root = world.trees[tab]
+			if root == nil then
 				return nil
 			end
-			-- A left-to-right chain of splits.
-			local node: any = { pane = panes[#panes] }
-			for i = #panes - 1, 1, -1 do
-				node = { { pane = panes[i] }, node }
+			local floats = {}
+			for _, p in world.panes do
+				if p.tab == tab and p.floating then
+					table.insert(floats, { pane = p.pane, over = p.over, corner = "br" })
+				end
 			end
-			return { root = node, zoomed = world.zoomed[tab] == true, focus = world.tab_focus[tab] }
+			return {
+				tab = tab,
+				root = clone_tree(root),
+				floats = floats,
+				zoomed = world.zoomed[tab] == true,
+				focus = world.tab_focus[tab],
+			}
 		end,
 	},
 	sessions = {
@@ -510,13 +717,7 @@ local fake_cx: any = {
 				error("no pane " .. tostring(pane))
 			end
 			if p.tab == nil then
-				local at = if world.focused ~= nil then world.panes[world.focused] else nil
-				if at ~= nil and at.tab ~= nil then
-					local tab: number = at.tab
-					p.tab = tab
-					p.session = at.session
-					table.insert(world.order[tab], pane)
-				end
+				deal(pane, nil)
 			end
 			world.focused = pane
 			if p.tab ~= nil then
@@ -548,7 +749,7 @@ local fake_cx: any = {
 					assert(p ~= nil and p.tab == nil, "the fake deals parked panes only")
 					p.tab = t
 					p.session = s.id
-					table.insert(world.order[t], pane)
+					link_edge(t, pane, false)
 				end
 			end
 			local out = {}
@@ -567,6 +768,97 @@ local fake_cx: any = {
 			table.insert(world.closed, pane)
 			remove_pane(pane)
 		end,
+		park = function(_self: any, pane: number): (boolean, string?)
+			local p = world.panes[pane]
+			if p == nil or p.tab == nil or p.floating then
+				return false, "not a tiled pane"
+			end
+			local why = refused("park", pane)
+			if why ~= nil then
+				return false, why
+			end
+			park_pane(pane)
+			return true, nil
+		end,
+		-- Deals a parked pane back beside the focused block of the tab in view; the plugin's are recorded in order.
+		unpark = function(_self: any, pane: number, reveal: any?): (boolean, string?)
+			local why = refused("unpark", pane)
+			if why ~= nil then
+				return false, why
+			end
+			local ok, err = deal(pane, reveal)
+			if ok then
+				table.insert(world.unparked, pane)
+			end
+			return ok, err
+		end,
+		-- Moves a tiled pane beside another, as Tern's does: its split collapses where it was and the target's leaf
+		-- splits, half each, with it on side `dir`. Each move asked for is recorded.
+		move = function(_self: any, pane: number, target: number, dir: string, reveal: any?): boolean
+			local p, t = world.panes[pane], world.panes[target]
+			assert(dir ~= "swap", "the fake moves a pane beside another only")
+			assert(p ~= nil and p.tab ~= nil and not p.floating, "the fake moves tiled panes only")
+			assert(t ~= nil and t.tab ~= nil and not t.floating and pane ~= target, "beside another tiled pane")
+			table.insert(world.moved, pane)
+			if refused("move", pane) ~= nil then
+				return false
+			end
+			if world.move_noop then
+				return true
+			end
+			local from, to = p.tab :: number, t.tab :: number
+			unlink(from, pane)
+			if world.trees[from] == nil then
+				drop_tab(from)
+			end
+			p.tab = to
+			p.session = t.session
+			link_beside(to, target, pane, dir, nil)
+			if reveal == nil or reveal.focus ~= false then
+				world.focused = pane
+				world.tab_focus[to] = pane
+			end
+			return true
+		end,
+		-- Grows a pane toward `dir` by `cells` (negative: shrinks it): the nearest divider on that side moves by the
+		-- share `cells` is of its split's extent, kept between a twentieth and nineteen twentieths. False when no
+		-- divider moved. Each resize asked for is recorded.
+		resize = function(_self: any, pane: number, dir: string, cells: number): boolean
+			table.insert(world.resized, pane)
+			local p = world.panes[pane]
+			local root = if p ~= nil and p.tab ~= nil then world.trees[p.tab] else nil
+			if root == nil or refused("resize", pane) ~= nil then
+				return false
+			end
+			local axis = if dir == "left" or dir == "right" then "right" else "down"
+			local grows_second = dir == "right" or dir == "down"
+			local extent = if axis == "right" then world.cols else world.rows
+			local best: Node? = nil
+			local best_extent = 0
+			local node: Node = root
+			while node.pane == nil do
+				local in_first = find_leaf(node[1], pane, nil) ~= nil
+				local ratio = node.ratio or 0.5
+				if node.split == axis then
+					if in_first == grows_second then
+						best, best_extent = node, extent
+					end
+					extent *= if in_first then ratio else 1 - ratio
+				end
+				node = if in_first then node[1] else node[2]
+			end
+			if best == nil then
+				return false
+			end
+			local old = best.ratio or 0.5
+			local delta = cells / best_extent
+			local new = math.clamp(old + (if grows_second then delta else -delta), 0.05, 0.95)
+			if new == old then
+				return false
+			end
+			best.ratio = new
+			return true
+		end,
 	},
 	new_block = function(_self: any, kind: string, args: { string }?, how: string?, opts: any?): number?
 		if world.block_result == "missing" then
@@ -575,18 +867,19 @@ local fake_cx: any = {
 			error(world.block_result, 0)
 		end
 		local options = opts or {}
-		local tab: number
+		local pane: number
 		if how == "tab" then
 			local session = world.current_session
 			assert(session ~= nil, "new_block tab needs a session in view")
-			tab = M.tab(session)
+			pane = M.pane(M.tab(session), { kind = "plugin", block = kind, title = "jumpr" })
 		else
+			-- Beside a tiled pane: its leaf splits, the block on side `dir` (default right) with share `ratio`.
 			local target = world.panes[options.target]
 			assert(target ~= nil and target.tab ~= nil, "new_block beside a tiled pane")
-			tab = target.tab
+			pane = add_pane(target.tab :: number, { kind = "plugin", block = kind, title = "jumpr" })
+			link_beside(target.tab :: number, options.target, pane, options.dir or "right", options.ratio)
 		end
-		-- A beside block opens left of the tab's leftmost pane.
-		local pane = M.pane(tab, { kind = "plugin", block = kind, title = "jumpr", left = how ~= "tab" })
+		local tab = world.panes[pane].tab :: number
 		if options.focus == true then
 			M.focus(pane)
 		end
@@ -676,36 +969,42 @@ export type PaneOpts = {
 	unhosted: boolean?,
 }
 
--- A pane in `tab`, on its right (on its left with `left`).
+-- A pane in `tab`, at its right edge (its left edge with `left`), beside everything already there.
 function M.pane(tab: number, opts: PaneOpts?): number
 	local none: PaneOpts = {}
 	local o: PaneOpts = opts or none
-	local s = session_of_tab(tab)
-	assert(s ~= nil, "unknown tab")
-	local pane = id()
-	local in_tab = world.order[tab]
-	if in_tab == nil then
-		in_tab = {}
-		world.order[tab] = in_tab
-	end
-	table.insert(in_tab, if o.left then 1 else #in_tab + 1, pane)
-	world.panes[pane] = {
-		pane = pane,
-		host = s.host,
-		session = s.id,
-		tab = tab,
-		title = o.title or "zsh",
-		kind = o.kind or "terminal",
-		block = o.block,
-		line = o.line,
-		command = o.command,
-		state = nil,
-		alert = false,
-		busy = false,
-		exited = nil,
-		unhosted = o.unhosted,
-	}
+	local pane = add_pane(tab, o)
+	link_edge(tab, pane, o.left == true)
 	return pane
+end
+
+-- A pane opened by splitting `target`, as Tern's split does: on its `dir` side ("right", "down", "left" or "up"), with
+-- `share` of the split (default a half).
+function M.split(target: number, dir: string, share: number?, opts: PaneOpts?): number
+	local t = world.panes[target]
+	assert(t ~= nil and t.tab ~= nil and not t.floating, "split a tiled pane")
+	local none: PaneOpts = {}
+	local tab = t.tab :: number
+	local pane = add_pane(tab, opts or none)
+	link_beside(tab, target, pane, dir, share)
+	return pane
+end
+
+-- A floating block (a picture in picture) over tiled `over`, in its tab and in no split.
+function M.float(over: number, opts: PaneOpts?): number
+	local t = world.panes[over]
+	assert(t ~= nil and t.tab ~= nil, "float over a pane in a tab")
+	local none: PaneOpts = {}
+	local pane = add_pane(t.tab :: number, opts or none)
+	world.panes[pane].floating = true
+	world.panes[pane].over = over
+	return pane
+end
+
+-- A copy of `tab`'s split tree, nil when the tab holds no tiled pane.
+function M.tree(tab: number): any
+	local root = world.trees[tab]
+	return if root ~= nil then clone_tree(root) else nil
 end
 
 -- A parked pane of session `sid` (in no tab), as a copy hidden from every tab is.
@@ -772,14 +1071,17 @@ function M.close(pane: number)
 	remove_pane(pane)
 end
 
--- Parks `pane` as the user's Park pane does, without telling the plugin: its program runs on in no tab, its tab
--- closes when it was the tab's only pane, and focus moves as a close would move it.
+-- Parks `pane` as the user's Park pane does, without telling the plugin: its program runs on in no tab, its split
+-- collapses, its tab closes when it was the tab's only pane, and focus moves as a close would move it.
 function M.park(pane: number)
-	local p = world.panes[pane]
-	assert(p ~= nil and p.tab ~= nil, "park a pane in a tab")
-	remove_pane(pane)
-	p.tab = nil
-	world.panes[pane] = p
+	park_pane(pane)
+end
+
+-- Brings parked `pane` back as the user's Parked panes does, without telling the plugin: beside the focused block of
+-- the tab in view, with the focus.
+function M.unpark(pane: number)
+	local ok, why = deal(pane, nil)
+	assert(ok, tostring(why))
 end
 
 -- The copies of the list in `tab`, lowest first.

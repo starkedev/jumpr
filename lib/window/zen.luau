@@ -54,6 +54,11 @@ function M.release(cx: WindowCx)
 	end
 end
 
+-- The copy this window zoomed for zen mode, nil when none is.
+function M.zoomed_copy(): number?
+	return zoomed
+end
+
 -- `jumpr://zen` from the focused copy `pane`: on zooms it over its tab (giving back another copy's first); off gives
 -- back whichever copy this window zoomed.
 function M.set(cx: WindowCx, pane: number, on: boolean)

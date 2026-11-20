@@ -133,6 +133,22 @@ end
 -- Runs a Tern call that returns nothing the way every compat call runs it: true, or false and the one-line reason.
 M.attempt = act
 
+-- Runs a layout call that answers whether it did what was asked (`park`, `unpark`, `move`, `resize`): true, or false
+-- and why in one line: Tern's own refusal, `why` when it gives none, or the reason the call raised.
+local function answer(f: () -> (boolean?, string?), why: string): (boolean, string?)
+	local ok, done, refused = pcall(f)
+	if not ok then
+		return false, reason(done)
+	end
+	if done == true then
+		return true, nil
+	end
+	if typeof(refused) == "string" and refused ~= "" then
+		return false, reason(refused)
+	end
+	return false, why
+end
+
 local function pane_item(p: PaneInfo): PaneItem
 	local running: any = p.running
 	local line: string? = nil
@@ -509,6 +525,37 @@ function M.arrange(cx: WindowCx, spec: Arrange): ({ TabArrangement }?, string?)
 		return nil, if typeof(refused) == "string" and refused ~= "" then reason(refused) else "Tern gave no reason"
 	end
 	return made, nil
+end
+
+-- Parks a pane in its session's parked pile, its program still running (`cx.layout:park`); its split collapses into
+-- the pane beside it. True, or false and why.
+function M.park(cx: WindowCx, pane: number): (boolean, string?)
+	return answer(function(): (boolean?, string?)
+		return cx.layout:park(pane)
+	end, "Tern did not park it")
+end
+
+-- Deals a parked pane into the tab in view, beside that tab's focused block (`cx.layout:unpark`). True, or false and
+-- why.
+function M.unpark(cx: WindowCx, pane: number, reveal: Reveal?): (boolean, string?)
+	return answer(function(): (boolean?, string?)
+		return cx.layout:unpark(pane, reveal)
+	end, "Tern did not bring it back")
+end
+
+-- Moves a pane beside `target`, on its `dir` side (`cx.layout:move`). True, or false and why.
+function M.move(cx: WindowCx, pane: number, target: number, dir: Dir, reveal: Reveal?): (boolean, string?)
+	return answer(function(): (boolean?, string?)
+		return cx.layout:move(pane, target, dir, reveal), nil
+	end, "Tern did not move it")
+end
+
+-- Grows a pane toward `dir` by `cells` cells, or shrinks it when `cells` is negative (`cx.layout:resize`): the
+-- nearest divider on that side moves. True, or false and why ("no divider moved" when none could).
+function M.resize(cx: WindowCx, pane: number, dir: Dir, cells: number): (boolean, string?)
+	return answer(function(): (boolean?, string?)
+		return cx.layout:resize(pane, dir, cells), nil
+	end, "no divider moved")
 end
 
 -- Window: feedback ------------------------------------------------------------------------------------------------

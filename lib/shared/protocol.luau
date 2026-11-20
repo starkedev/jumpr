@@ -29,6 +29,7 @@ M.CHORD_ACTIONS = table.freeze({
 	table.freeze({ id = "toggle_focus", label = "Show or hide the list" }),
 	table.freeze({ id = "hide_list", label = "Hide the list" }),
 	table.freeze({ id = "last_tab", label = "Go to the last tab" }),
+	table.freeze({ id = "other_panes", label = "Hide or show other panes" }),
 }) :: { { id: string, label: string } }
 
 -- The modifiers Tern's keybinds grammar gives two names (`alt` or `opt`, `cmd` or `super`), and the name each is

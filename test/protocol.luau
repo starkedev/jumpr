@@ -64,16 +64,18 @@ do
 	check(verdict == "ok" and id == nil, "a non-string id names no agent")
 end
 
--- Window configuration declares its three actions in page order and carries a checked protocol version.
+-- Window configuration declares its four actions in page order and carries a checked protocol version.
 do
-	check(#Protocol.CHORD_ACTIONS == 3, "three global chord actions are declared")
+	check(#Protocol.CHORD_ACTIONS == 4, "four global chord actions are declared")
 	check(
 		Protocol.CHORD_ACTIONS[1].id == "toggle_focus"
 			and Protocol.CHORD_ACTIONS[1].label == "Show or hide the list"
 			and Protocol.CHORD_ACTIONS[2].id == "hide_list"
 			and Protocol.CHORD_ACTIONS[2].label == "Hide the list"
 			and Protocol.CHORD_ACTIONS[3].id == "last_tab"
-			and Protocol.CHORD_ACTIONS[3].label == "Go to the last tab",
+			and Protocol.CHORD_ACTIONS[3].label == "Go to the last tab"
+			and Protocol.CHORD_ACTIONS[4].id == "other_panes"
+			and Protocol.CHORD_ACTIONS[4].label == "Hide or show other panes",
 		"the global chord actions keep their page order and labels"
 	)
 	local cfg = Protocol.cfg_msg({

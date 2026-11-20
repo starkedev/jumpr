@@ -92,14 +92,33 @@ Pressed in the list, it goes back to the pane you came from and hides the list.
 | ⌘J · Ctrl+Alt+J | Show and focus the list, or go back and hide it | Jumpr: toggle list |
 | ⌘⇧J · Ctrl+Alt+Shift+J | Hide the list from anywhere | Jumpr: hide list |
 | ⌘\\ · Ctrl+Alt+; | Jump to the tab you last worked in; press again to come back. Scrolling through the list doesn't count as working in a tab. The list's highlight follows to that tab's agent | Jumpr: last tab |
+| ⌘\` · Super+\` | Hide every pane of the tab but the list and the tab's agent, wherever you are in the tab; press again to bring them back where they were (see [Hide the other panes](#hide-the-other-panes)) | Jumpr: hide or show other panes |
 | | Focus the list | Jumpr: focus list |
 | | Hide or show the list without moving focus | Jumpr: hide or show list |
 | | Copy the paths of a diagnostics dump | Jumpr: diagnostics |
 
+### Hide the other panes
+
+⌘\` (Super+\` on Linux and Windows) gives the tab's agent the room of its tab.
+Each tab has a core, the list and its agent; every other pane in it (a shell you opened to run a command, an editor, a second agent) is an extra, and ⌘\` hides all the extras together, wherever focus is in the tab.
+If ⌘\` switches between Tern windows instead, macOS has kept its "Move focus to next window" shortcut for itself: turn it off in System Settings › Keyboard › Keyboard Shortcuts › Keyboard, or bind another key.
+Pressed in an extra, it hides that one too and moves focus to the agent; pressed in the agent or the list, focus stays where it is.
+The hidden panes go to Tern's parked panes, and their programs keep running.
+Press it again in that tab to bring them back where they were, at their old sizes; focus stays where it is, and the list stays where it is: the other panes come back around it.
+The agent is one Jumpr started; in a tab with two, the core keeps the one you are in, else the one the jumpr key would take you back to, else the one whose name the tab shows while you are in the list.
+A tab with no agent Jumpr started keeps the pane you are in instead (pressed in the list: the pane the jumpr key would take you back to, when it is in this tab).
+Each tab remembers its own hidden panes.
+A pane you closed meanwhile stays closed, and a pane you parked yourself is left to you.
+If you changed the tab meanwhile (opened a pane, brought one back yourself from Parked panes, or moved one), nothing in the tab moves: each hidden pane comes back beside the pane it sat next to, and the panes you opened or moved stay where you put them.
+Hiding and showing the list meanwhile does not count as a change.
+Floating blocks (picture in picture) are never hidden.
+In zen mode, or with a block zoomed by Zoom block, the chord changes nothing and says so: leave zen mode in the list, or run Zoom block again, first.
+The window remembers the hidden panes only until Jumpr reloads or their tab closes; after that, Tern's Parked panes (⌃⇧↑ on a Mac, Ctrl+Shift+↑ on a PC) brings them back one at a time.
+
 ### Change the keys
 
-The settings page is the easy way (see [Settings](#settings)): its "List keys" page changes the list's own keys, and its "This window" page takes a new chord for any of the three.
-The three chords are ordinary Tern keybinds, so you can also set them by hand under `keybinds` in Tern's `settings.json` (`~/.config/tern/settings.json` on Linux), on each machine whose windows you use:
+The settings page is the easy way (see [Settings](#settings)): its "List keys" page changes the list's own keys, and its "This window" page takes a new chord for any of the four.
+The four chords are ordinary Tern keybinds, so you can also set them by hand under `keybinds` in Tern's `settings.json` (`~/.config/tern/settings.json` on Linux), on each machine whose windows you use:
 
 ```json
 "keybinds": {
@@ -108,7 +127,7 @@ The three chords are ordinary Tern keybinds, so you can also set them by hand un
 ```
 
 Then run "Reload settings" from the palette; no restart is needed.
-The three commands are `plugin.jumpr.toggle_focus` (the jumpr key), `plugin.jumpr.hide_list` and `plugin.jumpr.last_tab`.
+The four commands are `plugin.jumpr.toggle_focus` (the jumpr key), `plugin.jumpr.hide_list`, `plugin.jumpr.last_tab` and `plugin.jumpr.other_panes`.
 Ctrl+J is a poor choice of your own: on Linux and Windows it is Tern's own join lines, and in a shell it is Enter.
 
 ### In the list
@@ -197,7 +216,7 @@ Each page names the machine its values belong to.
 
 - **Agents** — the default agent `n` starts: pick a common one from the menu (`claude` and `codex` run their own CLIs), or type any other agent id Tern's ACP chat knows.
   This value belongs to the machine whose list you are looking at.
-- **This window** — whether Esc returns to your pane, and the three global chords.
+- **This window** — whether Esc returns to your pane, and the four global chords.
   Open a chord's row and press the chord, or type it as text such as `ctrl+alt+k`, then press Enter.
   A chord Tern or your system already takes never reaches the page, so type that one.
   These values belong to the window you opened the page in, so each window machine sets its own; with several windows open, only the window showing the settings page changes.
@@ -379,6 +398,7 @@ Delete that folder by hand to start fresh.
   Several windows elect a leader between them, and that path is only lightly tested.
   If `window.json` cannot be written, every window acts alone, so keep to one window.
 - One list per machine: the first session you show the list in is Jumpr's session there; showing it in another session moves it.
+- Hiding and showing the other panes of a tab (⌘\`) rests on Tern's park, unpark, move and resize, and has been hand-tested on macOS only; Super+\` on Linux and Windows has not been pressed in a real window yet.
 
 ## Troubleshooting
 

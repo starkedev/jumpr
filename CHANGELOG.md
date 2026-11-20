@@ -6,6 +6,19 @@ Update with `tern plugin install github.com/starkedev/jumpr --force` on each mac
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-11-20
+
+### Added
+
+- ⌘\` (Super+\` on Linux and Windows), or "Jumpr: hide or show other panes" from the palette, hides every pane of the tab you are in except the list and the tab's agent, wherever you are in the tab, so the agent gets the room.
+  Pressed in one of the panes it hides (a shell you opened, say), it moves focus to the agent; in a tab with no agent Jumpr started, it keeps the pane you are in.
+  Press it again in that tab to bring them back where they were, at their old sizes, with focus left where it is; the list stays where it is, and the panes come back around it.
+  The hidden panes keep running in Tern's parked panes, and each tab remembers its own.
+  If you opened, brought back or moved a pane in the meantime, nothing in the tab moves: each hidden pane comes back beside the pane it sat next to (hiding and showing the list does not count).
+  In zen mode, or with a block zoomed by Zoom block, it changes nothing and says so.
+  The chord can be changed on the settings page's "This window" page, like the other three.
+  A settings page from this version reaching a window still on 0.3.4 shows that chord's row empty, and setting it is refused there as "unknown chord action: other_panes".
+
 ## [0.3.4] - 2026-11-20
 
 ### Added
@@ -274,7 +287,8 @@ Tested on Tern 0.9.10 and 0.9.11.
 - Every message between the halves carries a protocol version, and a mismatch shows a banner naming the machine to update.
 - `scripts/check.sh` runs stylua, the unit suites, a strict `luau-lsp` type check and design-rule checks.
 
-[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/starkedev/jumpr/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/starkedev/jumpr/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/starkedev/jumpr/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/starkedev/jumpr/compare/v0.3.1...v0.3.2

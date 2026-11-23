@@ -14,6 +14,7 @@ Start omp, Claude Code, Codex or any agent Tern's ACP chat runs, and change the 
 - [Getting started](#getting-started)
 - [Keys](#keys)
 - [Settings](#settings)
+- [Start an agent from a script](#start-an-agent-from-a-script)
 - [How it works](#how-it-works)
 - [What it runs and writes](#what-it-runs-and-writes)
 - [Uninstall](#uninstall)
@@ -31,6 +32,7 @@ Start omp, Claude Code, Codex or any agent Tern's ACP chat runs, and change the 
   Jumpr runs these two CLIs themselves in the agent's tab, not through Tern's ACP chat, so they need no ACP adapter.
 - Any other agent is started through Tern's ACP chat, so the machine that runs agents needs the CLI and ACP adapter that chat starts.
 - `git` on every machine you install Jumpr on, since `tern plugin install` clones the repository with it.
+- For starting agents from a script with `jumpr-add` (see [Start an agent from a script](#start-an-agent-from-a-script)): a POSIX `sh` and `tern` on that script's `PATH`, on the machine that runs the agents; tried on Tern 0.9.29.
 - Jumpr updated together on the machine showing your Tern window and the machine running your agents (see [Install](#install)).
 - macOS or Linux; Windows is untested.
 
@@ -76,7 +78,7 @@ The window's half and the agents' half check each other's protocol version, and 
 To start another agent just this once, press `N` instead: it opens a picker of agents (omp, `claude`, `codex`, `copilot`, and your default agent if it is none of them), starting on the default; `j`/`k` move, Enter starts the highlighted one in the selected group, and Esc leaves.
 To change what `n` starts, press `,` in the list to open the settings page and set the default agent (see [Settings](#settings)); `claude`, `codex` or any agent Tern's ACP chat runs can be the default.
 
-Only agents started from Jumpr with `n` or `N` are listed.
+Only agents started from Jumpr are listed: with `n` or `N`, or from a script with `jumpr-add` (see [Start an agent from a script](#start-an-agent-from-a-script)).
 Agents you start yourself in a plain tab are left alone; [How it works](#how-it-works) explains why.
 
 ## Keys
@@ -231,6 +233,85 @@ A text box opens with its text selected, so typing replaces it; an arrow key pla
 
 The mouse works too: click a row to choose it, and click a control to change or pick a value.
 
+## Start an agent from a script
+
+`bin/jumpr-add` starts an omp agent in the list from a script or a timer on the machine that runs the agents, and sends it a brief from a file as its first message.
+The agent gets a tab in Jumpr's session and a row in the group you name, and from then on it is an agent like one started with `n`.
+It works with no Tern window attached, and opening its tab leaves an attached window's focus where it is.
+It has been tried on Tern 0.9.29.
+
+It needs, on the machine that runs the agents: Jumpr installed, its list shown there at least once (that makes Jumpr's session there), Tern's daemon running, and `tern` on the script's `PATH`.
+
+```sh
+jumpr-add --group NAME [--cwd DIR] --prompt-file FILE [--label TEXT] [--timeout SECONDS]
+```
+
+| Flag | Does |
+|---|---|
+| `--group NAME` | The group to put the agent in, by its name in the list (trimmed; at most 40 characters, not starting with `-`). The agent goes last in the group. When no group has that name, a new one is made, last in the list, with `--cwd` as its folder; without `--cwd` the request is refused |
+| `--cwd DIR` | The agent's folder, made absolute (a symlink stays as given); without it, the group's folder. The folder must exist, and it may be another folder than the group's, as for an agent moved with `m` |
+| `--prompt-file FILE` | The brief, sent as the agent's first message. It must exist and not be empty, and its absolute path may hold only letters, digits and `_ - . /` (no spaces) |
+| `--label TEXT` | The agent's name in the list and on its tab, as `r` sets it (trimmed; at most 60 characters, not starting with `-`) |
+| `--timeout SECONDS` | How long to wait for Jumpr's answer; 20 by default |
+| `--help` | Show the usage |
+
+Two variables change where it looks: `TERN`, the `tern` command to run (`tern` by default), and `JUMPR_DATA`, Jumpr's data folder (by default the one under [What it runs and writes](#what-it-runs-and-writes)).
+
+It ends with one of three exit codes:
+
+- `0`: the agent is started, and it prints `started <id>`, the agent's Jumpr id.
+- `1`: refused or failed, with the reason on one line: a bad flag, a brief or folder that is missing, `tern` not found, `tern new tab` failing, or Jumpr's own refusal, such as `no group named <name>; pass --cwd to create it`, `group is being deleted`, `folder not found on <machine>: <folder>`, or `open the Jumpr list on this machine once, then retry`.
+- `2`: Jumpr did not answer: Jumpr's data folder is missing (Jumpr is not installed there, or has never run), Tern's daemon is not running, or the Jumpr there is older than `jumpr-add`.
+
+`jumpr-add` asks Jumpr's host half for the agent with a request file in Jumpr's data folder, and the host half answers within about a second, whether or not a list is open.
+The host half records the agent and answers; `jumpr-add` then opens the agent's tab with `tern new tab`, because Tern's daemon cannot run the `tern` command itself.
+A request more than 60 seconds old is never served, and a `jumpr-add` that is stopped while it waits takes its request back, so a killed script never starts an agent later.
+
+When something goes wrong:
+
+- A refused request makes nothing: no group, no row and no tab.
+- When Jumpr accepted the request but the tab never opens (`tern new tab` failed, or the script was killed first), the row shows as a failed start after 30 seconds, `failed · ⏎ retries`, and `jumpr-add` exits 1 naming the agent.
+  If the tab does open later, the row turns live by itself.
+  `Enter` on the failed row starts the agent in its folder without the brief.
+- Jumpr checks that the brief exists, and `jumpr-add` that it is not empty; Jumpr never reads it, omp does.
+  A brief deleted after Jumpr answered makes omp stop at its start, and the row shows the agent as exited.
+
+To run it by name, link it from a clone of this repository into a folder on your `PATH`, and keep the clone at the version of the Jumpr installed on that machine:
+
+```sh
+git clone https://github.com/starkedev/jumpr <clone folder>
+ln -s <clone folder>/bin/jumpr-add ~/.local/bin/jumpr-add
+```
+
+From a systemd user timer on Linux, a service gets a short `PATH`, so give it the folder that holds `tern` (`command -v tern` shows it):
+
+```ini
+# ~/.config/systemd/user/<job>.service
+[Unit]
+Description=Start a <job> agent in Jumpr
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/jumpr-add --group <group> --cwd <project folder> --prompt-file <brief file> --label <label>
+```
+
+```ini
+# ~/.config/systemd/user/<job>.timer
+[Timer]
+OnCalendar=<when>
+
+[Install]
+WantedBy=timers.target
+```
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now <job>.timer
+```
+
+Give `<project folder>` and `<brief file>` as absolute paths; `%h` is your home folder.
+
 ## How it works
 
 ### Two halves
@@ -280,13 +361,22 @@ env JUMPR_ID=<id> tern acp <agent>
 ```
 
 `<id>` is a random eight-character id Jumpr gives the agent, and `<uuid>` a random conversation id in the form Claude Code uses.
-Jumpr recognises its agents by that id — an omp agent carries it in its session folder under `~/.omp/deck/`, and any other agent carries it in the `JUMPR_ID` on its command — so agents started any other way are never listed.
+Jumpr recognises its agents by that id — an omp agent carries it in its session folder under `~/.omp/deck/`, and any other agent carries it in the `JUMPR_ID` on its command — so agents started any other way than `n`, `N` or `jumpr-add` are never listed.
+
+A script on the agents' machine can start an omp agent too, with `jumpr-add` (see [Start an agent from a script](#start-an-agent-from-a-script)).
+Its first start sends the brief file as the agent's first message, with the home folder spelled out:
+
+```sh
+omp --session-dir <home>/.omp/deck/<id> @<brief file>
+```
+
+From then on it is an omp agent like any other: `Enter` restarts it with the `omp --continue` line above, and Jumpr's reopen hook answers `omp --session-dir <home>/.omp/deck/<id>` for that first line, without the brief, so a reopen does not send the brief again.
 
 ### Restarts
 
 Restarting an exited agent with `Enter` brings back its own conversation:
 
-- An omp agent resumes from its session folder.
+- An omp agent resumes from its session folder; one started from a script resumes the same way, without being sent its brief again.
 - A Claude Code agent runs its line again, on the conversation Jumpr holds for it.
   `/clear` in Claude moves it to a new conversation id; on Linux Jumpr follows that, so a restart comes back to the conversation you were in.
   An agent whose conversation Jumpr does not know (one an older Jumpr started through the ACP chat without learning its id) opens Claude's own conversation picker instead, as `env JUMPR_ID=<id> claude --resume`, and on Linux Jumpr learns the one you pick.
@@ -328,6 +418,7 @@ It runs:
 
 - `omp --continue --session-dir ~/.omp/deck/<id>`, in a terminal tab, to start or restart an omp agent.
 - `omp --session-dir ~/.omp/deck/<id>`, in place of that line when Tern reopens an omp agent's pane (after Tern's session service restarts, or in a fork): Tern adds `--restore`, `--resume` or `--fork` and the session file, which omp refuses beside `--continue`.
+- `omp --session-dir <home>/.omp/deck/<id>`, the line Jumpr's reopen hook returns in place of a script-started omp agent's first line: without the brief, which omp refuses beside `--restore` and which must not be sent twice.
 - `env JUMPR_ID=<id> sh -c 'if ls ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*/<uuid>.jsonl >/dev/null 2>&1; then exec claude --resume <uuid>; else exec claude --session-id <uuid>; fi'`, in a terminal tab, to start or restart a Claude Code agent on its conversation, and `env JUMPR_ID=<id> claude --resume` to restart one whose conversation Jumpr does not know, in Claude's own picker.
   The `ls` only answers whether that conversation's file exists; its output is thrown away and no file is read.
 - `env JUMPR_ID=<id> codex`, in a terminal tab, to start a Codex agent; `env JUMPR_ID=<id> codex resume <thread id>` to restart one whose conversation Jumpr has found, and `env JUMPR_ID=<id> codex resume` to restart one whose conversation it has not, in Codex's own picker.
@@ -351,12 +442,17 @@ It runs:
 
 It types only the text you enter for `o` and `q`, into that agent's pane; into a Claude Code or Codex agent, the text and then Enter, only while the agent reports itself idle (see [Sending messages](#sending-messages)).
 
+`jumpr-add`, when a script runs it, runs `tern new tab <session> --json --cwd <folder> -- omp --session-dir <home>/.omp/deck/<id> @<brief file>` to open the agent's tab in Jumpr's session, and, with `--label`, `tern rename <block> <label>` to name it, `<block>` being the pane id in Tern's `--json` answer.
+
 It writes, in Jumpr's data folder on each machine (`<state>/plugin-data/jumpr/`; `~/.local/state/tern/plugin-data/jumpr/` on Linux, `~/Library/Application Support/Tern/plugin-data/jumpr/` on macOS):
 
 - `jumpr.v1` in `kv.json` on the agents' machine: groups, labels, folds, the agent records (each with the last title its conversation showed), the queued messages and the settings (the default agent and the list keys).
 - `window.json` on the window's machine: which window leads, and the window settings.
   A chord change goes into Tern's own `settings.json` keybinds, not into Jumpr's files.
 - Diagnostics dumps (`diag-window-<ms>.json` and `diag-host-<ms>.json`), only when you run "Jumpr: diagnostics".
+- `requests/` and `replies/` on the agents' machine, for `jumpr-add`: the script writes its request as `requests/<rid>.tmp` and renames it `requests/<rid>.req`; the host half reads and removes each request and writes its answer to `replies/<rid>.reply`, which the script reads and deletes.
+  A file no script collected (the answer to a script that was killed, a half-written request) is removed by an hourly sweep once two sweeps in a row have seen it.
+  The brief file is never read by Jumpr: the host half only checks that it exists, and omp reads it.
 
 Each omp agent's conversation lives in `~/.omp/deck/<id>`, which omp writes and Jumpr never deletes, even when you stop the agent with `d`; Jumpr reads it only for the `vibing` check above.
 A Claude Code or Codex agent's conversation lives in that CLI's own files under `~/.claude` or `~/.codex`, which Jumpr reads only for the lookups above and never writes.
@@ -398,7 +494,8 @@ Delete that folder by hand to start fresh.
   Several windows elect a leader between them, and that path is only lightly tested.
   If `window.json` cannot be written, every window acts alone, so keep to one window.
 - One list per machine: the first session you show the list in is Jumpr's session there; showing it in another session moves it.
-- Hiding and showing the other panes of a tab (⌘\`) rests on Tern's park, unpark, move and resize, and has been hand-tested on macOS only; Super+\` on Linux and Windows has not been pressed in a real window yet.
+- Hiding and showing the other panes of a tab (⌘\`, Super+\`) rests on Tern's park, unpark, move and resize, and has been hand-tested on macOS and on Linux under Hyprland; not yet on Windows.
+- `jumpr-add` starts omp agents only, and has been tried on Linux only; on macOS its data folder and its clock (whole seconds there) are untested.
 
 ## Troubleshooting
 
@@ -409,7 +506,9 @@ Delete that folder by hand to start fresh.
 - **A banner says "update Jumpr on …".**
   The two halves run different versions: run the update command on the machine the banner names.
 - **An agent you started yourself is not in the list.**
-  Only agents started with `n` or `N` are listed (see [How agents get into the list](#how-agents-get-into-the-list)).
+  Only agents started with `n` or `N`, or from a script with `jumpr-add`, are listed (see [How agents get into the list](#how-agents-get-into-the-list)).
+- **`jumpr-add` exits 2.**
+  Jumpr on that machine did not answer: check that Tern's daemon runs there, that Jumpr is installed there and as new as the script (`tern plugin list`), and that `JUMPR_DATA`, if set, names Jumpr's data folder.
 - **Enter on an exited agent opened a picker instead of its conversation.**
   Without a proven conversation id, Jumpr never guesses for Claude Code or Codex, and continues another agent's conversation only when it knows that one is this agent's; pick the right conversation from the picker (see [Known limitations](#known-limitations)).
   For Claude Code (on Linux) and Codex, Jumpr learns the one you pick for the next restart.

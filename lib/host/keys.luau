@@ -150,8 +150,6 @@ M.SELECT_ROW = "select a row"
 -- `o` on a claude or codex agent that has not itself reported idle (`model.Row.ready`): the text is held, not typed.
 M.NOT_IDLE = "not idle yet — message queued"
 
-local ID_TRIES = 64
-
 local function valid_selection(sel: any): Selection?
 	if type(sel) ~= "table" then
 		return nil
@@ -329,16 +327,6 @@ local function find_group(deck: store.Deck, gid: string?): (store.Group?, number
 		end
 	end
 	return nil, nil
-end
-
-local function fresh_id(rand: (number) -> number, taken: (string) -> boolean): string?
-	for _ = 1, ID_TRIES do
-		local id = identity.new_id(rand)
-		if not taken(id) then
-			return id
-		end
-	end
-	return nil
 end
 
 -- State threaded through one reduce call.
@@ -1133,9 +1121,7 @@ local function new_checked(s: Step, ev: Event)
 		return
 	end
 	local deck = s.deck
-	local id = fresh_id(s.rand, function(candidate: string): boolean
-		return deck.agents[candidate] ~= nil
-	end)
+	local id = model.fresh_id(deck, s.rand, "agent")
 	if id == nil then
 		ui.notice = "could not make a new id"
 		return
@@ -1215,9 +1201,7 @@ local function submit_group(s: Step)
 		end
 	end
 	local deck = s.deck
-	local gid = fresh_id(s.rand, function(candidate: string): boolean
-		return find_group(deck, candidate) ~= nil
-	end)
+	local gid = model.fresh_id(deck, s.rand, "group")
 	if gid == nil then
 		ui.notice = "could not make a new id"
 		return

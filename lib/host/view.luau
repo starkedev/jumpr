@@ -252,6 +252,50 @@ function M.clock_key(f: Frame): string
 	return table.concat(parts, "|")
 end
 
+-- Writes `v` into `out` with table keys sorted, so equal data always gives equal text.
+local function put(out: { string }, v: any)
+	local t = type(v)
+	if t == "table" then
+		local ks = {}
+		for k in v do
+			table.insert(ks, k)
+		end
+		table.sort(ks, function(a: any, b: any): boolean
+			local ta, tb = type(a), type(b)
+			if ta ~= tb then
+				return ta < tb
+			end
+			if ta == "number" or ta == "string" then
+				return a < b
+			end
+			return tostring(a) < tostring(b)
+		end)
+		table.insert(out, "{")
+		for _, k in ks do
+			put(out, k)
+			table.insert(out, "=")
+			put(out, v[k])
+			table.insert(out, ",")
+		end
+		table.insert(out, "}")
+	elseif t == "string" then
+		table.insert(out, string.format("%q", v))
+	else
+		table.insert(out, tostring(v))
+	end
+end
+
+-- Everything `M.view` draws from `f`, as text: equal signatures give equal views. The raw ages tick every
+-- millisecond, so they are left out and `M.clock_key` stands for them, the age text the view actually shows.
+function M.signature(f: Frame): string
+	local g: any = table.clone(f)
+	g.age_ms = nil
+	g.row_age = nil
+	local out = { M.clock_key(f), "\n" }
+	put(out, g)
+	return table.concat(out)
+end
+
 -- The word and role of the pill on an agent's first line: its record state when that says more than the status does,
 -- then `vibing` for a running omp agent one of whose vibe workers has a turn running, coloured as running.
 function M.pill(row: model.Row): (string, string)

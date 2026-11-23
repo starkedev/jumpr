@@ -6,7 +6,6 @@
 local Agent = require("./lib/shared/agent")
 local compat = require("./lib/compat")
 local runtime = require("./lib/host/runtime")
-local view = require("./lib/host/view")
 local settings_block = require("./lib/host/settings_block")
 
 local TICK_MS = 1000
@@ -27,7 +26,7 @@ local def: BlockDef<runtime.Copy> = {
 	end,
 
 	view = function(blk: runtime.Copy, cx: BlockCx): BlockView
-		return view.view(list.frame(blk, cx))
+		return list.view(blk, cx)
 	end,
 
 	title = function(_blk: runtime.Copy): string?

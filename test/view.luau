@@ -157,6 +157,46 @@ do
 	check(key(61000, 3000, nil, "stale") ~= key(61000, 3000, nil, "unavailable"), "stale to unavailable changes it")
 end
 
+-- The signature is what lets a copy reuse the last view: it changes with anything the view draws (a row, the width,
+-- the selection, a shown age) and stays put for a raw age that shows the same text, or the same data built in
+-- another order.
+do
+	local function rows(label: string): { any }
+		return { { kind = "agent", gid = "g1", id = "a", label = label, live = true } }
+	end
+	local function sig(fields: { [string]: any }, ui: { [string]: any }?): string
+		local f: { [string]: any } =
+			{ cols = 40, tally = { waiting = 1 }, row_age = { a = 61000 }, rows = rows("fix login") }
+		for k, v in fields do
+			f[k] = v
+		end
+		return View.signature(frame(f, ui))
+	end
+	local base = sig({ rows = rows("fix login") })
+	check(base == sig({ rows = rows("fix login") }), "equal frames sign the same")
+	check(base ~= sig({ rows = rows("fix logout") }), "a changed row label changes it")
+	check(base ~= sig({ rows = rows("fix login"), cols = 41 }), "a different width changes it")
+	check(
+		base ~= sig({ rows = rows("fix login") }, { mode = "list", selection = { gid = "g1", id = "a" } }),
+		"a moved selection changes it"
+	)
+	check(
+		base == sig({ rows = rows("fix login"), row_age = { a = 62000 }, age_ms = 4000 }),
+		"ages a second later in the same minute keep it"
+	)
+	check(
+		base ~= sig({ rows = rows("fix login"), row_age = { a = 120000 } }),
+		"an age that reads differently changes it"
+	)
+	local t1: { [string]: number } = {}
+	t1.waiting = 1
+	t1.running = 2
+	local t2: { [string]: number } = {}
+	t2.running = 2
+	t2.waiting = 1
+	check(sig({ tally = t1 }) == sig({ tally = t2 }), "key order never matters")
+end
+
 -- The count tiles: each status's filter key with its count and its word, left to right in the one order (error,
 -- waiting, running, idle), and the tile whose filter is on marked.
 do

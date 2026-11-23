@@ -161,6 +161,31 @@ function M.group_ids(deck: store.Deck, gid: string): { string }
 	return ids
 end
 
+local ID_TRIES = 64
+
+-- A new deck id not yet taken in `space` ("agent": an agent record's id; "group": a group's gid), or nil when
+-- every one of 64 draws was taken. `rand(n)` returns an integer in [1, n], like `math.random(n)`.
+function M.fresh_id(deck: store.Deck, rand: (number) -> number, space: "agent" | "group"): string?
+	for _ = 1, ID_TRIES do
+		local id = identity.new_id(rand)
+		local taken = false
+		if space == "agent" then
+			taken = deck.agents[id] ~= nil
+		else
+			for _, g in deck.groups do
+				if g.gid == id then
+					taken = true
+					break
+				end
+			end
+		end
+		if not taken then
+			return id
+		end
+	end
+	return nil
+end
+
 -- The pane a row reads its title from: the record's cached pane when it is in the set, else the lowest pane in the
 -- set.
 local function bound_pane(record: store.Record, set: { [number]: true }?): number?

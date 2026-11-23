@@ -41,7 +41,8 @@ export type Machine = {
 	-- When set, a kv write raises this error inside the call, as Tern's kv does, and compat's wrapper turns it into
 	-- the failure the list sees.
 	kv_raises: string?,
-	-- The folders that exist on this machine.
+	-- The folders that exist on this machine. A folder lists under its parent, and `fs_remove` removes it as Tern's
+	-- does (whole), so a test sees a folder that was removed.
 	dirs: { [string]: boolean },
 	-- The text typed into each pane, in order, and whether typing fails.
 	typed: { { pane: number, text: string } },
@@ -58,8 +59,20 @@ export type Machine = {
 	-- Argument vectors `run_output` was given, in order, each with `answer`, which the test calls with the stdout the
 	-- process printed (nil: it failed). Nothing answers until the test does.
 	outputs: { { argv: { string }, answer: (stdout: string?) -> () } },
-	-- Directories `fs_list` was asked for, in order.
+	-- Directories `fs_list` was asked for, in order; the spool's own folders (`/data/requests`, `/data/replies`) go to
+	-- `spool_lists` instead, so the lookups' listings are counted alone.
 	lists: { string },
+	spool_lists: { string },
+	-- Files (or folders) written with `fs_write`, and removed with `fs_remove`, in order.
+	file_writes: { string },
+	removed: { string },
+	-- Paths `is_dir` was asked about, in order, so a test can see a normal request never lists its own file.
+	dir_checks: { string },
+	-- A planted read error: `fs_read` of that path answers nil and the error, as compat does when Tern raises.
+	read_errors: { [string]: string },
+	-- Whether `fs_remove` fails (the file stays), for every path or for one path with its planted error.
+	remove_fails: boolean,
+	remove_errors: { [string]: string },
 	logs: { string },
 	now: number,
 	-- Encodes a value as the JSON a window would send.
@@ -88,12 +101,20 @@ function M.machine(deck: Store.Deck?): Machine
 	local function names_under(path: string): { string }
 		local prefix = if string.sub(path, -1) == "/" then path else path .. "/"
 		local names: { string } = {}
-		for file_path in m.files do
-			if string.sub(file_path, 1, #prefix) == prefix then
-				local rest = string.sub(file_path, #prefix + 1)
-				if rest ~= "" and string.find(rest, "/", 1, true) == nil then
+		local function add(entry: string)
+			if string.sub(entry, 1, #prefix) == prefix then
+				local rest = string.sub(entry, #prefix + 1)
+				if rest ~= "" and string.find(rest, "/", 1, true) == nil and table.find(names, rest) == nil then
 					table.insert(names, rest)
 				end
+			end
+		end
+		for file_path in m.files do
+			add(file_path)
+		end
+		for dir_path, there in m.dirs do
+			if there then
+				add(dir_path)
 			end
 		end
 		table.sort(names)
@@ -142,6 +163,7 @@ function M.machine(deck: Store.Deck?): Machine
 			return block(cx).pane, nil
 		end,
 		is_dir = function(path: string): (boolean, string?)
+			table.insert(m.dir_checks, path)
 			return m.dirs[path] == true, nil
 		end,
 		git_common_dir = function(_folder: string, cb: (string?) -> ()): (boolean, string?)
@@ -152,27 +174,63 @@ function M.machine(deck: Store.Deck?): Machine
 			return true, nil
 		end,
 		fs_write = function(path: string, text: string): (boolean, string?)
+			table.insert(m.file_writes, path)
 			m.files[path] = text
 			return true, nil
 		end,
 		fs_list = function(path: string): ({ string }?, string?)
-			table.insert(m.lists, path)
+			if string.find(path, "^/data/requests/?$") ~= nil or string.find(path, "^/data/replies/?$") ~= nil then
+				table.insert(m.spool_lists, path)
+			else
+				table.insert(m.lists, path)
+			end
 			local names = names_under(path)
 			if #names == 0 and m.dirs[path] ~= true then
 				return nil, nil
 			end
 			return names, nil
 		end,
+		fs_exists = function(path: string): (boolean, string?)
+			return m.files[path] ~= nil or m.dirs[path] == true, nil
+		end,
+		fs_remove = function(path: string): (boolean, string?)
+			if m.remove_fails then
+				return false, "Permission denied (os error 13)"
+			end
+			local planted = m.remove_errors[path]
+			if planted ~= nil then
+				return false, planted
+			end
+			if m.dirs[path] == true then
+				m.dirs[path] = nil
+			elseif m.files[path] ~= nil then
+				m.files[path] = nil
+			else
+				return false, "not found: " .. path
+			end
+			table.insert(m.removed, path)
+			return true, nil
+		end,
 		fs_read = function(path: string, max_bytes: number?): (string?, string?)
 			if string.find(path, "/environ", 1, true) ~= nil or string.match(path, "%.key$") ~= nil then
 				error("refusing to read " .. path)
 			end
+			local planted = m.read_errors[path]
+			if planted ~= nil then
+				return nil, planted
+			end
 			local text = m.files[path]
 			if text == nil then
+				-- Tern's bounded read requires a regular file and raises on a directory, so a folder is a failed
+				-- read rather than a missing file. The spool tells the two apart with `is_dir` only then.
+				if m.dirs[path] == true then
+					return nil, "Is a directory (os error 21)"
+				end
 				return nil, nil
 			end
+			-- Tern refuses a file past `max_bytes` rather than cutting it short.
 			if max_bytes ~= nil and #text > max_bytes then
-				return string.sub(text, 1, max_bytes), nil
+				return nil, "file is larger than " .. tostring(max_bytes) .. " bytes"
 			end
 			return text, nil
 		end,
@@ -267,6 +325,13 @@ function M.machine(deck: Store.Deck?): Machine
 		probes = {},
 		outputs = {},
 		lists = {},
+		spool_lists = {},
+		file_writes = {},
+		removed = {},
+		dir_checks = {},
+		read_errors = {},
+		remove_fails = false,
+		remove_errors = {},
 		logs = {},
 		now = 0,
 		json = function(value: any): string

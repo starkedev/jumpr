@@ -6,6 +6,20 @@ Update with `tern plugin install github.com/starkedev/jumpr --force` on each mac
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-11-23
+
+### Added
+
+- `bin/jumpr-add` starts an omp agent in the list from a script or a timer on the agents' machine, with a brief from a file as its first message: `jumpr-add --group NAME [--cwd DIR] --prompt-file FILE [--label TEXT]`.
+  It works with no Tern window attached and leaves the focus where it is; the agent lands in the named group (made, with `--cwd`, when missing), and `Enter` restarts it like any other omp agent, without sending the brief again.
+  It exits 0 once started, 1 when refused, with the reason, and 2 when Jumpr did not answer; the README's "Start an agent from a script" has a systemd timer example.
+
+### Fixed
+
+- An agent revived after a daemon restart, or a pane started with the list open, could miss Jumpr's hooks: Tern skips a hook that waits over 50 ms, and the list kept the host busy redrawing each copy after every status message.
+  Copies now reuse the last drawing while nothing they show has changed, which cut the list's drawing time with seven copies open from a median of 54 ms a second to about 17.
+  A revived agent that missed the hook still on `omp --continue …` exited with status 2 and needed `Enter`.
+
 ## [0.3.5] - 2026-11-20
 
 ### Added
@@ -287,7 +301,8 @@ Tested on Tern 0.9.10 and 0.9.11.
 - Every message between the halves carries a protocol version, and a mismatch shows a banner naming the machine to update.
 - `scripts/check.sh` runs stylua, the unit suites, a strict `luau-lsp` type check and design-rule checks.
 
-[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.3.6...HEAD
+[0.3.6]: https://github.com/starkedev/jumpr/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/starkedev/jumpr/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/starkedev/jumpr/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/starkedev/jumpr/compare/v0.3.2...v0.3.3

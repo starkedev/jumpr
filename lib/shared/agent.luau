@@ -1,6 +1,6 @@
 --!strict
 -- Agent kinds: validates CLI and session names, builds omp, Claude Code CLI, Codex CLI and ACP launch commands and
--- recognises default titles. Pure: no `tern`.
+-- omp's first-start argv, maps launch lines to their reopen form and recognises default titles. Pure: no `tern`.
 
 local Identity = require("./identity")
 
@@ -150,15 +150,83 @@ function M.command(kind: string, id: string, mode: Mode, sid: string?): string?
 	return command .. " --sessions"
 end
 
--- The command a reopened omp agent runs before Tern adds `--restore`, `--resume` or `--fork` and its session file:
--- Jumpr's own launch line without `--continue`, which omp refuses beside a named session. Nil for any other command,
--- so a line Jumpr did not write reaches omp as it was.
-function M.reopen_command(command: string): string?
-	local id = string.match(command, "^omp %-%-continue %-%-session%-dir ~/%.omp/deck/([%w_%-]+)$")
-	if id == nil or M.command(M.OMP, id, "new") ~= command then
+-- True when a path is absolute and made only of alphanumerics, `_`, `-`, `.` and `/`, with every segment non-empty
+-- (no `//` and no trailing `/`), none of them `.` or `..`, and none starting with `-`, so it is one shell word and
+-- never a flag.
+local function safe_path(path: string): boolean
+	if string.find(path, "^/[%w_%-./]+$") == nil then
+		return false
+	end
+	for _, segment in string.split(string.sub(path, 2), "/") do
+		if segment == "" or segment == "." or segment == ".." or string.sub(segment, 1, 1) == "-" then
+			return false
+		end
+	end
+	return true
+end
+
+-- True for a first-message file omp can be handed as `@<path>`: an absolute path of shell-safe segments (no spaces,
+-- quotes, `..` or leading `-`).
+function M.valid_prompt_file(path: string): boolean
+	return safe_path(path)
+end
+
+-- The argv that starts a new omp agent in its deck folder `<home>/.omp/deck/<id>`, sending `prompt_file` as its first
+-- message when given. No `--continue`: the folder is new. Nil when the id, the home folder or the file is unsafe.
+function M.first_argv(id: string, home: string, prompt_file: string?): { string }?
+	if not Identity.valid_id(id) or not safe_path(home) then
 		return nil
 	end
-	return "omp --session-dir ~/.omp/deck/" .. id
+	local argv = { "omp", "--session-dir", home .. "/.omp/deck/" .. id }
+	if prompt_file ~= nil then
+		if not M.valid_prompt_file(prompt_file) then
+			return nil
+		end
+		table.insert(argv, "@" .. prompt_file)
+	end
+	return argv
+end
+
+-- The deck folder of a first-start line, `omp --session-dir <home>/.omp/deck/<id>` and at most one `@<file>` word
+-- (whole word optionally in single or double quotes), or nil for any other shape.
+local function first_start_deck(command: string): string?
+	local rest = string.match(command, "^omp %-%-session%-dir (.+)$")
+	if rest == nil then
+		return nil
+	end
+	local words = string.split(rest, " ")
+	local deck = words[1]
+	local id = string.match(deck, "/%.omp/deck/([^/]+)$")
+	if #words > 2 or not safe_path(deck) or id == nil or not Identity.valid_id(id) then
+		return nil
+	end
+	local prompt = words[2]
+	if prompt ~= nil then
+		local first = string.sub(prompt, 1, 1)
+		if #prompt >= 2 and (first == "'" or first == '"') and string.sub(prompt, -1) == first then
+			prompt = string.sub(prompt, 2, -2)
+		end
+		if string.sub(prompt, 1, 1) ~= "@" or not M.valid_prompt_file(string.sub(prompt, 2)) then
+			return nil
+		end
+	end
+	return deck
+end
+
+-- The command a reopened omp agent runs before Tern adds `--restore`, `--resume` or `--fork` and its session file:
+-- Jumpr's own launch line without `--continue`, which omp refuses beside a named session, or a first-start line from
+-- `first_argv` without its `@<file>`, which omp refuses beside `--restore` and which must not be sent twice. Nil for
+-- any other command, so a line Jumpr did not write reaches omp as it was.
+function M.reopen_command(command: string): string?
+	local id = string.match(command, "^omp %-%-continue %-%-session%-dir ~/%.omp/deck/([%w_%-]+)$")
+	if id ~= nil and M.command(M.OMP, id, "new") == command then
+		return "omp --session-dir ~/.omp/deck/" .. id
+	end
+	local deck = first_start_deck(command)
+	if deck == nil then
+		return nil
+	end
+	return "omp --session-dir " .. deck
 end
 
 return M

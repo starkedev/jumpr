@@ -1,0 +1,420 @@
+#!/bin/sh
+# jumpr-add: start an omp agent that Jumpr lists, from a script or a timer.
+#
+# It asks the Jumpr host half on this machine to record the agent (a request file in Jumpr's data folder), waits
+# for the answer, then opens the agent's tab with the `tern` command line, which the Tern daemon itself cannot run.
+# The brief in --prompt-file is the agent's first message; a restart from the list resumes the agent without it.
+#
+# Exit codes: 0 started, 1 refused or failed, 2 Jumpr did not answer (not installed, never run, or Tern not running).
+set -eu
+
+LC_ALL=C
+export LC_ALL
+
+usage() {
+	cat <<'EOF'
+usage: jumpr-add --group NAME [--cwd DIR] --prompt-file FILE [--label TEXT] [--timeout SECONDS]
+
+Starts an omp agent in the Jumpr list on this machine, sending FILE as its first message.
+
+  --group NAME         the list group to put the agent in (created when missing, if --cwd is given)
+  --cwd DIR            the agent's folder (default: the group's folder)
+  --prompt-file FILE   the agent's first message; must exist and not be empty
+  --label TEXT         a name for the agent's tab
+  --timeout SECONDS    how long to wait for Jumpr to answer (default 20)
+  --help               show this help
+
+Environment: TERN (the tern command, default tern), JUMPR_DATA (Jumpr's data folder, default Tern's plugin data).
+Exit codes: 0 started, 1 refused or failed, 2 Jumpr did not answer.
+EOF
+}
+
+fail() {
+	printf 'jumpr-add: %s\n' "$1" >&2
+	exit 1
+}
+
+bad_usage() {
+	printf 'jumpr-add: %s\n' "$1" >&2
+	usage >&2
+	exit 1
+}
+
+# $1 trimmed of leading and trailing white space.
+trim() {
+	t=$1
+	while :; do
+		case $t in
+		[[:space:]]*) t=${t#?} ;;
+		*) break ;;
+		esac
+	done
+	while :; do
+		case $t in
+		*[[:space:]]) t=${t%?} ;;
+		*) break ;;
+		esac
+	done
+	printf '%s' "$t"
+}
+
+# Succeeds when $1 holds a control byte.
+has_control() {
+	case $1 in
+	*[[:cntrl:]]*) return 0 ;;
+	esac
+	return 1
+}
+
+# Succeeds when $1 has a `..` path segment.
+has_dotdot() {
+	case /$1/ in
+	*/../*) return 0 ;;
+	esac
+	return 1
+}
+
+# The prompt file rule: absolute, only letters, digits and _ - . /, every segment non-empty, not . or .., and not
+# starting with -.
+safe_path() {
+	case $1 in
+	/*) ;;
+	*) return 1 ;;
+	esac
+	case $1 in
+	*[!A-Za-z0-9_./-]*) return 1 ;;
+	*//* | */ | */./* | */. | */../* | */.. | */-*) return 1 ;;
+	esac
+	return 0
+}
+
+# The folder rule: absolute, only letters, digits, spaces and _ - . /, no `..` segment.
+valid_cwd() {
+	case $1 in
+	/*) ;;
+	*) return 1 ;;
+	esac
+	case $1 in
+	*[!A-Za-z0-9_./\ -]*) return 1 ;;
+	esac
+	! has_dotdot "$1"
+}
+
+# A trimmed group name or label ($2), at most $3 bytes and not starting with -; $1 names it in the refusal.
+check_name() {
+	n=$(trim "$2")
+	if [ "${#n}" -gt "$3" ]; then
+		fail "$1 is longer than $3 characters"
+	fi
+	case $n in
+	-*) fail "$1 may not start with -" ;;
+	esac
+	printf '%s' "$n"
+}
+
+# An absolute folder for $1, keeping symlinks as given (a logical path).
+abs_dir() {
+	(CDPATH='' cd -- "$1" 2>/dev/null && pwd)
+}
+
+group=
+group_set=0
+cwd=
+cwd_set=0
+prompt=
+prompt_set=0
+label=
+label_set=0
+timeout=20
+
+need_value() {
+	if [ "$2" -lt 2 ]; then
+		bad_usage "$1 needs a value"
+	fi
+}
+
+while [ "$#" -gt 0 ]; do
+	case $1 in
+	--help | -h)
+		usage
+		exit 0
+		;;
+	--group)
+		need_value "$1" "$#"
+		group=$2 group_set=1
+		shift 2
+		;;
+	--group=*)
+		group=${1#*=} group_set=1
+		shift
+		;;
+	--cwd)
+		need_value "$1" "$#"
+		cwd=$2 cwd_set=1
+		shift 2
+		;;
+	--cwd=*)
+		cwd=${1#*=} cwd_set=1
+		shift
+		;;
+	--prompt-file)
+		need_value "$1" "$#"
+		prompt=$2 prompt_set=1
+		shift 2
+		;;
+	--prompt-file=*)
+		prompt=${1#*=} prompt_set=1
+		shift
+		;;
+	--label)
+		need_value "$1" "$#"
+		label=$2 label_set=1
+		shift 2
+		;;
+	--label=*)
+		label=${1#*=} label_set=1
+		shift
+		;;
+	--timeout)
+		need_value "$1" "$#"
+		timeout=$2
+		shift 2
+		;;
+	--timeout=*)
+		timeout=${1#*=}
+		shift
+		;;
+	*) bad_usage "unknown argument: $1" ;;
+	esac
+done
+
+if [ "$group_set" -eq 0 ]; then
+	bad_usage "--group is required"
+fi
+if [ "$prompt_set" -eq 0 ]; then
+	bad_usage "--prompt-file is required"
+fi
+case $timeout in
+'' | *[!0-9]*) bad_usage "--timeout must be a whole number of seconds" ;;
+esac
+# Leading zeros dropped, so 08 is eight seconds rather than a bad octal number in $((...)).
+while :; do
+	case $timeout in
+	0?*) timeout=${timeout#0} ;;
+	*) break ;;
+	esac
+done
+if [ "$timeout" -lt 1 ]; then
+	bad_usage "--timeout must be at least 1 second"
+fi
+
+# The same checks, in the same words, as the host half makes on the request.
+if has_control "$group"; then
+	fail "group holds a control character"
+fi
+group=$(check_name "group name" "$group" 40) || exit 1
+if [ -z "$group" ]; then
+	fail "group name is empty"
+fi
+
+if [ "$cwd_set" -eq 1 ]; then
+	if has_control "$cwd"; then
+		fail "cwd holds a control character"
+	fi
+	given=$cwd
+	if ! cwd=$(abs_dir "$given"); then
+		fail "folder not found: $given"
+	fi
+	if ! valid_cwd "$cwd"; then
+		fail "cwd must be an absolute folder of letters, digits, spaces and _ - . / with no .. part"
+	fi
+fi
+
+if has_control "$prompt"; then
+	fail "prompt_file holds a control character"
+fi
+if [ ! -f "$prompt" ]; then
+	fail "prompt file not found: $prompt"
+fi
+if [ ! -s "$prompt" ]; then
+	fail "prompt file is empty: $prompt"
+fi
+prompt_dir=$(abs_dir "$(dirname -- "$prompt")") || fail "prompt file not found: $prompt"
+prompt_base=$(basename -- "$prompt")
+if [ "$prompt_dir" = / ]; then
+	prompt=/$prompt_base
+else
+	prompt=$prompt_dir/$prompt_base
+fi
+if ! safe_path "$prompt"; then
+	fail "prompt file must be an absolute path of letters, digits and _ - . / with no .. part"
+fi
+
+if [ "$label_set" -eq 1 ]; then
+	if has_control "$label"; then
+		fail "label holds a control character"
+	fi
+	label=$(check_name "label" "$label" 60) || exit 1
+fi
+
+TERN=${TERN:-tern}
+if ! command -v "$TERN" >/dev/null 2>&1; then
+	fail "cannot find the tern command ($TERN); put it on PATH or set TERN to its path"
+fi
+
+if [ -n "${JUMPR_DATA:-}" ]; then
+	data=$JUMPR_DATA
+elif [ "$(uname -s)" = Darwin ]; then
+	data="$HOME/Library/Application Support/Tern/plugin-data/jumpr"
+else
+	data="${XDG_STATE_HOME:-$HOME/.local/state}/tern/plugin-data/jumpr"
+fi
+if [ ! -d "$data" ]; then
+	printf "jumpr-add: Jumpr isn't installed on this machine, or has never run (no %s)\n" "$data" >&2
+	exit 2
+fi
+mkdir -p "$data/requests" "$data/replies"
+
+# The request id: 8 characters of a-z2-7, from /dev/urandom (256 is a multiple of 32, so each is uniform).
+alphabet=abcdefghijklmnopqrstuvwxyz234567
+rid=
+for byte in $(od -A n -t u1 -N 8 /dev/urandom); do
+	i=$((byte % 32))
+	rest=${alphabet#?}
+	while [ "$i" -gt 0 ]; do
+		rest=${rest#?}
+		i=$((i - 1))
+	done
+	char=${alphabet%"$rest"}
+	char=${char#"${char%?}"}
+	rid=$rid$char
+done
+if [ "${#rid}" -ne 8 ]; then
+	fail "could not draw a request id from /dev/urandom"
+fi
+
+# The time in unix milliseconds: from %N (nanoseconds) where date knows it, as on Linux; else, as on macOS, whole
+# seconds. Not %3N, which some dates print as all nine digits.
+secs=$(date +%s)
+ns=$(date +%s%N 2>/dev/null || true)
+case $ns in
+'' | *[!0-9]*) ms=$((secs * 1000)) ;;
+*)
+	if [ "${#ns}" -eq $((${#secs} + 9)) ]; then
+		ms=${ns%??????}
+	else
+		ms=$((secs * 1000))
+	fi
+	;;
+esac
+
+body="v=1
+ts=$ms
+group=$group"
+if [ "$cwd_set" -eq 1 ]; then
+	body="$body
+cwd=$cwd"
+fi
+body="$body
+prompt_file=$prompt"
+if [ -n "$label" ]; then
+	body="$body
+label=$label"
+fi
+body="$body
+end"
+if [ "${#body}" -ge 4096 ]; then
+	fail "request is larger than 4096 bytes"
+fi
+
+tmpf="$data/requests/$rid.tmp"
+reqf="$data/requests/$rid.req"
+replyf="$data/replies/$rid.reply"
+# Removing our own request first means the host never acts on it: it serves a request only when its remove worked.
+trap 'rm -f "$tmpf" "$reqf"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+printf '%s\n' "$body" >"$tmpf"
+mv -f "$tmpf" "$reqf"
+
+# Succeeds once the reply is whole: its last line is `end`.
+reply_done() {
+	[ -f "$replyf" ] && [ "$(tail -n 1 "$replyf")" = end ]
+}
+
+polls=$((timeout * 2))
+while ! reply_done; do
+	if [ "$polls" -le 0 ]; then
+		# Claim the request by renaming it back: only one of this rename and the host's remove can win, so exit 2
+		# here means the host never served it.
+		if mv "$reqf" "$tmpf" 2>/dev/null; then
+			rm -f "$tmpf"
+			echo "jumpr-add: Jumpr didn't answer — is the Tern daemon running with Jumpr installed?" >&2
+			exit 2
+		fi
+		# The host took the request: give its reply a little longer.
+		grace=10
+		while ! reply_done && [ "$grace" -gt 0 ]; do
+			sleep 0.5
+			grace=$((grace - 1))
+		done
+		if reply_done; then
+			break
+		fi
+		echo "jumpr-add: Jumpr took the request but didn't answer — is the Tern daemon still running?" >&2
+		exit 2
+	fi
+	sleep 0.5
+	polls=$((polls - 1))
+done
+
+ok=
+error=
+id=
+session=
+reply_cwd=
+reply_label=
+set --
+while IFS= read -r line || [ -n "$line" ]; do
+	key=${line%%=*}
+	value=${line#*=}
+	case $key in
+	ok) ok=$value ;;
+	error) error=$value ;;
+	id) id=$value ;;
+	session) session=$value ;;
+	cwd) reply_cwd=$value ;;
+	argv) set -- "$@" "$value" ;;
+	label) reply_label=$value ;;
+	end) break ;;
+	esac
+done <"$replyf"
+rm -f "$replyf"
+
+if [ "$ok" != 1 ]; then
+	fail "${error:-Jumpr refused the request}"
+fi
+if [ -z "$id" ] || [ -z "$session" ] || [ -z "$reply_cwd" ] || [ "$#" -eq 0 ]; then
+	fail "Jumpr's reply is missing its id, session, cwd or start line"
+fi
+
+rc=0
+out=$("$TERN" new tab "$session" --json --cwd "$reply_cwd" -- "$@") || rc=$?
+if [ "$rc" -ne 0 ]; then
+	if [ -n "$out" ]; then
+		printf '%s\n' "$out" >&2
+	fi
+	fail "tern new tab failed (exit $rc); agent $id shows as a failed start in the list"
+fi
+
+if [ -n "$reply_label" ]; then
+	block=$(printf '%s\n' "$out" | sed -n 's/.*"block"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1)
+	if [ -z "$block" ]; then
+		printf "jumpr-add: started %s, but tern's answer had no block id, so its tab is not named\n" "$id" >&2
+	elif ! "$TERN" rename "$block" "$reply_label" >/dev/null; then
+		printf 'jumpr-add: started %s, but naming its tab failed\n' "$id" >&2
+	fi
+fi
+
+printf 'started %s\n' "$id"

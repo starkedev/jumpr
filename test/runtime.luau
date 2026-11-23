@@ -10,6 +10,7 @@ local Fake = require("./support/fake_host")
 local Protocol = require("../lib/shared/protocol")
 local Requests = require("../lib/host/requests")
 local Runtime = require("../lib/host/runtime")
+local Spool = require("../lib/host/spool")
 local Store = require("../lib/host/store")
 local View = require("../lib/host/view")
 local checks = 0
@@ -2100,6 +2101,461 @@ do
 	check(#m.outputs == 2, "the reopened list polls again")
 	answer(m, 2, 140, { lifecycle(m, "W1", "turn-settled", "2027-01-15T08:00:30.000Z") })
 	check(b3.renders == 1, "an answer that changes nothing after a clear renders nothing")
+end
+
+-- The spool: a script's request files in the plugin's data folder (`/data` on the fake machine), served by the host
+-- timer with or without a copy of the list open.
+local BRIEF = "/abs/brief.md"
+
+-- Machine devbox, deck session `deck`, no groups yet.
+local function spool_deck(): Store.Deck
+	local d = Store.empty()
+	d.session = { name = "deck", host = "devbox" }
+	return d
+end
+
+-- The home, the agent's folder and the brief the requests name.
+local function spool_ready(m: Fake.Machine)
+	m.home = HOME
+	m.dirs["/srv/jobs"] = true
+	m.files[BRIEF] = "Reply with just the word ready, then stop.\n"
+end
+
+-- A request as the script writes it, stamped now; `body` replaces the lines after `ts` (default: group jobs created
+-- in /srv/jobs, the brief).
+local function request_text(m: Fake.Machine, body: { string }?, ts: number?): string
+	local lines = body or { "group=jobs", "cwd=/srv/jobs", "prompt_file=" .. BRIEF }
+	local stamp = string.format("%d", ts or Fake.wall(m.now))
+	return "v=1\nts=" .. stamp .. "\n" .. table.concat(lines, "\n") .. "\nend\n"
+end
+
+local function request_path(name: string): string
+	return "/data/requests/" .. name .. ".req"
+end
+
+local function drop_request(m: Fake.Machine, name: string, text: string)
+	m.files[request_path(name)] = text
+end
+
+-- The reply to request `rid`: its single fields and its argv lines in order; nil when there is none.
+local function reply_of(m: Fake.Machine, rid: string): ({ [string]: string }?, { string })
+	local text = m.files["/data/replies/" .. rid .. ".reply"]
+	local argv: { string } = {}
+	if text == nil then
+		return nil, argv
+	end
+	local fields: { [string]: string } = {}
+	for _, line in string.split(text, "\n") do
+		local key, value = string.match(line, "^([^=]*)=(.*)$")
+		if key == "argv" and value ~= nil then
+			table.insert(argv, value)
+		elseif key ~= nil and value ~= nil then
+			fields[key] = value
+		end
+	end
+	check(string.sub(text, -4) == "end\n", "a reply ends with its end line")
+	return fields, argv
+end
+
+-- The error a refused request's reply carries; nil when it has no reply or was not refused.
+local function refusal(m: Fake.Machine, rid: string): string?
+	local fields = reply_of(m, rid)
+	if fields == nil or fields.ok ~= "0" then
+		return nil
+	end
+	return fields.error
+end
+
+-- Headless cold start: no copy of the list is open and the deck has no groups. The request is removed, the new group
+-- and a pending record are saved, and the reply carries the start line; the tab the script then opens binds the
+-- record through the spawn hook (the line Tern 0.9.29's spawn filter showed for `tern new tab … -- omp …`).
+do
+	local list, m = list_on(spool_deck())
+	spool_ready(m)
+	drop_request(
+		m,
+		"rq000001",
+		request_text(m, { "group=jobs", "cwd=/srv/jobs", "prompt_file=" .. BRIEF, "label=nightly" })
+	)
+	list.tick()
+	check(m.files[request_path("rq000001")] == nil, "the request file is removed")
+	local d = stored(m)
+	check(
+		#d.groups == 1 and d.groups[1].name == "jobs" and d.groups[1].cwd == "/srv/jobs",
+		"a missing group is created in the request's folder"
+	)
+	local fields, argv = reply_of(m, "rq000001")
+	check(fields ~= nil and fields.ok == "1", "the reply says ok")
+	local f = fields :: { [string]: string }
+	local id = f.id
+	local r = d.agents[id]
+	check(r ~= nil and r.state == "pending" and r.cli == "omp", "a pending omp record is saved")
+	check(r.gid == f.gid and r.gid == d.groups[1].gid and r.pos == 1, "in the new group, first")
+	check(r.cwd == "/srv/jobs" and r.label == "nightly", "with the request's folder and label")
+	check(
+		f.session == "deck" and f.cwd == "/srv/jobs" and f.label == "nightly" and f.error == nil,
+		"the reply names the deck session, the folder and the label"
+	)
+	check(
+		table.concat(argv, "|") == "omp|--session-dir|/home/dev/.omp/deck/" .. id .. "|@" .. BRIEF,
+		"the reply's argv starts omp in the agent's deck folder with the brief: " .. table.concat(argv, "|")
+	)
+	check(table.find(m.dir_checks, "/srv/jobs") ~= nil, "the agent's folder is still checked")
+	check(
+		table.find(m.dir_checks, request_path("rq000001")) == nil,
+		"a served request file is not listed as a directory"
+	)
+	check(table.find(m.dir_checks, BRIEF) == nil, "the brief is not listed as a directory")
+	check(next(m.spool_lists) ~= nil and #m.lists == 0, "the spool's listings are counted apart")
+	spawn_line(list, m, 21, "omp --session-dir /home/dev/.omp/deck/" .. id .. " @/abs/brief.md")
+	list.tick()
+	local bound = stored(m).agents[id]
+	check(bound.state == "live" and bound.pane == 21, "the tab the script opened binds the record live")
+end
+
+-- Two requests in one tick, into a group that exists: distinct ids, positions after the group's last agent, each
+-- served in name order.
+do
+	local d = spool_deck()
+	table.insert(d.groups, { gid = "g1", name = "jobs", cwd = "/srv/jobs", folded = false })
+	d.agents["agent-a"] = record(1, { cwd = "/srv/jobs" })
+	local m = Fake.machine(d)
+	local n = 0
+	local list = Runtime.new(m.compat, function(k: number): number
+		n += 1
+		return (n % k) + 1
+	end)
+	spool_ready(m)
+	drop_request(m, "rq-b", request_text(m, { "group=jobs", "prompt_file=" .. BRIEF }))
+	drop_request(m, "rq-a", request_text(m, { "group=jobs", "prompt_file=" .. BRIEF }))
+	list.tick()
+	local a = reply_of(m, "rq-a")
+	local b = reply_of(m, "rq-b")
+	check(a ~= nil and a.ok == "1" and b ~= nil and b.ok == "1", "both requests are served in one tick")
+	local fa, fb = a :: { [string]: string }, b :: { [string]: string }
+	check(fa.id ~= fb.id and fa.gid == "g1" and fb.gid == "g1", "distinct ids, in the existing group")
+	local saved = stored(m)
+	check(saved.agents[fa.id].pos == 2 and saved.agents[fb.id].pos == 3, "positions follow the group's last agent")
+	check(#saved.groups == 1 and saved.agents["agent-a"].pos == 1, "no group is added and the other agent stays")
+end
+
+-- Requests that are refused before anything is stored: a bad file name is removed with no reply (and logged), and an
+-- invalid, stale, unreadable or oversized request gets an error reply. At most four are served a tick; the bad name,
+-- never served, does not count.
+do
+	local list, m = list_on(spool_deck())
+	spool_ready(m)
+	local before = stored(m)
+	drop_request(m, "bad.name", request_text(m))
+	drop_request(m, "rq-invalid", request_text(m, { "group=jobs", "prompt_file=" .. BRIEF, "colour=red" }))
+	drop_request(m, "rq-stale", request_text(m, nil, Fake.wall(m.now) - 61 * 1000))
+	drop_request(m, "rq-unread", request_text(m))
+	m.read_errors[request_path("rq-unread")] = "Permission denied (os error 13)"
+	drop_request(m, "rq-xbig", string.rep("x", Spool.MAX_BYTES + 10))
+	-- One byte over the limit is still read (the read allows one more), so the parser names the limit.
+	drop_request(m, "rq-zbig", string.rep("x", Spool.MAX_BYTES + 1))
+	list.tick()
+	local left = 0
+	for path in m.files do
+		if string.sub(path, 1, 15) == "/data/requests/" then
+			left += 1
+		end
+	end
+	check(left == 1 and m.files[request_path("rq-zbig")] ~= nil, "four requests are served a tick, the fifth waits")
+	list.tick()
+	check(m.files[request_path("rq-zbig")] == nil, "the fifth is served on the next tick")
+	check(m.files["/data/replies/bad.name.reply"] == nil, "a bad request name gets no reply")
+	check(m.files[request_path("bad.name")] == nil, "and is removed")
+	local logged = false
+	for _, line in m.logs do
+		if string.find(line, "bad name: bad.name.req", 1, true) ~= nil then
+			logged = true
+		end
+	end
+	check(logged, "and logged")
+	check(
+		refusal(m, "rq-invalid") == "unknown key colour",
+		"an invalid request is refused: " .. tostring(refusal(m, "rq-invalid"))
+	)
+	check(refusal(m, "rq-stale") == "request is more than 60 s old", "a stale request is refused")
+	check(
+		refusal(m, "rq-unread") == "request could not be read: Permission denied (os error 13)",
+		"an unreadable request is refused: " .. tostring(refusal(m, "rq-unread"))
+	)
+	check(
+		refusal(m, "rq-xbig") == "request could not be read: file is larger than " .. (Spool.MAX_BYTES + 1) .. " bytes",
+		"a request past what the read allows is refused unread: " .. tostring(refusal(m, "rq-xbig"))
+	)
+	check(
+		refusal(m, "rq-zbig") == "request is larger than " .. Spool.MAX_BYTES .. " bytes",
+		"a request one byte over is refused by its size: " .. tostring(refusal(m, "rq-zbig"))
+	)
+	check(stored(m) == before and m.kv_writes == 0, "nothing is stored")
+end
+
+-- A request whose file cannot be removed is not acted on: nothing is stored and no reply is written. It is served
+-- on the first tick that removes it.
+do
+	local list, m = list_on(spool_deck())
+	spool_ready(m)
+	drop_request(m, "rq000001", request_text(m))
+	m.remove_fails = true
+	list.tick()
+	check(m.files[request_path("rq000001")] ~= nil, "the request stays")
+	check(reply_of(m, "rq000001") == nil and m.kv_writes == 0, "nothing is stored or answered")
+	m.remove_fails = false
+	list.tick()
+	local fields = reply_of(m, "rq000001")
+	check(fields ~= nil and fields.ok == "1", "the next tick serves it")
+	check(m.files[request_path("rq000001")] == nil, "once it is removed")
+	local count = 0
+	for _ in stored(m).agents do
+		count += 1
+	end
+	check(count == 1, "and starts one agent")
+end
+
+-- A reply that cannot be rendered (a control byte in the deck's session name) refuses the request before the deck is
+-- committed: no group, no record, no kv write, so no pending record waits for a tab no script will open.
+do
+	local d = spool_deck()
+	d.session.name = "de\tck"
+	local list, m = list_on(d)
+	spool_ready(m)
+	local before = stored(m)
+	drop_request(m, "rq000001", request_text(m))
+	list.tick()
+	local why = refusal(m, "rq000001")
+	check(
+		why == "the reply could not be rendered: spool reply value for session holds a control character",
+		"an unrenderable reply refuses the request: " .. tostring(why)
+	)
+	check(stored(m) == before and m.kv_writes == 0, "nothing is stored")
+	check(m.files[request_path("rq000001")] == nil, "and the request is used up")
+end
+
+-- Four requests whose files cannot be removed do not hold back a fifth: only requests served count against the four
+-- a tick.
+do
+	local list, m = list_on(spool_deck())
+	spool_ready(m)
+	for i = 1, 4 do
+		local name = "rq-stuck" .. i
+		drop_request(m, name, request_text(m))
+		m.remove_errors[request_path(name)] = "Permission denied (os error 13)"
+	end
+	drop_request(m, "rq-takes", request_text(m))
+	list.tick()
+	local fields = reply_of(m, "rq-takes")
+	check(fields ~= nil and fields.ok == "1", "the fifth request is served in the same tick")
+	for i = 1, 4 do
+		local name = "rq-stuck" .. i
+		check(m.files[request_path(name)] ~= nil and reply_of(m, name) == nil, name .. " stays, unanswered")
+	end
+	local count = 0
+	for _ in stored(m).agents do
+		count += 1
+	end
+	check(count == 1, "and only the fifth starts an agent")
+end
+
+-- A folder named like a spool file is never removed, as a request or by the hourly sweep, and is logged once while
+-- it stays; a request with a bad name that cannot be removed is logged once too, not every tick.
+do
+	local hour = 60 * 60 * 1000
+	local list, m = list_on(spool_deck())
+	spool_ready(m)
+	local folders = {
+		"/data/requests/x.req",
+		"/data/requests/bad.dir.req",
+		"/data/requests/x.tmp",
+		"/data/replies/x.reply",
+		"/data/replies/x.tmp",
+	}
+	for _, path in folders do
+		m.dirs[path] = true
+	end
+	drop_request(m, "bad.name", request_text(m))
+	m.remove_errors[request_path("bad.name")] = "Permission denied (os error 13)"
+	for _ = 1, 3 do
+		m.advance(hour)
+		list.tick()
+	end
+	check(#m.removed == 0, "nothing is removed: " .. table.concat(m.removed, " "))
+	for _, path in folders do
+		check(m.dirs[path] == true, "the folder " .. path .. " stays")
+	end
+	local function logged(text: string): number
+		local n = 0
+		for _, line in m.logs do
+			if string.find(line, text, 1, true) ~= nil then
+				n += 1
+			end
+		end
+		return n
+	end
+	check(logged("left alone: x.req") == 1, "a folder named as a request is logged once")
+	check(logged("left alone: bad.dir.req") == 1, "so is one with a bad name")
+	check(logged("not removed: bad.name.req") == 1, "a bad name that cannot be removed is logged once")
+end
+
+-- `tern.fs.remove` is recursive: a folder that read as empty text (were Tern ever to read a directory) is still
+-- checked and left, never removed, and logged once; an empty plain file is refused and removed as before.
+do
+	local list, m = list_on(spool_deck())
+	spool_ready(m)
+	local folder = request_path("rq-dirtext")
+	m.files[folder] = ""
+	m.dirs[folder] = true
+	drop_request(m, "rq-empty", "")
+	list.tick()
+	list.tick()
+	check(m.dirs[folder] == true and m.files[folder] ~= nil, "a folder read as text stays")
+	check(table.find(m.removed, folder) == nil, "and is never removed")
+	check(reply_of(m, "rq-dirtext") == nil, "nor answered")
+	local n = 0
+	for _, line in m.logs do
+		if string.find(line, "left alone: rq-dirtext.req", 1, true) ~= nil then
+			n += 1
+		end
+	end
+	check(n == 1, "and is logged once")
+	check(m.files[request_path("rq-empty")] == nil, "an empty plain file is still removed")
+	local fields = reply_of(m, "rq-empty")
+	check(fields ~= nil and fields.ok ~= "1", "and refused")
+end
+
+-- A deck that cannot take the agent refuses the request with a reply and changes nothing: a read-only deck, a deck
+-- no copy of the list has named yet, a missing brief.
+do
+	local ro = spool_deck()
+	ro.schema = Store.SCHEMA + 1
+	local cases: { { name: string, deck: Store.Deck, setup: ((Fake.Machine) -> ())?, want: string } } = {
+		{ name = "a read-only deck", deck = ro, want = "the Jumpr list on devbox is read-only" },
+		{
+			name = "a deck with no session name",
+			deck = Store.empty(),
+			want = "open the Jumpr list on this machine once, then retry",
+		},
+		{
+			name = "a missing brief",
+			deck = spool_deck(),
+			setup = function(m: Fake.Machine)
+				m.files[BRIEF] = nil
+			end,
+			want = "prompt file not found on devbox: " .. BRIEF,
+		},
+	}
+	for _, case in cases do
+		local list, m = list_on(case.deck)
+		spool_ready(m)
+		if case.setup ~= nil then
+			case.setup(m)
+		end
+		local before = stored(m)
+		drop_request(m, "rq000001", request_text(m))
+		list.tick()
+		check(refusal(m, "rq000001") == case.want, case.name .. " is refused: " .. tostring(refusal(m, "rq000001")))
+		check(stored(m) == before and m.kv_writes == 0, case.name .. " stores nothing")
+	end
+end
+
+-- kv refusing the save: the request is refused, the deck in memory goes back to what kv holds, and no agent is
+-- started; the next request after kv recovers stores only its own agent.
+do
+	local list, m = list_on(spool_deck())
+	spool_ready(m)
+	local before = stored(m)
+	m.kv_fails = true
+	drop_request(m, "rq000001", request_text(m))
+	list.tick()
+	local why = refusal(m, "rq000001")
+	check(
+		why ~= nil and string.find(why, "not saved on devbox", 1, true) ~= nil,
+		"an unsaved deck refuses the request: " .. tostring(why)
+	)
+	check(stored(m) == before, "kv is unchanged")
+	m.kv_fails = false
+	drop_request(
+		m,
+		"rq000002",
+		request_text(m, { "group=other", "cwd=/srv/jobs", "prompt_file=" .. BRIEF, "label=second" })
+	)
+	list.tick()
+	local fields = reply_of(m, "rq000002")
+	check(fields ~= nil and fields.ok == "1", "the next request is served")
+	local saved = stored(m)
+	local count = 0
+	for _, r in saved.agents do
+		count += 1
+		check(r.label == "second", "only the second request's agent is stored")
+	end
+	check(count == 1 and #saved.groups == 1 and saved.groups[1].name == "other", "the refused group was rolled back")
+end
+
+-- A spool step that raises is kept in the error ring: the rest of the tick still runs and renders the open copy.
+do
+	local d = deck()
+	d.agents["agent-c"] = record(3, { state = "pending", created_ms = Fake.wall(0) - 31 * 1000 })
+	local list, m = list_on(d)
+	local _c, _cx, b = open(list, 101)
+	local fs_list = m.compat.fs_list
+	m.compat.fs_list = function(path: string): ({ string }?, string?)
+		if path == "/data/requests" then
+			error("spool exploded")
+		end
+		return fs_list(path)
+	end
+	local renders = b.renders
+	list.tick()
+	check(stored(m).agents["agent-c"].failed == true, "the start that never got a pane still fails")
+	check(b.renders > renders, "and the copy is rendered")
+	for _, line in m.logs do
+		check(string.find(line, "timer:", 1, true) == nil, "the tick did not abort: " .. line)
+	end
+end
+
+-- A quiet tick, with no request (a half-written one does not count), writes, removes and runs nothing.
+do
+	local list, m = list_on(deck())
+	m.files["/data/requests/rq000001.tmp"] = "v=1\n"
+	list.tick()
+	list.tick()
+	check(#m.file_writes == 0 and #m.removed == 0 and m.kv_writes == 0, "a quiet tick writes and removes nothing")
+	check(#m.probes == 0 and #m.outputs == 0, "and runs no process")
+	check(#m.spool_lists == 2 and m.spool_lists[1] == "/data/requests", "one listing of the requests a tick")
+	check(m.files["/data/requests/rq000001.tmp"] ~= nil, "a half-written request is left alone")
+end
+
+-- The hourly sweep removes leftover replies and half-written files only once two sweeps in a row have seen them;
+-- anything else in the folders is never touched.
+do
+	local hour = 60 * 60 * 1000
+	local list, m = list_on(deck())
+	m.files["/data/replies/old.reply"] = "ok=1\nend\n"
+	m.files["/data/replies/old.tmp"] = "ok="
+	m.files["/data/requests/old.tmp"] = "v=1\n"
+	m.files["/data/replies/notes.txt"] = "mine"
+	m.advance(hour)
+	list.tick()
+	check(#m.removed == 0, "the first sweep that sees a file keeps it")
+	m.files["/data/replies/new.reply"] = "ok=1\nend\n"
+	m.advance(hour - 1)
+	list.tick()
+	check(#m.removed == 0, "nothing is swept between the hourly passes")
+	m.advance(1)
+	list.tick()
+	check(
+		m.files["/data/replies/old.reply"] == nil
+			and m.files["/data/replies/old.tmp"] == nil
+			and m.files["/data/requests/old.tmp"] == nil,
+		"the next sweep removes what the last one saw"
+	)
+	check(m.files["/data/replies/new.reply"] ~= nil, "a file the last sweep did not see stays")
+	check(m.files["/data/replies/notes.txt"] ~= nil, "a file of another kind is never removed")
+	m.advance(hour)
+	list.tick()
+	check(m.files["/data/replies/new.reply"] == nil, "and goes one sweep later")
 end
 
 print("Runtime: " .. checks .. " checks passed")

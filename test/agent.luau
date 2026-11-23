@@ -169,6 +169,124 @@ check(Agent.reopen_command("sandbox -k " .. OMP_COMMAND) == nil, "a wrapped omp 
 check(Agent.reopen_command(OMP_COMMAND .. " --model x") == nil, "an omp line with more flags is left alone")
 check(Agent.reopen_command("omp --continue --session-dir ~/.omp/deck/a b") == nil, "an unsafe deck id is left alone")
 
+-- A first-message file is an absolute path of shell-safe segments: one word, never a flag, never leaving its folder.
+check(Agent.valid_prompt_file("/abs/brief.md"), "an absolute prompt file is valid")
+check(Agent.valid_prompt_file("/tmp/run_2/brief-1.md"), "a prompt file may hold digits, underscores and hyphens")
+check(Agent.valid_prompt_file("/abs/..brief.md"), "a segment merely starting with dots is valid")
+for _, path in
+	{
+		"",
+		"/",
+		"brief.md",
+		"./brief.md",
+		"~/brief.md",
+		"/abs/my brief.md",
+		"/abs/../etc/passwd",
+		"/abs/..",
+		"/abs/./brief.md",
+		"/abs/-brief.md",
+		"/-abs/brief.md",
+		"/abs//brief.md",
+		"/abs/brief/",
+		"/abs/'brief'.md",
+		'/abs/"brief".md',
+		"/abs/brief.md;rm",
+		"/abs/$brief.md",
+		"/abs/brief.md\n",
+	}
+do
+	check(not Agent.valid_prompt_file(path), "an unsafe prompt file is refused: " .. path)
+end
+
+-- A first start runs omp in its new deck folder under the given home, with the brief as its first message when given.
+local function same(a: { string }?, b: { string }): boolean
+	if a == nil or #a ~= #b then
+		return false
+	end
+	for i, word in b do
+		if a[i] ~= word then
+			return false
+		end
+	end
+	return true
+end
+check(
+	same(
+		Agent.first_argv("agent-1", "/home/dev", "/abs/brief.md"),
+		{ "omp", "--session-dir", "/home/dev/.omp/deck/agent-1", "@/abs/brief.md" }
+	),
+	"a first start sends its brief"
+)
+check(
+	same(Agent.first_argv("agent-1", "/home/dev"), { "omp", "--session-dir", "/home/dev/.omp/deck/agent-1" }),
+	"a first start without a brief opens an idle omp"
+)
+check(Agent.first_argv("a b", "/home/dev", "/abs/brief.md") == nil, "an unsafe id is refused at first start")
+check(Agent.first_argv("", "/home/dev") == nil, "an empty id is refused at first start")
+check(Agent.first_argv("../kv", "/home/dev") == nil, "a traversing id is refused at first start")
+for _, home in { "", "/", "home/dev", "~", "/home/dev/", "/home/my dev", "/home/../dev", "/home/-dev", "/home//dev" } do
+	check(Agent.first_argv("agent-1", home) == nil, "an unsafe home is refused at first start: " .. home)
+end
+check(Agent.first_argv("agent-1", "/home/dev", "brief.md") == nil, "a relative brief is refused at first start")
+check(Agent.first_argv("agent-1", "/home/dev", "/abs/my brief.md") == nil, "a spaced brief is refused at first start")
+check(Agent.first_argv("agent-1", "/home/dev", "") == nil, "an empty brief is refused at first start")
+
+-- A reopened first start keeps its deck folder and drops its brief, which omp refuses beside --restore and which must
+-- never be sent twice. The fixture is the `-c` line Tern's spawn hook saw for a `tern new tab … -- <first_argv>`.
+local FIRST_DECK = "omp --session-dir /home/dev/.omp/deck/agent-1"
+local FIRST_START = FIRST_DECK .. " @/abs/brief.md"
+check(Agent.reopen_command(FIRST_START) == FIRST_DECK, "a reopened first start drops its brief")
+check(Agent.reopen_command(FIRST_DECK) == FIRST_DECK, "a reopened first start without a brief keeps its line")
+check(
+	Agent.reopen_command(FIRST_DECK .. " '@/abs/brief.md'") == FIRST_DECK,
+	"a single-quoted brief is dropped on reopen"
+)
+check(
+	Agent.reopen_command(FIRST_DECK .. ' "@/abs/brief.md"') == FIRST_DECK,
+	"a double-quoted brief is dropped on reopen"
+)
+check(
+	Agent.reopen_command("omp --session-dir /srv/users/dev-2/.omp/deck/agent_9 @/tmp/run/brief.md")
+		== "omp --session-dir /srv/users/dev-2/.omp/deck/agent_9",
+	"a first start under another home reopens in its own deck folder"
+)
+local first_line = table.concat(Agent.first_argv("agent-1", "/home/dev", "/abs/brief.md") :: { string }, " ")
+check(Agent.reopen_command(first_line) == FIRST_DECK, "first_argv's own line reopens without its brief")
+for _, line in
+	{
+		FIRST_START .. " ",
+		FIRST_START .. " @/abs/other.md",
+		FIRST_START .. " --model x",
+		FIRST_DECK .. " --model x",
+		FIRST_DECK .. "  @/abs/brief.md",
+		FIRST_DECK .. " @@/abs/brief.md",
+		FIRST_DECK .. " @brief.md",
+		FIRST_DECK .. " @/abs/my brief.md",
+		FIRST_DECK .. " '@/abs/my brief.md'",
+		FIRST_DECK .. " '@/abs/brief.md\"",
+		FIRST_DECK .. " '@/abs/brief.md",
+		FIRST_DECK .. " '/abs/brief.md'",
+		FIRST_DECK .. " /abs/brief.md",
+		FIRST_DECK .. " @/abs/../brief.md",
+		"omp --continue --session-dir /home/dev/.omp/deck/agent-1",
+		"omp --continue --session-dir /home/dev/.omp/deck/agent-1 @/abs/brief.md",
+		"omp --session-dir /home/dev/.omp/deck/a;b @/abs/brief.md",
+		"omp --session-dir /home/dev/.omp/deck/ @/abs/brief.md",
+		"omp --session-dir /home/dev/.omp/other/agent-1 @/abs/brief.md",
+		"omp --session-dir /home/dev/.omp/deck/agent-1/ @/abs/brief.md",
+		"omp --session-dir /home/../.omp/deck/agent-1 @/abs/brief.md",
+		"omp --session-dir home/dev/.omp/deck/agent-1 @/abs/brief.md",
+		"omp --session-dir ~/.omp/deck/agent-1 @/abs/brief.md",
+		"omp --session-dir  /home/dev/.omp/deck/agent-1",
+		"omp --session-dir",
+		"omp --session-dir ",
+		"sandbox -k " .. FIRST_START,
+		" " .. FIRST_START,
+	}
+do
+	check(Agent.reopen_command(line) == nil, "a line Jumpr did not write is left alone: " .. line)
+end
+
 -- Kind, id and resumed-session shell syntax is refused instead of entering a command.
 local UNSAFE = { "a b", "a;b", "a$b", "a/b" }
 for _, value in UNSAFE do

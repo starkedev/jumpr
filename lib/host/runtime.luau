@@ -21,6 +21,7 @@ local protocol = require("../shared/protocol")
 local queue = require("./queue")
 local requests = require("./requests")
 local sessions = require("./sessions")
+local spool = require("./spool")
 local status = require("../shared/status")
 local store = require("./store")
 local transport = require("./transport")
@@ -50,6 +51,10 @@ local VIBE_EVERY_MS = 5000
 -- A claude or codex agent's Enter is typed this long after its text: written together, its prompt takes both as one
 -- paste and the Enter as a new line (Codex always, Claude past 62 characters), and Codex needs 30 ms between them.
 local ENTER_DELAY_MS = 200
+-- The spool serves at most this many requests a tick; the rest wait for the next.
+local SPOOL_PER_TICK = 4
+-- How many built views `rt.view` keeps before it starts over: one per width of the copies open, and a few to spare.
+local VIEW_CACHE_MAX = 8
 -- What the list needs of the machine and of its copies' blocks: compat in production.
 export type Io = {
 	pane_list: () -> ({ Compat.PaneItem }?, string?),
@@ -66,6 +71,8 @@ export type Io = {
 	fs_write: (path: string, text: string) -> (boolean, string?),
 	fs_list: (path: string) -> ({ string }?, string?),
 	fs_read: (path: string, max_bytes: number?) -> (string?, string?),
+	fs_exists: (path: string) -> (boolean, string?),
+	fs_remove: (path: string) -> (boolean, string?),
 	run_status: (argv: { string }, cb: (status: number?) -> ()) -> (boolean, string?),
 	run_output: (argv: { string }, cb: (stdout: string?) -> ()) -> (boolean, string?),
 	home: () -> string?,
@@ -110,6 +117,7 @@ export type Runtime = {
 		fields: { [string]: string }
 	) -> (boolean, string?),
 	frame: (blk: Copy, cx: BlockCx) -> view.Frame,
+	view: (blk: Copy, cx: BlockCx) -> BlockView,
 	title: () -> string?,
 	settings: () -> store.Settings,
 	readonly: () -> boolean,
@@ -828,6 +836,213 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 		end)
 	end
 
+	-- The spool (lib/host/spool.luau): a script on this machine asks for an omp agent with a file
+	-- `requests/<rid>.req` in the plugin's data folder and reads its answer from `replies/<rid>.reply`. The rid is the
+	-- file's name, never its body. `spool_seen` holds the leftover files the last hourly sweep saw; `spool_dirty` says
+	-- the deck changed in this tick's spool step, kept outside it so a step that raises after a commit still renders.
+	-- `spool_logged` holds the request names already logged as stuck (a bad name or a remove that failed), so one
+	-- that stays is logged once, not every tick.
+	local spool_seen: { [string]: true } = {}
+	local spool_dirty = false
+	local spool_logged: { [string]: true } = {}
+
+	-- `text` as one line: a reply value may hold no control byte.
+	local function one_line(text: string): string
+		local flat = string.gsub(text, "%c+", " ")
+		return (string.gsub(flat, "^%s*(.-)%s*$", "%1"))
+	end
+
+	local function write_reply(rid: string, text: string)
+		local path = compat.data_dir() .. "/replies/" .. rid .. ".reply"
+		local ok, err = compat.fs_write(path, text)
+		if not ok then
+			transport.note_error(link, "spool: reply " .. rid .. " not written: " .. tostring(err))
+		end
+	end
+
+	local function refuse(rid: string, why: string)
+		write_reply(rid, spool.reply({ ok = "0", error = one_line(why) }))
+	end
+
+	-- Serves request `rid`, already read (`text`) and removed: every refusal comes before the deck is committed, and a
+	-- deck kv did not take is rolled back in memory and refused, so the script starts nothing (as `o` types nothing).
+	-- On success the reply carries everything the script needs to open the agent's tab.
+	local function serve(rid: string, text: string)
+		local d = ensure()
+		local host = model.host_label(d)
+		if readonly then
+			return refuse(rid, "the Jumpr list on " .. host .. " is read-only")
+		end
+		local session = d.session.name
+		if session == nil or session == "" then
+			return refuse(rid, "open the Jumpr list on this machine once, then retry")
+		end
+		local home = compat.home()
+		if home == nil then
+			return refuse(rid, "no home folder on " .. host)
+		end
+		local req, parse_err = spool.parse(text, rid, wall())
+		if req == nil then
+			return refuse(rid, parse_err or "bad request")
+		end
+		-- Existence only. The command has already checked the file is a non-empty regular file, and omp reports a
+		-- folder itself. A bounded read would refuse a symlinked brief, so this does not read it and does not list it.
+		if not compat.fs_exists(req.prompt_file) then
+			return refuse(rid, "prompt file not found on " .. host .. ": " .. req.prompt_file)
+		end
+		local placed, place_err = spool.place(d, req, wall(), rand, function(path: string): boolean
+			return (compat.is_dir(path))
+		end)
+		if placed == nil then
+			return refuse(rid, place_err or "agent not placed")
+		end
+		local argv = Agent.first_argv(placed.id, home, req.prompt_file)
+		if argv == nil then
+			return refuse(rid, "the home folder " .. home .. " cannot be used in a start line")
+		end
+		local fields: { [string]: string } = {
+			ok = "1",
+			id = placed.id,
+			gid = placed.gid,
+			session = session,
+			cwd = placed.deck.agents[placed.id].cwd,
+		}
+		if req.label ~= nil then
+			fields.label = req.label
+		end
+		-- Rendered before the commit: a value it cannot carry (a control byte in the session name or folder) refuses
+		-- the request with nothing stored, rather than leaving a pending record no script will start.
+		local rendered, reply = pcall(spool.reply :: (any, any) -> ...any, fields, argv)
+		if not rendered then
+			-- The assert's text, without the "file:line: " Luau puts before it.
+			local why = string.gsub(tostring(reply), "^[^\n]-:%d+: ", "")
+			return refuse(rid, "the reply could not be rendered: " .. why)
+		end
+		commit(placed.deck)
+		spool_dirty = true
+		local unsaved = save_error
+		if unsaved ~= nil then
+			deck = d
+			touch()
+			return refuse(rid, unsaved)
+		end
+		write_reply(rid, reply)
+	end
+
+	-- The hourly sweep: replies no script collected and half-written files, removed once two sweeps in a row see
+	-- them (Tern gives no file times). A folder is never removed, whatever its name. `is_dir` stays on this pass:
+	-- it runs once an hour, and removing first would delete a directory (Tern removes one recursively).
+	local function sweep_spool()
+		local dir = compat.data_dir()
+		local seen: { [string]: true } = {}
+		local function sweep(folder: string, suffixes: { string })
+			local listed: { string } = compat.fs_list(dir .. folder) or {}
+			for _, name in listed do
+				for _, suffix in suffixes do
+					if string.sub(name, -#suffix) == suffix then
+						local path = dir .. folder .. "/" .. name
+						if not compat.is_dir(path) and not (spool_seen[path] and compat.fs_remove(path)) then
+							seen[path] = true
+						end
+						break
+					end
+				end
+			end
+		end
+		sweep("/replies", { ".reply", ".tmp" })
+		sweep("/requests", { ".tmp" })
+		spool_seen = seen
+	end
+
+	-- One tick of the spool: the hourly sweep when `hourly`, then the requests in name order until SPOOL_PER_TICK
+	-- have been served (read and removed); the rest wait for the next tick. A request is acted on only once its file
+	-- is removed, so a remove that fails leaves it for the next tick and none is served twice. A bad file name is
+	-- removed and logged with no reply: a path is never built from it. A folder is never removed. Entries that stay
+	-- (a folder, a bad name or a request that cannot be removed) do not count against the limit, so they never hold
+	-- back the requests after them, and each is logged once while it stays.
+	local function poll_spool(hourly: boolean)
+		spool_dirty = false
+		if hourly then
+			sweep_spool()
+		end
+		local dir = compat.data_dir() .. "/requests"
+		local names: { string } = {}
+		local listed: { string } = compat.fs_list(dir) or {}
+		local present: { [string]: true } = {}
+		for _, name in listed do
+			if string.sub(name, -4) == ".req" then
+				table.insert(names, name)
+				present[name] = true
+			end
+		end
+		for name in spool_logged do
+			if not present[name] then
+				spool_logged[name] = nil
+			end
+		end
+		-- True the first time `name` is found stuck while it stays.
+		local function first(name: string): boolean
+			if spool_logged[name] then
+				return false
+			end
+			spool_logged[name] = true
+			return true
+		end
+		table.sort(names)
+		local served = 0
+		for _, name in names do
+			if served >= SPOOL_PER_TICK then
+				break
+			end
+			local rid = string.sub(name, 1, -5)
+			local path = dir .. "/" .. name
+			-- Read first. A normal file is never listed (`tern.fs.list` raises on a file and logs a stack trace), so
+			-- `is_dir` is asked only when the read fails, or when it returns empty text: Tern's API offers no
+			-- non-throwing directory test, and if a directory ever read as text it could not carry a request (no
+			-- `end`), so empty text is the only success that could be one. `tern.fs.remove` is recursive, so a folder
+			-- must never reach it. A folder is left and logged once; a real read error is refused below.
+			local text, read_err = compat.fs_read(path, spool.MAX_BYTES + 1)
+			local suspect = (text == nil and read_err ~= nil) or text == ""
+			if suspect and compat.is_dir(path) then
+				if first(name) then
+					compat.log_warn("jumpr: spool: a folder in the requests folder is left alone: " .. one_line(name))
+				end
+			elseif not identity.valid_id(rid) then
+				local removed, remove_err = compat.fs_remove(path)
+				if removed then
+					compat.log_warn("jumpr: spool: removed a request with a bad name: " .. one_line(name))
+				elseif first(name) then
+					compat.log_warn(
+						"jumpr: spool: a request with a bad name was not removed: "
+							.. one_line(name)
+							.. ": "
+							.. tostring(remove_err)
+					)
+				end
+			else
+				-- Neither text nor error: the script took its request back.
+				if text ~= nil or read_err ~= nil then
+					local removed, remove_err = compat.fs_remove(path)
+					if not removed then
+						if first(name) then
+							transport.note_error(
+								link,
+								"spool: request " .. rid .. " not removed: " .. tostring(remove_err)
+							)
+						end
+					else
+						served += 1
+						if text == nil then
+							refuse(rid, "request could not be read: " .. tostring(read_err))
+						else
+							serve(rid, text)
+						end
+					end
+				end
+			end
+		end
+	end
+
 	local function step()
 		touch()
 		local now, w = compat.now(), wall()
@@ -845,11 +1060,20 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 			transport.note_error(link, line)
 		end
 		d = bind.expire_starts(binding, expired, w)
-		if now - last_gc >= GC_EVERY_MS then
+		local hourly = now - last_gc >= GC_EVERY_MS
+		if hourly then
 			last_gc = now
 			d = store.gc(d, w)
 		end
 		local changed = commit(d) or unvibed
+		-- A script's request is served with or without a copy open; a fault in it never stops the rest of the tick.
+		local spooled, spool_err = pcall(poll_spool :: (boolean) -> ...any, hourly)
+		if not spooled then
+			transport.note_error(link, "spool: " .. tostring(spool_err))
+		end
+		if spool_dirty then
+			changed = true
+		end
 		for _, b in bind.take_blocked(binding) do
 			table.insert(
 				notices,
@@ -962,6 +1186,33 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 		blk.shown = view.clock_key(f)
 		sync_reveal(blk, f)
 		return f
+	end
+
+	-- The views built lately, by the signature of the frame each was built from. Tern renders a copy after every
+	-- window message it hears, several a second, and the copies render back to back: rebuilding unchanged nodes each
+	-- time held the host worker long enough for a spawn or reopen filter behind it to miss its 50 ms. Copies of one
+	-- width show the same frame and share an entry; copies of other widths (zen, a resized
+	-- pane) keep their own, so they never evict each other. Emptied once it holds VIEW_CACHE_MAX, since an entry
+	-- whose frame has moved on is never asked for again.
+	local built: { [string]: BlockView } = {}
+	local built_n = 0
+
+	-- What a copy shows now as nodes (the block's `view`): a view built earlier for an equal frame when there is one.
+	function rt.view(blk: Copy, cx: BlockCx): BlockView
+		local f = rt.frame(blk, cx)
+		local sig = view.signature(f)
+		local hit = built[sig]
+		if hit ~= nil then
+			return hit
+		end
+		if built_n >= VIEW_CACHE_MAX then
+			table.clear(built)
+			built_n = 0
+		end
+		local v = view.view(f)
+		built[sig] = v
+		built_n += 1
+		return v
 	end
 
 	-- The copies' title: the host the list is for.

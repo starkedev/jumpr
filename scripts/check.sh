@@ -219,6 +219,213 @@ else
 	echo "note: fish is not on PATH, so the line was not run through fish"
 fi
 
+echo "==> jumpr-add"
+# bin/jumpr-add runs against a fake `tern` first on PATH, which records its arguments and answers `--json` the way
+# Tern does (pretty-printed). Its request goes through the real Spool.parse and its reply is the one the real
+# Spool.reply renders, as the host half would write it, so the script and the host can't drift apart.
+sh -n bin/jumpr-add
+if rg -n kv bin/jumpr-add; then
+	echo "check: bin/jumpr-add mentions kv; only the host half writes Jumpr's state" >&2
+	exit 1
+fi
+cli="$tmp/cli"
+cli_id=ab2cd3ef
+mkdir -p "$cli/bin" "$cli/lib" "$cli/data" "$cli/work"
+cp -R lib/. "$cli/lib"
+cat >"$cli/spool.luau" <<'EOF'
+local Agent = require("./lib/shared/agent")
+local Spool = require("./lib/host/spool")
+local text, rid, now, mode, id, group = ...
+local req, err = Spool.parse(text, rid, tonumber(now))
+if req == nil then
+	error("Spool.parse refused the request: " .. tostring(err))
+end
+if req.group ~= group then
+	error("Spool.parse read group " .. req.group .. ", want " .. group)
+end
+if mode == "refuse" then
+	print(Spool.reply({ ok = "0", error = "group is being deleted" }))
+else
+	local argv = Agent.first_argv(id, "/home/dev", req.prompt_file)
+	if argv == nil then
+		error("Agent.first_argv refused " .. req.prompt_file)
+	end
+	print(Spool.reply({ ok = "1", id = id, gid = "g1", session = "deck", cwd = req.cwd, label = req.label }, argv))
+end
+EOF
+cat >"$cli/bin/tern" <<'EOF'
+#!/bin/sh
+printf '[%s]' "$@" >>"${0%/bin/tern}/calls"
+echo >>"${0%/bin/tern}/calls"
+if [ "$1" = new ]; then
+	# A `tern-fails` file beside bin/ makes `new` fail the way Tern does when it cannot open the tab.
+	if [ -e "${0%/bin/tern}/tern-fails" ]; then
+		echo 'error: no session named deck'
+		exit 3
+	fi
+	printf '{\n  "session": 1,\n  "tab": 42,\n  "block": 4242\n}\n'
+fi
+EOF
+chmod +x "$cli/bin/tern"
+printf 'Sweep the logs.\n' >"$cli/work/brief.md"
+cli_fail() {
+	echo "check: bin/jumpr-add $1" >&2
+	if [ "$#" -ge 3 ]; then
+		printf 'want: %q\ngot:  %q\n' "$2" "$3" >&2
+	fi
+	exit 1
+}
+# Runs bin/jumpr-add in the background from $cli/work, with the fake tern and the temp data folder; the subshell
+# execs it, so $cli_pid is the script itself.
+cli_start() {
+	: >"$cli/calls"
+	(cd "$cli/work" && PATH="$cli/bin:$PATH" JUMPR_DATA="$cli/data" exec "$root/bin/jumpr-add" "$@") >"$cli/out" 2>"$cli/err" &
+	cli_pid=$!
+}
+cli_finish() {
+	cli_status=0
+	wait "$cli_pid" || cli_status=$?
+}
+# The rid of the request the script wrote, once it is there.
+cli_request() {
+	local req
+	for _ in $(seq 1 50); do
+		for req in "$cli/data/requests"/*.req; do
+			if [ -f "$req" ]; then
+				basename "$req" .req
+				return 0
+			fi
+		done
+		sleep 0.1
+	done
+	kill "$cli_pid" 2>/dev/null || true
+	cli_fail "wrote no request"
+}
+# Takes request $1 as the host half does (read it, then remove it) and renders its reply ($2: ok or refuse) into
+# cli_reply.
+cli_take() {
+	local rid="$1" text
+	text="$(cat "$cli/data/requests/$rid.req" && printf x)"
+	text="${text%x}"
+	rm "$cli/data/requests/$rid.req"
+	if ! cli_reply="$(luau "$cli/spool.luau" -a "$text" "$rid" "$(($(date +%s) * 1000))" "$2" "$cli_id" ops)"; then
+		kill "$cli_pid" 2>/dev/null || true
+		cli_fail "wrote a request the host refuses: $text"
+	fi
+}
+# Serves request $1 as the host half does: take it, then write the whole reply at once ($2: ok or refuse).
+cli_answer() {
+	cli_take "$1" "$2"
+	printf '%s\n' "$cli_reply" >"$cli/data/replies/$1.tmp"
+	mv "$cli/data/replies/$1.tmp" "$cli/data/replies/$1.reply"
+}
+cli_expect() {
+	if [ "$2" != "$3" ]; then
+		cli_fail "$1" "$2" "$3"
+	fi
+}
+
+# Started: the folder and prompt file made absolute, the group and label trimmed, the tab opened and named.
+cli_start --group " ops " --cwd . --prompt-file brief.md --label "  nightly sweep " --timeout 10
+rid="$(cli_request)"
+cli_answer "$rid" ok
+cli_finish
+cli_expect "exited wrong when started" "0" "$cli_status"
+cli_expect "printed wrong when started" "started $cli_id" "$(cat "$cli/out")"
+cli_expect "ran tern wrong" \
+	"$(printf '[new][tab][deck][--json][--cwd][%s][--][omp][--session-dir][/home/dev/.omp/deck/%s][@%s]\n[rename][4242][nightly sweep]' "$cli/work" "$cli_id" "$cli/work/brief.md")" \
+	"$(cat "$cli/calls")"
+if [ -e "$cli/data/replies/$rid.reply" ]; then
+	cli_fail "left its reply behind"
+fi
+
+# Refused: the host's error, exit 1, no tab. A --timeout of 08 is eight seconds, not a bad octal number.
+cli_start --group ops --prompt-file brief.md --timeout 08
+rid="$(cli_request)"
+cli_answer "$rid" refuse
+cli_finish
+cli_expect "exited wrong when refused" "1" "$cli_status"
+cli_expect "printed wrong when refused" "jumpr-add: group is being deleted" "$(cat "$cli/err")"
+cli_expect "ran tern when refused" "" "$(cat "$cli/calls")"
+if [ -e "$cli/data/replies/$rid.reply" ]; then
+	cli_fail "left a refusal behind"
+fi
+
+# No answer: exit 2, and the request is taken back so the host never serves it late.
+cli_start --group ops --prompt-file brief.md --timeout 1
+cli_finish
+cli_expect "exited wrong with no answer" "2" "$cli_status"
+cli_expect "printed wrong with no answer" \
+	"jumpr-add: Jumpr didn't answer — is the Tern daemon running with Jumpr installed?" "$(cat "$cli/err")"
+cli_expect "left its request behind" "" "$(ls -A "$cli/data/requests")"
+cli_expect "ran tern with no answer" "" "$(cat "$cli/calls")"
+
+# Stopped while waiting: the TERM exit code, and the request taken back.
+cli_start --group ops --prompt-file brief.md --timeout 10
+rid="$(cli_request)"
+kill -TERM "$cli_pid"
+cli_finish
+cli_expect "exited wrong when stopped" "143" "$cli_status"
+cli_expect "left its request behind when stopped" "" "$(ls -A "$cli/data/requests")"
+cli_expect "ran tern when stopped" "" "$(cat "$cli/calls")"
+
+# The tab fails to open: Tern's words, exit 1 naming the agent, and no rename.
+touch "$cli/tern-fails"
+cli_start --group ops --cwd . --prompt-file brief.md --label sweep --timeout 10
+rid="$(cli_request)"
+cli_answer "$rid" ok
+cli_finish
+rm "$cli/tern-fails"
+cli_expect "exited wrong when the tab failed" "1" "$cli_status"
+cli_expect "printed wrong when the tab failed" \
+	"$(printf 'error: no session named deck\njumpr-add: tern new tab failed (exit 3); agent %s shows as a failed start in the list' "$cli_id")" \
+	"$(cat "$cli/err")"
+if [[ "$(cat "$cli/calls")" == *"[rename]"* ]]; then
+	cli_fail "named a tab that failed to open"
+fi
+
+# A reply still being written (no `end` yet) is not read: nothing runs until the host finishes it.
+cli_start --group ops --cwd . --prompt-file brief.md --timeout 10
+rid="$(cli_request)"
+cli_take "$rid" ok
+if [[ "$cli_reply" != *$'\n'end ]]; then
+	kill "$cli_pid" 2>/dev/null || true
+	cli_fail "test fixture: the rendered reply does not end with an end line: $cli_reply"
+fi
+printf '%s' "${cli_reply%end}" >"$cli/data/replies/$rid.reply"
+sleep 1
+cli_expect "ran tern before the reply was whole" "" "$(cat "$cli/calls")"
+if ! kill -0 "$cli_pid" 2>/dev/null; then
+	cli_finish
+	cli_fail "stopped before the reply was whole (exit $cli_status): $(cat "$cli/err")"
+fi
+printf 'end\n' >>"$cli/data/replies/$rid.reply"
+cli_finish
+cli_expect "exited wrong once the reply was whole" "0" "$cli_status"
+cli_expect "printed wrong once the reply was whole" "started $cli_id" "$(cat "$cli/out")"
+cli_expect "ran tern wrong once the reply was whole" \
+	"$(printf '[new][tab][deck][--json][--cwd][%s][--][omp][--session-dir][/home/dev/.omp/deck/%s][@%s]' "$cli/work" "$cli_id" "$cli/work/brief.md")" \
+	"$(cat "$cli/calls")"
+
+# The host took the request but never answered: exit 2 after the grace wait, saying so.
+cli_start --group ops --prompt-file brief.md --timeout 1
+rid="$(cli_request)"
+rm "$cli/data/requests/$rid.req"
+cli_finish
+cli_expect "exited wrong when taken but not answered" "2" "$cli_status"
+cli_expect "printed wrong when taken but not answered" \
+	"jumpr-add: Jumpr took the request but didn't answer — is the Tern daemon still running?" "$(cat "$cli/err")"
+cli_expect "ran tern when taken but not answered" "" "$(cat "$cli/calls")"
+
+# No data folder: Jumpr has never run here, so exit 2 before writing anything.
+cli_status=0
+PATH="$cli/bin:$PATH" JUMPR_DATA="$cli/nowhere" bin/jumpr-add --group ops --prompt-file "$cli/work/brief.md" \
+	2>/dev/null || cli_status=$?
+cli_expect "exited wrong with no data folder" "2" "$cli_status"
+if [ -e "$cli/nowhere" ]; then
+	cli_fail "made a data folder that was missing"
+fi
+
 echo "==> types"
 if [ ! -f tern.d.luau ]; then
 	if ! command -v tern >/dev/null 2>&1; then

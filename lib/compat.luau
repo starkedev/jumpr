@@ -716,6 +716,25 @@ function M.is_dir(path: string): (boolean, string?)
 	return found == true, err
 end
 
+-- Whether `path` exists on this machine (`tern.fs.exists`). False, with the error, when the check itself fails.
+function M.fs_exists(path: string): (boolean, string?)
+	local found, err = call(function(): boolean
+		return tern.fs.exists(path)
+	end)
+	return found == true, err
+end
+
+-- Removes a file (`tern.fs.remove`): true, or false and why (no permission). A path that does not exist is false
+-- with "not found", checked here rather than left to whether Tern raises for it.
+function M.fs_remove(path: string): (boolean, string?)
+	return act(function()
+		if not tern.fs.exists(path) then
+			error("not found: " .. path, 0)
+		end
+		tern.fs.remove(path)
+	end)
+end
+
 -- The user's home directory (`tern.getenv("HOME")`); nil unless that value is an absolute path.
 function M.home(): string?
 	local value = call(function(): string?

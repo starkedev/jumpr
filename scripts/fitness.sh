@@ -83,7 +83,7 @@ resolve() {
 
 is_pure() {
 	case "$1" in
-	lib/shared/* | lib/harness.luau | lib/host/model.luau | lib/host/keys.luau | lib/host/keymap.luau | lib/host/queue.luau | lib/host/settings.luau | lib/window/chords.luau) return 0 ;;
+	lib/shared/* | lib/harness.luau | lib/host/model.luau | lib/host/keys.luau | lib/host/keymap.luau | lib/host/queue.luau | lib/host/settings.luau | lib/host/spool.luau | lib/window/chords.luau) return 0 ;;
 	esac
 	return 1
 }
@@ -125,7 +125,7 @@ report_lines "P3 (one seam to Tern: only lib/compat.luau calls cx or tern.pane/k
 pure=()
 while IFS= read -r p; do
 	pure+=("$p")
-done < <(present lib/shared lib/harness.luau lib/host/model.luau lib/host/keys.luau lib/host/keymap.luau lib/host/queue.luau lib/host/settings.luau lib/window/chords.luau)
+done < <(present lib/shared lib/harness.luau lib/host/model.luau lib/host/keys.luau lib/host/keymap.luau lib/host/queue.luau lib/host/settings.luau lib/host/spool.luau lib/window/chords.luau)
 if [ "${#pure[@]}" -gt 0 ]; then
 	rc=0
 	out=$(luau-lsp analyze --platform=standard "${pure[@]}" 2>&1) || rc=$?

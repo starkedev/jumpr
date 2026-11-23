@@ -20,15 +20,19 @@ local MODES: { [string]: boolean } = {
 	["continue"] = true,
 	pick = true,
 }
+-- Tern's ACP chat shows the agent's name as its title until the conversation has one: `Antigravity` is the name the
+-- README's custom agent entry gives `agy`.
 local DEFAULT_TITLES: { [string]: boolean } = {
 	omp = true,
 	["Claude Code"] = true,
 	Codex = true,
 	["GitHub Copilot"] = true,
+	Antigravity = true,
 }
 
--- The agents Jumpr offers by name, in the settings page's Default agent menu and the `N` picker.
-local COMMON: { string } = { M.OMP, M.CLAUDE, M.CODEX, "copilot" }
+-- The agents Jumpr offers by name, in the settings page's Default agent menu and the `N` picker. `agy` (Antigravity
+-- CLI's `agy acp`) is no Tern built-in: it starts once the machine's Tern settings name it as a custom agent.
+local COMMON: { string } = { M.OMP, M.CLAUDE, M.CODEX, "copilot", "agy" }
 
 -- True when the kind is 1 to 32 characters, starts alphanumeric and contains only alphanumerics, `_` or `-`.
 function M.valid_kind(kind: string): boolean

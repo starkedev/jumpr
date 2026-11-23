@@ -2143,7 +2143,7 @@ do
 	check(b.ui.mode == "pick" and b.ui.purpose == "kind", "N opens the agent picker")
 	check(b.ui.pick == "codex", "on the default agent")
 	check(
-		b.ui.kinds ~= nil and table.concat(b.ui.kinds, ",") == "omp,claude,codex,copilot",
+		b.ui.kinds ~= nil and table.concat(b.ui.kinds, ",") == "omp,claude,codex,copilot,agy",
 		"offering the agents the settings page offers"
 	)
 	check(#b.effects == 1 and b.effects[1].kind == "render" and b.deck.agents.abcdefgh == nil, "nothing starts yet")
@@ -2182,7 +2182,7 @@ do
 	-- A default agent outside the common ones is offered last, highlighted.
 	b.deck.settings.agent = "gemini"
 	char(b, "N")
-	check(b.ui.kinds ~= nil and b.ui.kinds[5] == "gemini" and b.ui.pick == "gemini", "a custom default is offered")
+	check(b.ui.kinds ~= nil and b.ui.kinds[6] == "gemini" and b.ui.pick == "gemini", "a custom default is offered")
 end
 
 -- N with no group yet runs the g flow first, then starts the picked agent there.

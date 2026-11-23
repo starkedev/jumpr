@@ -6,6 +6,13 @@ Update with `tern plugin install github.com/starkedev/jumpr --force` on each mac
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-11-24
+
+### Added
+
+- `agy`, Google's Antigravity CLI, is offered in the `N` picker and the settings page's Default agent menu.
+  It runs through Tern's ACP chat with Antigravity's own `agy acp`, on your `agy` sign-in, once the machine's Tern settings name it as a custom agent (README, Requirements).
+
 ## [0.3.6] - 2026-11-23
 
 ### Added
@@ -301,7 +308,8 @@ Tested on Tern 0.9.10 and 0.9.11.
 - Every message between the halves carries a protocol version, and a mismatch shows a banner naming the machine to update.
 - `scripts/check.sh` runs stylua, the unit suites, a strict `luau-lsp` type check and design-rule checks.
 
-[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.3.6...HEAD
+[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.3.7...HEAD
+[0.3.7]: https://github.com/starkedev/jumpr/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/starkedev/jumpr/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/starkedev/jumpr/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/starkedev/jumpr/compare/v0.3.3...v0.3.4

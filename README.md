@@ -31,12 +31,20 @@ Start omp, Claude Code, Codex or any agent Tern's ACP chat runs, and change the 
 - `claude` (Claude Code) and `codex` (Codex CLI) on the login shell's `PATH` of every machine that runs Claude or Codex agents.
   Jumpr runs these two CLIs themselves in the agent's tab, not through Tern's ACP chat, so they need no ACP adapter.
 - Any other agent is started through Tern's ACP chat, so the machine that runs agents needs the CLI and ACP adapter that chat starts.
+- For `agy` (Google's Antigravity CLI, through its own ACP server `agy acp`): `agy` on that machine, signed in once by running `agy`, and a custom agent with the id `agy` in that machine's Tern settings (`~/.config/tern/settings.json`), which Tern has no built-in entry for:
+
+  ```json
+  { "agents": { "custom": [ { "id": "agy", "name": "Antigravity", "command": "agy", "args": ["acp"] } ] } }
+  ```
+
+  Merge it into the file's existing `agents` section; with another id or name, pick that id in Jumpr instead, and the row shows the name as its label until the conversation has a title.
+  Google documents `agy acp` for editors and other ACP clients, and it uses the sign-in and subscription of your `agy`.
 - `git` on every machine you install Jumpr on, since `tern plugin install` clones the repository with it.
 - For starting agents from a script with `jumpr-add` (see [Start an agent from a script](#start-an-agent-from-a-script)): a POSIX `sh` and `tern` on that script's `PATH`, on the machine that runs the agents; tried on Tern 0.9.29.
 - Jumpr updated together on the machine showing your Tern window and the machine running your agents (see [Install](#install)).
 - macOS or Linux; Windows is untested.
 
-The default agent is omp; the settings page changes it to `claude`, `codex` or any agent Tern's ACP chat runs, such as `copilot`.
+The default agent is omp; the settings page changes it to `claude`, `codex` or any agent Tern's ACP chat runs, such as `copilot` or `agy`.
 
 ## Install
 
@@ -75,7 +83,7 @@ The window's half and the agents' half check each other's protocol version, and 
 4. Press `n` on the group to start an agent in that folder, in a new tab.
 
 `n` starts the machine's default agent, which is omp until you change it.
-To start another agent just this once, press `N` instead: it opens a picker of agents (omp, `claude`, `codex`, `copilot`, and your default agent if it is none of them), starting on the default; `j`/`k` move, Enter starts the highlighted one in the selected group, and Esc leaves.
+To start another agent just this once, press `N` instead: it opens a picker of agents (omp, `claude`, `codex`, `copilot`, `agy`, and your default agent if it is none of them), starting on the default; `j`/`k` move, Enter starts the highlighted one in the selected group, and Esc leaves.
 To change what `n` starts, press `,` in the list to open the settings page and set the default agent (see [Settings](#settings)); `claude`, `codex` or any agent Tern's ACP chat runs can be the default.
 
 Only agents started from Jumpr are listed: with `n` or `N`, or from a script with `jumpr-add` (see [Start an agent from a script](#start-an-agent-from-a-script)).
@@ -482,7 +490,7 @@ Delete that folder by hand to start fresh.
   Two Codex agents Jumpr starts in one folder at about the same time cannot be told apart: neither conversation is found, and both restart through Codex's picker.
 - On macOS, the Codex search after a picker restart reads file times with BSD `stat`, which is untested.
 - For any agent other than omp, Claude Code and Codex, Enter on an exited agent continues the last conversation of its kind in that folder when Jumpr can prove that is safe, and opens Tern's conversation picker otherwise.
-- Only Claude Code has been tried through the ACP path, before it moved to its own CLI; `copilot` and custom agent ids take that route but are unobserved.
+- Only Claude Code has been tried through the ACP path, before it moved to its own CLI; `copilot` and custom agent ids take that route but are unobserved, apart from `agy`, whose start, continue, resume and conversation-picker lines were tried in Tern by hand, not yet from Jumpr's list.
 - `vibing` rests on the records omp 18.20 writes to its session file.
   An omp that writes them differently is never shown as vibing, and its row reads as Tern reports it.
   A worker's turn cut off by a crash leaves no end record: if Jumpr did not see the agent start again (it was loaded later), that row can read `vibing` until that worker's next turn settles or until the agent leaves `/vibe`.

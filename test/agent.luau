@@ -394,7 +394,7 @@ check(Agent.name("claude") == "claude", "a CLI kind is its default name")
 check(Agent.name("my-agent") == "my-agent", "a custom ACP kind keeps its exact spelling")
 
 -- Only exact built-in titles are recognised as defaults.
-for _, title in { "omp", "Claude Code", "Codex", "GitHub Copilot" } do
+for _, title in { "omp", "Claude Code", "Codex", "GitHub Copilot", "Antigravity" } do
 	check(Agent.is_default_title(title), title .. " is a default title")
 end
 check(not Agent.is_default_title("omp 2"), "a numbered omp title is not a default title")

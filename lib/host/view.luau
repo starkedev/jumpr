@@ -297,9 +297,12 @@ function M.signature(f: Frame): string
 end
 
 -- The word and role of the pill on an agent's first line: its record state when that says more than the status does,
--- then `vibing` for a running omp agent one of whose vibe workers has a turn running, coloured as running.
+-- then `vibing` for a running omp agent one of whose vibe workers has a turn running, coloured as running. An ended
+-- agent a window still reports running (`runs`) shows that status, not its record state.
 function M.pill(row: model.Row): (string, string)
-	if row.state == "pending" then
+	if row.runs then
+		-- Its status follows, below.
+	elseif row.state == "pending" then
 		if row.cancel then
 			return "removing", "deck.pending"
 		elseif row.failed then
@@ -336,7 +339,10 @@ function M.meta_parts(f: Frame, row: model.Row, group_cwd: string?): { string }
 	if row.cwd ~= nil and row.cwd ~= group_cwd then
 		table.insert(parts, base(row.cwd))
 	end
-	if row.state == "exited" then
+	if row.runs then
+		table.insert(parts, "still running")
+		table.insert(parts, "⏎ links back")
+	elseif row.state == "exited" then
 		table.insert(parts, "⏎ restarts")
 	elseif row.state == "pending" and row.failed and not row.cancel then
 		table.insert(parts, "⏎ retries")

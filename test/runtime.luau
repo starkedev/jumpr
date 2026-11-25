@@ -1009,6 +1009,8 @@ do
 	stop_answered_not_running("agent-a")
 	m.advance(1000)
 	list.tick()
+	m.advance(Bind.MISSING_GRACE_MS)
+	list.tick()
 	check(stored(m).agents["agent-a"] == nil, "no pane runs it here: the record is removed")
 	check(next(m.files) == nil, "removing it writes or removes no file")
 	m.dirs["/work"] = true
@@ -1798,7 +1800,10 @@ do
 	list.tick()
 	m.panes[21] = nil
 	list.tick()
-	check(stored(m).agents[id].state == "exited", "a missing pane is marked exited")
+	check(stored(m).agents[id].state == "live", "a pane missing from one listing does not end the agent")
+	m.advance(Bind.MISSING_GRACE_MS)
+	list.tick()
+	check(stored(m).agents[id].state == "exited", "a pane missing past the grace is marked exited")
 	check(stored(m).closed[Store.closed_key("claude", "/work")] == nil, "a reconcile does not stamp closed")
 	local fields = restart_fields(list, c, cx, b, m)
 	check(fields ~= nil and fields.mode == "pick" and fields.sid == nil, "Enter after a reconcile requests pick")
@@ -2556,6 +2561,103 @@ do
 	m.advance(hour)
 	list.tick()
 	check(m.files["/data/replies/new.reply"] == nil, "and goes one sweep later")
+end
+
+-- A pane that leaves the pane list for a moment (a plugin reload while the daemon takes its panes over) and comes
+-- back within the grace keeps its agent live and bound.
+do
+	local list, m = list_on(deck())
+	open(list, 101)
+	m.panes[11] = nil
+	list.tick()
+	m.panes[11] = true
+	m.advance(Bind.MISSING_GRACE_MS)
+	list.tick()
+	local r = stored(m).agents["agent-a"]
+	check(r.state == "live" and r.pane == 11, "a pane back within the grace keeps its agent live and bound")
+end
+
+-- The grace clock starts again after a gap with no reconcile (the list was closed): a pane missed once, long ago,
+-- does not end its agent the moment it is missed again.
+do
+	local list, m = list_on(deck())
+	open(list, 101)
+	m.panes[11] = nil
+	list.tick()
+	m.advance(2 * Bind.MISSING_GRACE_MS)
+	list.tick()
+	check(stored(m).agents["agent-a"].state == "live", "a miss after a long gap starts a new grace")
+	m.advance(Bind.MISSING_GRACE_MS)
+	list.tick()
+	check(stored(m).agents["agent-a"].state == "exited", "and ends the agent once that grace runs out")
+end
+
+-- An agent ended while its pane still runs (the window still reports it): Enter links it back to the one unbound
+-- pane with its remembered title and jumps there, and starts no second process. With no such single pane, Enter
+-- still jumps (the window finds its own pane) and starts nothing, and the list says it is not linked.
+do
+	local Keys = require("../lib/host/keys")
+	local TITLE = "Add agy to Jumpr agents"
+	-- `exits`: agent-a starts live on pane 11 and that pane's program exits before the window's (stale) report.
+	local function ended_but_running(
+		titles: { [number]: string },
+		exits: boolean?
+	): (Fake.Machine, View.Frame, Fake.Block)
+		local d = deck()
+		d.agents["agent-a"] = if exits
+			then record(1, { pane = 11, title = TITLE, ran = true })
+			else record(1, { state = "exited", ended_ms = Fake.wall(0), title = TITLE, ran = true })
+		local list, m = list_on(d)
+		m.panes[13] = true
+		local listed = m.compat.pane_list
+		m.compat.pane_list = function(): ({ Compat.PaneItem }?, string?)
+			local panes, err = listed()
+			if panes ~= nil then
+				for _, p in panes do
+					p.title = titles[p.pane] or p.title
+				end
+			end
+			return panes, err
+		end
+		local c, cx, b = open(list, 101)
+		if exits then
+			list.pane_exited({ pane = 11, status = 0 })
+		end
+		local entries = { ["agent-a"] = { { s = "w", src = "agents" } }, ["agent-b"] = { { s = "i", src = "agents" } } }
+		list.event(c, status_action(m, "win1", 1, entries), cx)
+		check(row_of(list.frame(c, cx), "agent-a").runs == true, "an ended agent the window reports running runs")
+		m.dirs["/work"] = true
+		press(list, c, cx, "j")
+		press(list, c, cx, "enter")
+		return m, list.frame(c, cx), b
+	end
+
+	local m, f, b = ended_but_running({ [11] = TITLE, [13] = "Other" })
+	local r = stored(m).agents["agent-a"]
+	check(#requests(b, "start") == 0, "Enter starts no second process")
+	check(r.state == "live" and r.pane == 11, "it links the agent back to the pane with its title")
+	local jumps = requests(b, "jump")
+	check(#jumps == 1 and jumps[1].fields.id == "agent-a", "and jumps to it")
+	check(f.ui.notice == Keys.RELINKED, "the list says it is linked again: " .. tostring(f.ui.notice))
+	check(row_of(f, "agent-a").runs == nil and row_of(f, "agent-a").live, "its row is live again")
+
+	local misses: { [string]: { [number]: string } } = {
+		["no pane has its title"] = { [11] = "Other" },
+		["two panes have it"] = { [11] = TITLE, [13] = TITLE },
+	}
+	for name, titles in misses do
+		local m2, f2, b2 = ended_but_running(titles)
+		check(#requests(b2, "start") == 0, name .. ": Enter starts no second process")
+		check(stored(m2).agents["agent-a"].state == "exited", name .. ": the record stays ended")
+		check(#requests(b2, "jump") == 1, name .. ": Enter still jumps")
+		check(f2.ui.notice == Keys.RELINK_MISSED, name .. ": the list says it is not linked")
+	end
+
+	-- The pane whose program exited stays open with the title, but is never linked back to.
+	local m3, f3, b3 = ended_but_running({ [11] = TITLE, [13] = "Other" }, true)
+	check(#requests(b3, "start") == 0, "an exited pane: Enter starts no second process")
+	check(stored(m3).agents["agent-a"].state == "exited", "an exited pane is never linked back to")
+	check(f3.ui.notice == Keys.RELINK_MISSED, "an exited pane: the list says it is not linked")
 end
 
 print("Runtime: " .. checks .. " checks passed")

@@ -61,6 +61,9 @@ export type Row = {
 	parked: boolean?,
 	vibing: boolean?,
 	priority: boolean?,
+	-- An ended record (`ended`) that a window still reports a running pane for: Enter and `o` link it back to that
+	-- pane instead of starting a second process.
+	runs: boolean?,
 }
 
 local STOP_WINDOW_MS = 60 * 1000
@@ -81,6 +84,24 @@ end
 -- sweep share.
 function M.is_live(record: store.Record, set: { [number]: true }?): boolean
 	return record.state == "live" and set_size(set) > 0
+end
+
+-- Whether Enter starts the record again: it exited, or its start failed and it is not being removed.
+function M.ended(record: store.Record): boolean
+	return record.state == "exited" or (record.state == "pending" and record.failed == true and record.cancel ~= true)
+end
+
+-- Whether an ended record still runs somewhere: a fresh window entry names a pane whose program has not exited.
+local function still_runs(record: store.Record, entries: { status.Entry }, fresh: boolean): boolean
+	if not fresh or not M.ended(record) then
+		return false
+	end
+	for _, e in entries do
+		if not status.exited(e) then
+			return true
+		end
+	end
+	return false
 end
 
 -- Whether two panes (or two status entries) claim one deck id: a duplicate, which the list flags and refuses to act on.
@@ -362,6 +383,7 @@ function M.rows(
 				parked = if M.is_parked(r, entries, fresh, dup) then true else nil,
 				vibing = if vibing and code == "running" then true else nil,
 				priority = if r.priority == true then true else nil,
+				runs = if still_runs(r, entries, fresh) then true else nil,
 			}
 			table.insert(agents, row)
 			table.insert(codes, code)

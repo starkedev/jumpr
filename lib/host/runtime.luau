@@ -516,6 +516,13 @@ function M.new(compat: Io, rand: (number) -> number): Runtime
 				end
 			elseif e.kind == "show" and e.id ~= nil then
 				arm_show(blk, e.id)
+			elseif e.kind == "relink" and e.id ~= nil then
+				-- The pane list first: reading it can commit a reconciled deck, which the relink must build on.
+				local listed = panes_now() or {}
+				local d, pane = bind.relink(binding, ensure(), e.id, listed)
+				commit(d)
+				list().ui.notice = if pane ~= nil then keys.RELINKED else keys.RELINK_MISSED
+				rendered = true
 			elseif e.kind == "render" then
 				rendered = true
 			end

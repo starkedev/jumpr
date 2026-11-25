@@ -34,6 +34,8 @@
 --     "retry" (Enter on a failed pending row `id`) and "restart" (Enter on an exited row `id`); Enter in that row's
 --     `o` line asks for either too. Tern starts a pane whose folder is missing in the home directory, and omp then
 --     moves itself to a temp dir, so nothing is stored or started in a folder this machine does not have.
+--   {kind = "relink", id}  bind ended agent `id` back to the host pane that still runs it (`bind.relink`), before
+--     any request that follows; the host sets `RELINKED` or `RELINK_MISSED` as the notice.
 --   {kind = "show", id}  arm the 120 ms timer whose firing feeds `show_due` back.
 --   {kind = "render"}  something visible changed (the block's key handler returns false without it).
 
@@ -126,6 +128,8 @@ export type Effect = {
 }
 
 M.DUPLICATE = "duplicate: two panes share this agent"
+M.RELINKED = "still running: linked to its pane again"
+M.RELINK_MISSED = "still running in another pane: not linked (no single pane has its title)"
 M.STARTING = "starting — wait"
 M.SELECT_AGENT = "select an agent"
 M.BAD_FOLDER = "folder name not supported"
@@ -502,6 +506,16 @@ local function enter_agent(s: Step, row: model.Row)
 	end
 	if row.dup then
 		s.ui.notice = M.DUPLICATE
+		return
+	end
+	-- An ended agent whose pane still runs is linked back and gone to, never started a second time: a second process
+	-- on one session is refused by the agent, and its pane only exits again.
+	if row.runs then
+		table.insert(s.effects, { kind = "relink", id = id })
+		if s.ui.zen then
+			set_zen(s, false)
+		end
+		request(s, "jump", { id = id })
 		return
 	end
 	if start_again(s, id, r) then
@@ -1304,13 +1318,15 @@ end
 -- stamps and saves the send before typing). A live claude or codex agent that has not itself reported idle (starting,
 -- working, or a pane that only reads not busy) holds the text as its queued message instead, which the queue sends
 -- once it reports idle. An agent that Enter on its row would start again (exited, or a failed start) is started again
--- the same way, and the text is held as its queued message, which the queue sends once the agent is idle.
+-- the same way, and the text is held as its queued message, which the queue sends once the agent is idle; one a
+-- window still reports running (`Row.runs`) is linked back to its pane instead of started.
 -- A start that would open Tern's conversation picker is not started (a typed message could land in the picker):
 -- only the message is held, and the notice says Enter picks the conversation. Any other agent whose pane is gone
 -- (a start under way or being removed, a stop under way) only holds the text. With a message already held it
 -- refuses, and nothing is started.
 -- The row is read again here, because status may have changed while the line was open; a row a filter now hides
--- is judged from its record alone.
+-- is judged from its record alone, and an ended one only holds the text: with no row there is no telling whether a
+-- window still reports it running, and a start would then be a second process on its session.
 local function submit_send(s: Step)
 	local ui = s.ui
 	local id = ui.target_id
@@ -1339,12 +1355,16 @@ local function submit_send(s: Step)
 	elseif live then
 		hold(s, id, text)
 		ui.notice = M.NOT_IDLE
+	elseif row ~= nil and row.runs then
+		-- Still running in a pane the host lost: link it back, and the queue sends the text once it is idle.
+		hold(s, id, text)
+		table.insert(s.effects, { kind = "relink", id = id })
 	else
 		-- The mode the start would use, read from the stored record before anything changes, as `restart` and
 		-- `retry` read it: a picker start is not started here, so the held message cannot be typed into the picker.
 		local mode = model.restart_mode(r, id, s.deck)
 		hold(s, id, text)
-		if start_purpose(r) == nil then
+		if start_purpose(r) == nil or row == nil then
 			ui.notice = M.PANE_GONE
 		elseif mode == "pick" then
 			ui.notice = M.PICK_QUEUED

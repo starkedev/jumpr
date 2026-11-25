@@ -5,6 +5,7 @@
 -- cache of one: the in-memory sets hold every live pane per deck id (two or more = a duplicate).
 -- No I/O here: the host passes the deck and the pane list in, and saves any deck that comes back changed.
 
+local harness = require("../harness")
 local identity = require("../shared/identity")
 local model = require("./model")
 local store = require("./store")
@@ -21,7 +22,14 @@ export type State = {
 	queued: { Bind },
 	-- Second starts the spawn filter stopped since the last tick, in order.
 	blocked: { Blocked },
+	-- Each live or stopping record whose cached pane is missing from the pane list: that pane, since when (wall ms)
+	-- it has been missing, and when a reconcile last saw it missing.
+	missing: { [string]: Missing },
+	-- Listed panes whose program exited (`pane_exited`) and that no line has named since: never a relink target.
+	exited: { [number]: true },
 }
+
+export type Missing = { pane: number, since: number, seen: number }
 
 -- What the hooks pass in (the shapes of SpawnSpec, CommandStartedEvent and PaneExitedEvent this module reads).
 export type Spec = { program: string?, args: { string }?, env: { [string]: string }? }
@@ -35,8 +43,14 @@ export type Exited = { pane: number, status: number? }
 -- A start with no pane after this long is marked failed (`model.start_failed(…, "no_pane")`).
 M.NO_PANE_MS = model.NO_PANE_MS
 
+-- A live record's pane must be missing from the pane list this long before a reconcile ends the record. Just after
+-- a plugin reload (a daemon upgraded in place takes its panes over) the list can lack a pane that still runs, and an
+-- agent ended then stays unbound while it runs: no spawn or typed line names it again. `pane_exited` still ends a
+-- record at once.
+M.MISSING_GRACE_MS = 5000
+
 function M.new(): State
-	return { sets = {}, queued = {}, blocked = {} }
+	return { sets = {}, queued = {}, blocked = {}, missing = {}, exited = {} }
 end
 
 local function lowest(set: { [number]: true }?): number?
@@ -69,6 +83,7 @@ local function seen(state: State, deck: store.Deck?, text: string, pane: number?
 	if pane == nil then
 		return
 	end
+	state.exited[pane] = nil
 	local id = identity.match(text)
 	if id == nil then
 		return
@@ -201,6 +216,7 @@ end
 -- `model.apply_exit` marks it exited (or deletes it after a stop), `sweep_groups` runs, and that ending stamps
 -- which agent of that kind closed last in the folder.
 function M.on_exited(state: State, deck: store.Deck, ev: Exited, now_ms: number): store.Deck
+	state.exited[ev.pane] = true
 	local keep: { Bind } = {}
 	for _, b in state.queued do
 		if b.pane ~= ev.pane then
@@ -261,9 +277,16 @@ end
 -- Runs on each render with the host's pane list: drops gone panes from every set, seeds a live record's set from
 -- its cached pane after a reload, moves a duplicate's record to its remaining pane, then applies
 -- `model.reconcile_states` (a live or stopping record whose pane is gone, as if `pane_exited` had come) and
--- `model.sweep_groups`, and remembers each bound agent's usable pane title (`model.remember_titles`).
+-- `model.sweep_groups`, and remembers each bound agent's usable pane title (`model.remember_titles`). A cached pane
+-- missing from the list for less than `MISSING_GRACE_MS` still counts as listed; the clock starts again for another
+-- pane, or after a gap longer than the grace with no reconcile (the list was closed).
 function M.reconcile(state: State, deck: store.Deck, panes: { any }, now_ms: number): store.Deck
 	local live = M.live_set(panes)
+	for pane in state.exited do
+		if not live[pane] then
+			state.exited[pane] = nil
+		end
+	end
 	for id, set in state.sets do
 		for pane in set do
 			if not live[pane] then
@@ -275,6 +298,8 @@ function M.reconcile(state: State, deck: store.Deck, panes: { any }, now_ms: num
 		end
 	end
 	local out = deck
+	local held: { [number]: boolean } = {}
+	local missing: { [string]: Missing } = {}
 	for id, r in deck.agents do
 		if r.state == "live" or r.state == "stopping" then
 			local set = state.sets[id]
@@ -289,12 +314,66 @@ function M.reconcile(state: State, deck: store.Deck, panes: { any }, now_ms: num
 						out = store.clone(deck)
 					end
 					out.agents[id].pane = rest
+				elseif r.pane ~= nil then
+					local was = state.missing[id]
+					local since = now_ms
+					if was ~= nil and was.pane == r.pane and now_ms - was.seen <= M.MISSING_GRACE_MS then
+						since = was.since
+					end
+					if now_ms - since < M.MISSING_GRACE_MS then
+						missing[id] = { pane = r.pane, since = since, seen = now_ms }
+						held[r.pane] = true
+					end
 				end
 			end
 		end
 	end
+	state.missing = missing
+	if next(held) ~= nil then
+		live = table.clone(live)
+		for pane in held do
+			live[pane] = true
+		end
+	end
 	out = model.reconcile_states(out, live, now_ms)
 	return model.remember_titles(model.sweep_groups(out), panes, state.sets)
+end
+
+-- Binds an ended record (exited, or a failed start) back to the host pane that still runs it, which a window reports
+-- but no spawn or typed line will name it again (`model.Row.runs`). The host list carries no command line, so the pane
+-- is the one pane bound to no deck id, and whose program has not exited, whose title, cleaned as `remember_titles`
+-- cleans it, is the title the record remembers. A record a hook has already bound again (its queued bind not applied
+-- yet) is left to that bind. Returns the deck and the pane it is linked to, or nil when the record has no usable
+-- title or not exactly one pane matches.
+function M.relink(state: State, deck: store.Deck, id: string, panes: { any }): (store.Deck, number?)
+	local r = deck.agents[id]
+	if r == nil or r.title == nil or r.title == "" or not model.ended(r) then
+		return deck, nil
+	end
+	local pending = lowest(state.sets[id])
+	if pending ~= nil then
+		return deck, pending
+	end
+	local found: number? = nil
+	for _, p in panes do
+		local pane = if type(p) == "table" and type(p.pane) == "number" then p.pane else nil
+		if pane ~= nil and not state.exited[pane] and not M.bound(state, pane) then
+			if harness.clean_title(p.title, r.cli) == r.title then
+				if found ~= nil then
+					return deck, nil
+				end
+				found = p.pane
+			end
+		end
+	end
+	if found == nil then
+		return deck, nil
+	end
+	state.sets[id] = { [found] = true }
+	local nr = model.on_bind(r, found)
+	local out = store.clone(deck)
+	out.agents[id] = nr
+	return out, found
 end
 
 -- Pending starts with no pane `NO_PANE_MS` after `created_ms` go through `model.start_failed(…, "no_pane")`.

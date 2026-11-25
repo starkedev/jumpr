@@ -6,12 +6,28 @@ Update with `tern plugin install github.com/starkedev/jumpr --force` on each mac
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-11-25
+
+### Fixed
+
+- A running agent could lose its card's link to its tab when the Tern daemon upgraded in place: the list reloads, and an agent whose pane was missing from its first pane listing was marked stopped while it still ran.
+  `Enter` on that card then started a second copy on the same session, which the agent refused, and nothing ever linked the card back.
+  An agent's pane now has to be missing from the pane list for 5 seconds before the agent counts as stopped; a pane that exits still stops it at once.
+  A stopped card whose agent a window still shows running now says "still running · ⏎ links back" with the agent's status; `Enter` links it back to its pane, found by the agent's remembered title, and goes to its tab, starting nothing, and `o` holds the message and links it the same way.
+
 ## [0.3.7] - 2026-11-24
 
 ### Added
 
 - `agy`, Google's Antigravity CLI, is offered in the `N` picker and the settings page's Default agent menu.
   It runs through Tern's ACP chat with Antigravity's own `agy acp`, on your `agy` sign-in, once the machine's Tern settings name it as a custom agent (README, Requirements).
+
+### Fixed
+
+- A running agent could lose its card's link to its tab when the Tern daemon upgraded in place: the list reloads, and an agent whose pane was missing from its first pane listing was marked stopped while it still ran.
+  `Enter` on that card then started a second copy on the same session, which the agent refused, and nothing ever linked the card back.
+  An agent's pane now has to be missing from the pane list for 5 seconds before the agent counts as stopped; a pane that exits still stops it at once.
+  A stopped card whose agent a window still shows running now says "still running · ⏎ links back" with the agent's status; `Enter` links it back to its pane, found by the agent's remembered title, and goes to its tab, starting nothing, and `o` holds the message and links it the same way.
 
 ## [0.3.6] - 2026-11-23
 
@@ -308,7 +324,8 @@ Tested on Tern 0.9.10 and 0.9.11.
 - Every message between the halves carries a protocol version, and a mismatch shows a banner naming the machine to update.
 - `scripts/check.sh` runs stylua, the unit suites, a strict `luau-lsp` type check and design-rule checks.
 
-[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.3.7...HEAD
+[Unreleased]: https://github.com/starkedev/jumpr/compare/v0.3.8...HEAD
+[0.3.8]: https://github.com/starkedev/jumpr/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/starkedev/jumpr/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/starkedev/jumpr/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/starkedev/jumpr/compare/v0.3.4...v0.3.5

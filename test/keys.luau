@@ -1819,6 +1819,20 @@ do
 	check(effect_of(hidden.effects, "write") == nil, "a row a filter now hides is not typed into")
 	check(hidden.deck.queue.x ~= nil and hidden.ui.notice == Keys.NOT_IDLE, "its text is held")
 
+	-- An ended agent whose row a filter now hides only holds the text: with no row there is no telling whether a
+	-- window still reports it running, where a start would be a second process on its session.
+	local deck = sample()
+	agent(deck, "y", "g1", 4, { state = "exited", ran = true })
+	local ended = block(deck)
+	ended.status.y = { working }
+	select(ended, { kind = "agent", id = "y" })
+	char(ended, "o")
+	type_text(ended, "hi")
+	ended.ui.filter = "waiting"
+	key(ended, "enter")
+	check(effect_of(ended.effects, "check_folder") == nil, "a hidden ended row is not started again")
+	check(ended.deck.queue.y ~= nil and ended.ui.notice == Keys.PANE_GONE, "its text is held")
+
 	local busy = on_claude({ working })
 	busy.deck.queue.x = { text = "first", at_ms = NOW - 9 }
 	char(busy, "o")
